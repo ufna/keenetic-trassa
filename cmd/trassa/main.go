@@ -7,28 +7,63 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"trassa/internal/ctl"
 	"trassa/internal/rules"
 )
 
 const usage = `trassa — гибкая маршрутизация для домашнего роутера
 
 Использование:
-  trassa check <файл правил>                  проверить файл правил
-  trassa why -f <файл правил> <имя или адрес>  куда пойдёт имя или адрес и по какому правилу
+  trassa check <файл правил>                   проверить файл правил
+  trassa why -f <файл правил> <имя или адрес>   решение по файлу правил, без демона
+  trassa why <имя или адрес>                    решение и сведения из DNS у работающего демона
+  trassa status                                 состояние демона
+  trassa reload                                 перечитать правила без остановки
+  trassa run [-rules файл] [-only адрес]        запустить демон (режим наблюдения)
+  trassa cleanup                                снять правила перехвата DNS
 `
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+const defaultSock = "/tmp/trassa.sock"
+
+// sockPath — путь сокета управления; переменная окружения нужна тестам.
+func sockPath() string {
+	if p := os.Getenv("TRASSA_SOCK"); p != "" {
+		return p
+	}
+	return defaultSock
+}
 
 func run(args []string, out, errw io.Writer) int {
+	if len(args) > 0 && args[0] == "run" {
+		return cmdRun(args[1:], errw)
+	}
 	switch {
 	case len(args) == 2 && args[0] == "check":
 		return cmdCheck(args[1], out, errw)
 	case len(args) == 4 && args[0] == "why" && args[1] == "-f":
 		return cmdWhy(args[2], args[3], out, errw)
+	case len(args) == 2 && args[0] == "why" && args[1] != "-f":
+		return cmdLive("why", args[1], out, errw)
+	case len(args) == 1 && (args[0] == "status" || args[0] == "reload"):
+		return cmdLive(args[0], "", out, errw)
+	case len(args) == 1 && args[0] == "cleanup":
+		return cmdCleanup()
 	}
 	fmt.Fprint(errw, usage)
 	return 2
+}
+
+// cmdLive передаёт команду работающему демону.
+func cmdLive(cmd, arg string, out, errw io.Writer) int {
+	text, err := ctl.Call(sockPath(), cmd, arg, 5*time.Second)
+	fmt.Fprint(out, text)
+	if err != nil {
+		fmt.Fprintln(errw, err)
+		return 1
+	}
+	return 0
 }
 
 // load читает файл правил; пути в условиях @файл считаются от его каталога.

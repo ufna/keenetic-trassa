@@ -128,8 +128,17 @@ func TestWhyBadInput(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"check"}, {"why", "x"}, {"nonsense"}} {
+	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"nonsense"}} {
 		if code, _, errOut := exec(args...); code != 2 || !strings.Contains(errOut, "Использование") {
+			t.Errorf("%v: код %d, stderr %q", args, code, errOut)
+		}
+	}
+}
+
+func TestLiveCommandsWithoutDaemon(t *testing.T) {
+	t.Setenv("TRASSA_SOCK", filepath.Join(t.TempDir(), "none.sock"))
+	for _, args := range [][]string{{"status"}, {"reload"}, {"why", "youtube.com"}} {
+		if code, _, errOut := exec(args...); code != 1 || !strings.Contains(errOut, "демон trassa не отвечает") {
 			t.Errorf("%v: код %d, stderr %q", args, code, errOut)
 		}
 	}
