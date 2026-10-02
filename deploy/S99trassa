@@ -8,31 +8,56 @@ TRASSA_PID=/tmp/trassa.pid
 TRASSA_SUP=/tmp/trassa.supervisor.pids
 TRASSA_STOP=/tmp/trassa.stop
 TRASSA_LOG=/tmp/trassa.log
+TRASSA_LOG_MAX=1048576
+TRASSA_LOG_KEEP=262144
 
-trassa_alive() {
-	[ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null
+# Наш ли это демон: номер процесса мог достаться постороннему процессу.
+trassa_ours() {
+	[ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\0' ' ' <"/proc/$1/cmdline" | grep -q "^$TRASSA_BIN run "
+}
+
+# Номер процесса демона, если демон жив.
+trassa_pid() {
+	[ -f $TRASSA_PID ] || return 1
+	trassa_p=$(cat $TRASSA_PID 2>/dev/null)
+	trassa_ours "$trassa_p" && echo "$trassa_p"
+}
+
+# Все процессы демона, включая оставшиеся без записи в файле.
+trassa_all() {
+	for trassa_p in $(pidof trassa 2>/dev/null); do
+		trassa_ours "$trassa_p" && echo "$trassa_p"
+	done
 }
 
 # Присмотр: если демон завершился сам, снять его правила и запустить снова.
+# Файлом с номером процесса владеет присмотр: записывает сразу после запуска, удаляет после завершения.
 trassa_supervise() {
+	PATH=/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
+	export PATH
 	trassa_pause=5
 	while [ ! -f $TRASSA_STOP ]; do
 		trassa_args=""
 		[ -r $TRASSA_CONF/args ] && trassa_args=$(cat $TRASSA_CONF/args)
 		trassa_t0=$(date +%s)
-		$TRASSA_BIN run -rules $TRASSA_CONF/rules.conf -pid $TRASSA_PID $trassa_args >>$TRASSA_LOG 2>&1
+		set -f # аргументы делятся по пробелам, но не раскрываются как маски файлов
+		$TRASSA_BIN run -rules $TRASSA_CONF/rules.conf $trassa_args >>$TRASSA_LOG 2>&1 &
+		set +f
+		echo $! >$TRASSA_PID
+		wait $!
 		trassa_code=$?
-		# Демон проработал больше минуты — это не череда падений, пауза возвращается к начальной.
-		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
+		rm -f $TRASSA_PID
 		$TRASSA_BIN cleanup >>$TRASSA_LOG 2>&1
 		[ -f $TRASSA_STOP ] && break
+		# Демон проработал больше минуты — это не череда падений, пауза возвращается к начальной.
+		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
 		echo "$(date '+%Y/%m/%d %H:%M:%S') демон завершился с кодом $trassa_code, перезапуск через $trassa_pause с" >>$TRASSA_LOG
 		sleep $trassa_pause
 		[ $trassa_pause -lt 60 ] && trassa_pause=$((trassa_pause * 2))
 	done
 }
 
-# Сторож: демон жив, но не отвечает — завершить принудительно.
+# Сторож: демон жив, но не отвечает — завершить принудительно. Заодно не даёт журналу расти без предела.
 trassa_watch() {
 	trassa_fails=0
 	while [ ! -f $TRASSA_STOP ]; do
@@ -42,16 +67,25 @@ trassa_watch() {
 		else
 			trassa_fails=$((trassa_fails + 1))
 		fi
-		if [ $trassa_fails -ge 2 ] && trassa_alive $TRASSA_PID; then
-			echo "$(date '+%Y/%m/%d %H:%M:%S') демон не отвечает, принудительное завершение" >>$TRASSA_LOG
-			kill -9 "$(cat $TRASSA_PID)" 2>/dev/null
+		if [ $trassa_fails -ge 2 ]; then
+			trassa_p=$(trassa_pid) && {
+				echo "$(date '+%Y/%m/%d %H:%M:%S') демон не отвечает, принудительное завершение" >>$TRASSA_LOG
+				kill -9 "$trassa_p" 2>/dev/null
+			}
 			trassa_fails=0
+		fi
+		if [ "$(wc -c <$TRASSA_LOG 2>/dev/null || echo 0)" -gt $TRASSA_LOG_MAX ]; then
+			# Пишущие открывают журнал на дозапись, поэтому его можно укоротить на месте.
+			tail -c $TRASSA_LOG_KEEP $TRASSA_LOG >$TRASSA_LOG.keep 2>/dev/null &&
+				cat $TRASSA_LOG.keep >$TRASSA_LOG
+			rm -f $TRASSA_LOG.keep
+			echo "$(date '+%Y/%m/%d %H:%M:%S') журнал укорочен" >>$TRASSA_LOG
 		fi
 	done
 }
 
 trassa_start() {
-	if [ -f $TRASSA_SUP ] && kill -0 $(cat $TRASSA_SUP) 2>/dev/null; then
+	if $TRASSA_BIN status >/dev/null 2>&1 || [ -n "$(trassa_all)" ]; then
 		echo "trassa уже запущен"
 		return 0
 	fi
@@ -63,7 +97,7 @@ trassa_start() {
 		echo "в правилах ошибки, trassa не запущен: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
 		return 1
 	fi
-	rm -f $TRASSA_STOP
+	rm -f $TRASSA_STOP $TRASSA_PID
 	trassa_supervise &
 	echo $! >$TRASSA_SUP
 	trassa_watch &
@@ -73,14 +107,23 @@ trassa_start() {
 
 trassa_stop() {
 	touch $TRASSA_STOP
-	[ -f $TRASSA_SUP ] && kill $(cat $TRASSA_SUP) 2>/dev/null
-	trassa_alive $TRASSA_PID && kill "$(cat $TRASSA_PID)" 2>/dev/null
+	if [ -f $TRASSA_SUP ]; then
+		for trassa_p in $(cat $TRASSA_SUP); do
+			kill "$trassa_p" 2>/dev/null
+		done
+	fi
+	# Демон останавливается по сигналу; ждём, пока не исчезнут все его процессы.
+	for trassa_p in $(trassa_all); do
+		kill "$trassa_p" 2>/dev/null
+	done
 	trassa_i=0
-	while trassa_alive $TRASSA_PID && [ $trassa_i -lt 10 ]; do
+	while [ -n "$(trassa_all)" ] && [ $trassa_i -lt 10 ]; do
 		sleep 1
 		trassa_i=$((trassa_i + 1))
 	done
-	trassa_alive $TRASSA_PID && kill -9 "$(cat $TRASSA_PID)" 2>/dev/null
+	for trassa_p in $(trassa_all); do
+		kill -9 "$trassa_p" 2>/dev/null
+	done
 	$TRASSA_BIN cleanup >/dev/null 2>&1
 	rm -f $TRASSA_SUP $TRASSA_PID
 	echo "trassa остановлен"

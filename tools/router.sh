@@ -293,12 +293,23 @@ cmd_restore_all() {
 }
 
 # Остановить trassa и снять его правила. Работает по SSH, интернет не нужен.
+# Правила снимаются ещё и напрямую, без участия самого trassa: откат не должен зависеть
+# от исправности программы, которую откатывают.
 cmd_trassa_off() {
   local key=$ROOT/backup/ssh/router_ed25519
   [ -r "$key" ] || die "нет ключа $key"
   ssh -i "$key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$ROOT/backup/ssh/known_hosts" \
-    -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 \
-    'sh /opt/etc/init.d/S99trassa stop; chmod 644 /opt/etc/init.d/S99trassa; /opt/sbin/trassa cleanup; echo "правил trassa в таблицах: $(iptables-save 2>/dev/null | grep -c TRASSA)"' \
+    -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 '
+      sh /opt/etc/init.d/S99trassa stop
+      chmod 644 /opt/etc/init.d/S99trassa
+      for p in $(pidof trassa 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
+      for t in iptables ip6tables; do
+        while $t -w -t mangle -D POSTROUTING -j TRASSA_DNS 2>/dev/null; do :; done
+        $t -w -t mangle -F TRASSA_DNS 2>/dev/null
+        $t -w -t mangle -X TRASSA_DNS 2>/dev/null
+      done
+      echo "правил trassa в таблицах: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA)"
+      echo "процессов trassa: $(pidof trassa 2>/dev/null | wc -w)"' \
     || die "не удалось выполнить команду на роутере. Запасной путь: tools/router.sh opkg-off"
   say "trassa остановлен; после перезагрузки роутера сам не запустится"
 }

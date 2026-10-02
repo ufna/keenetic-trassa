@@ -200,3 +200,47 @@ func TestAddrsOf(t *testing.T) {
 		t.Errorf("AddrsOf(nobody.example) = %v", got)
 	}
 }
+
+func TestLimits(t *testing.T) {
+	s := New(config(t, src), hour)
+	s.SetLimits(3, 2) // всего три претензии, на один адрес — не больше двух
+	ip3 := netip.MustParseAddr("3.3.3.3")
+
+	// На адрес — не больше двух: третья претензия по тому же правилу отбрасывается.
+	s.Observe(t0, []string{"a.cdn.example"}, []netip.Addr{ip1}, hour)
+	s.Observe(t0, []string{"b.cdn.example"}, []netip.Addr{ip1}, hour)
+	s.Observe(t0, []string{"c.cdn.example"}, []netip.Addr{ip1}, hour)
+	if len(s.Claims(ip1)) != 2 || s.Dropped() != 1 || s.Total() != 2 {
+		t.Fatalf("предел на адрес: претензий %d, отброшено %d, всего %d", len(s.Claims(ip1)), s.Dropped(), s.Total())
+	}
+	// Претензия по более раннему правилу вытесняет худшую, а не отбрасывается.
+	wantChanges(t, s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, hour), "1.1.1.1 alt => vpn strict")
+	if len(s.Claims(ip1)) != 2 || s.Total() != 2 {
+		t.Fatalf("вытеснение: претензий %d, всего %d", len(s.Claims(ip1)), s.Total())
+	}
+
+	// Общий предел: третья претензия проходит, четвёртая — нет.
+	s.Observe(t0, []string{"x.cdn.example"}, []netip.Addr{ip2}, hour)
+	wantChanges(t, s.Observe(t0, []string{"y.cdn.example"}, []netip.Addr{ip3}, hour))
+	if s.Total() != 3 || s.Len() != 2 || s.Dropped() != 2 {
+		t.Fatalf("общий предел: всего %d, адресов %d, отброшено %d", s.Total(), s.Len(), s.Dropped())
+	}
+	// Продление уже существующей претензии проходит и при заполненном хранилище.
+	s.Observe(t0.Add(30*time.Minute), []string{"x.cdn.example"}, []netip.Addr{ip2}, hour)
+	if cs := s.Claims(ip2); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(90*time.Minute)) {
+		t.Errorf("продление при заполненном хранилище: %+v", cs)
+	}
+	// Истечение освобождает место.
+	s.Expire(t0.Add(61 * time.Minute))
+	if s.Total() != 1 {
+		t.Errorf("после истечения всего %d, ожидалась 1", s.Total())
+	}
+	if got := s.Observe(t0.Add(62*time.Minute), []string{"y.cdn.example"}, []netip.Addr{ip3}, hour); len(got) != 1 {
+		t.Errorf("после освобождения места претензия не принята: %v", got)
+	}
+	// Смена правил тоже пересчитывает общее число.
+	s.SetConfig(config(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
+	if s.Total() != 0 || s.Len() != 0 {
+		t.Errorf("после смены правил всего %d, адресов %d", s.Total(), s.Len())
+	}
+}

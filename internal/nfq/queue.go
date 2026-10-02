@@ -11,6 +11,9 @@ const (
 	solNetlink       = 270
 	netlinkNoEnobufs = 5
 	queueMaxLen      = 256
+	// copyRange — сколько байт пакета ядро передаёт демону. DNS-ответ по UDP длиннее не бывает
+	// на практике; более длинный пакет придёт обрезанным и будет отпущен без разбора.
+	copyRange = 4096
 )
 
 // ErrTimeout — за время ожидания пакетов не пришло. Это не ошибка: вызывающий проверяет, не пора ли остановиться.
@@ -49,7 +52,7 @@ func Open(num uint16) (*Queue, error) {
 		build func(seq uint32) []byte
 	}{
 		{"привязка очереди", func(s uint32) []byte { return configCmd(num, cfgCmdBind, s) }},
-		{"режим копирования", func(s uint32) []byte { return configParams(num, copyPacket, 0xffff, s) }},
+		{"режим копирования", func(s uint32) []byte { return configParams(num, copyPacket, copyRange, s) }},
 		{"длина очереди", func(s uint32) []byte { return configMaxLen(num, queueMaxLen, s) }},
 		{"пропуск при переполнении", func(s uint32) []byte { return configFlags(num, flagFailOpen, flagFailOpen, s) }},
 	}

@@ -14,12 +14,18 @@ import (
 	"trassa/internal/rules"
 )
 
+// Пределы защищают роутер от устройства домашней сети, которое засыпает его «ответами»:
+// всё, что хранится и пишется в журнал, ограничено независимо от содержимого пакетов.
 const (
-	minTTL     = time.Hour
-	maxTTL     = 24 * time.Hour
-	maxAddrs   = 50000 // предел адресов в памяти: защита от устройства, засыпающего сеть ответами
-	recentSize = 200
-	statusRows = 10
+	minTTL         = time.Hour
+	maxTTL         = 24 * time.Hour
+	maxClaims      = 20000 // претензий в памяти всего
+	maxPerAddr     = 16    // претензий на один адрес
+	maxChain       = 8     // имён в цепочке CNAME; настоящие цепочки короче
+	maxAnswerAddrs = 32    // адресов из одного ответа
+	logChanges     = 8     // изменений в одной строке журнала
+	recentSize     = 200
+	statusRows     = 10
 )
 
 // Sink применяет изменения списков адресов. nil — режим наблюдения: изменения только журналируются.
@@ -60,13 +66,21 @@ type Engine struct {
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
-	return &Engine{cfg: cfg, store: claims.New(cfg, minTTL), sink: sink, logf: logf, started: now}
+	store := claims.New(cfg, minTTL)
+	store.SetLimits(maxClaims, maxPerAddr)
+	return &Engine{cfg: cfg, store: store, sink: sink, logf: logf, started: now}
 }
 
 func (e *Engine) Stats() Stats {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.stats
+	return e.snapshot()
+}
+
+func (e *Engine) snapshot() Stats {
+	s := e.stats
+	s.Dropped = e.store.Dropped()
+	return s
 }
 
 // HandlePacket учитывает один пакет из очереди. raw начинается с заголовка IP.
@@ -93,6 +107,12 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 		e.stats.Skipped++
 		return
 	}
+	if len(wire) > maxChain {
+		wire = wire[:maxChain]
+	}
+	if len(addrs) > maxAnswerAddrs {
+		addrs = addrs[:maxAnswerAddrs]
+	}
 	// Имена из пакета приводятся так же, как имена в правилах; что не приводится — не доменное имя.
 	names := make([]string, 0, len(wire))
 	for i, w := range wire {
@@ -114,10 +134,6 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	}
 	e.remember(o)
 	if d.Rule == nil {
-		return
-	}
-	if e.store.Len() >= maxAddrs {
-		e.stats.Dropped++
 		return
 	}
 	e.stats.Claimed++
@@ -148,9 +164,16 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 		return
 	}
 	e.stats.Changes += uint64(len(changes))
-	parts := make([]string, len(changes))
-	for i, c := range changes {
+	shown := changes
+	if len(shown) > logChanges {
+		shown = shown[:logChanges]
+	}
+	parts := make([]string, len(shown), len(shown)+1)
+	for i, c := range shown {
 		parts[i] = fmt.Sprintf("%s %s → %s", c.Addr, show(c.Old), show(c.New))
+	}
+	if more := len(changes) - len(shown); more > 0 {
+		parts = append(parts, fmt.Sprintf("… ещё %d", more))
 	}
 	e.logf("%s: %s", why, strings.Join(parts, "; "))
 	if e.sink == nil {
@@ -250,8 +273,9 @@ func (e *Engine) Status(now time.Time) string {
 	} else {
 		b.WriteString("trassa: режим маршрутизации\n")
 	}
-	s := e.stats
-	fmt.Fprintf(&b, "работает %s, правил: %d, адресов в памяти: %d\n", uptime(now.Sub(e.started)), len(e.cfg.Rules), e.store.Len())
+	s := e.snapshot()
+	fmt.Fprintf(&b, "работает %s, правил: %d, адресов в памяти: %d, претензий: %d\n",
+		uptime(now.Sub(e.started)), len(e.cfg.Rules), e.store.Len(), e.store.Total())
 	fmt.Fprintf(&b, "пакетов: %d, ответов с адресами: %d, под правила: %d, изменений: %d\n", s.Packets, s.Answers, s.Claimed, s.Changes)
 	fmt.Fprintf(&b, "пропущено — не DNS: %d, повреждённых: %d, прочих: %d, неверных имён: %d, сверх предела: %d; ошибок применения: %d\n",
 		s.NotDNS, s.Malformed, s.Skipped, s.BadName, s.Dropped, s.ApplyErrors)

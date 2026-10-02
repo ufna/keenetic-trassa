@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"trassa/internal/ctl"
 	"trassa/internal/engine"
+	"trassa/internal/nfq"
 	"trassa/internal/rules"
 )
 
@@ -142,14 +144,13 @@ func TestParseOffset(t *testing.T) {
 
 func TestWatchStall(t *testing.T) {
 	// Цикл приёма замер: сторож должен заметить и сообщить, сколько длится простой.
-	stale := time.Now().Add(-time.Hour)
 	fired := make(chan time.Duration, 1)
 	stop := make(chan struct{})
-	go watchStall(func() time.Time { return stale }, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
+	go watchStall(func() time.Duration { return time.Hour }, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
 	select {
 	case idle := <-fired:
-		if idle < 59*time.Minute {
-			t.Errorf("простой %s, ожидался около часа", idle)
+		if idle != time.Hour {
+			t.Errorf("простой %s, ожидался час", idle)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("сторож не сработал на замерший цикл")
@@ -161,7 +162,7 @@ func TestWatchStall(t *testing.T) {
 	stop = make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		watchStall(time.Now, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
+		watchStall(func() time.Duration { return 0 }, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
 		close(done)
 	}()
 	select {
@@ -174,5 +175,97 @@ func TestWatchStall(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("сторож не завершился по сигналу остановки")
+	}
+}
+
+// fakeQueue выдаёт заранее заданные пакеты и ошибки; когда они кончились — «пакетов нет».
+type fakeQueue struct {
+	script    []any // nfq.Packet или error
+	next      int
+	accepted  []uint32
+	acceptErr error
+}
+
+func (f *fakeQueue) Recv() (nfq.Packet, error) {
+	if f.next >= len(f.script) {
+		return nfq.Packet{}, nfq.ErrTimeout
+	}
+	x := f.script[f.next]
+	f.next++
+	if err, ok := x.(error); ok {
+		return nfq.Packet{}, err
+	}
+	return x.(nfq.Packet), nil
+}
+
+func (f *fakeQueue) Accept(id uint32) error {
+	f.accepted = append(f.accepted, id)
+	return f.acceptErr
+}
+
+func (f *fakeQueue) drained() bool { return f.next >= len(f.script) }
+
+func quiet(string, ...any) {}
+
+func TestPumpAlwaysReleasesPackets(t *testing.T) {
+	pumpErrorPause = 0
+	q := &fakeQueue{script: []any{
+		nfq.Packet{ID: 1, Payload: []byte("ok")},
+		errors.New("сбой чтения"),
+		nfq.Packet{ID: 2, Payload: []byte("boom")},
+		nfq.Packet{ID: 3, Payload: []byte("ok")},
+	}}
+	var handled, beats int
+	handle := func(raw []byte) {
+		handled++
+		if string(raw) == "boom" {
+			panic("разбор упал")
+		}
+	}
+	if err := pump(q, handle, func() { beats++ }, q.drained, quiet); err != nil {
+		t.Fatalf("pump: %v", err)
+	}
+	if len(q.accepted) != 3 || q.accepted[0] != 1 || q.accepted[1] != 2 || q.accepted[2] != 3 {
+		t.Errorf("отпущены пакеты %v, ожидалось [1 2 3]: пакет, на котором разбор упал, тоже должен быть отпущен", q.accepted)
+	}
+	if handled != 3 || beats < 4 {
+		t.Errorf("обработано %d, отметок %d", handled, beats)
+	}
+}
+
+func TestPumpGivesUpOnDeadQueue(t *testing.T) {
+	pumpErrorPause = 0
+	var script []any
+	for i := 0; i < maxQueueErrors+10; i++ {
+		script = append(script, errors.New("сокет закрыт"))
+	}
+	q := &fakeQueue{script: script}
+	err := pump(q, func([]byte) {}, func() {}, q.drained, quiet)
+	if err == nil || q.next != maxQueueErrors {
+		t.Errorf("ошибка %v после %d чтений; ожидалась ошибка после %d", err, q.next, maxQueueErrors)
+	}
+}
+
+func TestPumpGivesUpWhenVerdictsFail(t *testing.T) {
+	pumpErrorPause = 0
+	var script []any
+	for i := 0; i < maxQueueErrors+10; i++ {
+		script = append(script, nfq.Packet{ID: uint32(i)})
+	}
+	q := &fakeQueue{script: script, acceptErr: errors.New("вердикт не принят")}
+	if err := pump(q, func([]byte) {}, func() {}, q.drained, quiet); err == nil || len(q.accepted) != maxQueueErrors {
+		t.Errorf("ошибка %v после %d вердиктов; ожидалась ошибка после %d", err, len(q.accepted), maxQueueErrors)
+	}
+}
+
+func TestPumpErrorsMustBeConsecutive(t *testing.T) {
+	pumpErrorPause = 0
+	var script []any
+	for i := 0; i < maxQueueErrors*3; i++ {
+		script = append(script, errors.New("редкий сбой"), nfq.Packet{ID: uint32(i)})
+	}
+	q := &fakeQueue{script: script}
+	if err := pump(q, func([]byte) {}, func() {}, q.drained, quiet); err != nil {
+		t.Errorf("редкие сбои вперемешку с пакетами остановили цикл: %v", err)
 	}
 }

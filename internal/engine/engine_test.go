@@ -327,3 +327,65 @@ func TestStatus(t *testing.T) {
 		t.Error("с приёмником изменений режим должен называться маршрутизацией")
 	}
 }
+
+func TestManyAddressesAreCapped(t *testing.T) {
+	sink := &fakeSink{}
+	e, l := newEngine(t, sink)
+	var rrs []rr
+	for i := 0; i < 40; i++ {
+		rrs = append(rrs, a("video.example", 300, fmt.Sprintf("7.7.7.%d", i+1)))
+	}
+	e.HandlePacket(t0, ipv4(53, dns("video.example", 0x8180, rrs...)))
+	if len(sink.got) != maxAnswerAddrs {
+		t.Errorf("из 40 адресов учтено %d, предел %d", len(sink.got), maxAnswerAddrs)
+	}
+	// Строка журнала не растёт вместе с ответом.
+	if len(l.lines) != 1 || len(l.lines[0]) > 600 || !strings.Contains(l.lines[0], "… ещё 24") {
+		t.Errorf("журнал: %d строк, длина первой %d: %q", len(l.lines), len(l.lines[0]), l.lines)
+	}
+}
+
+func chain(q string, hops int, last string, ip string) []byte {
+	rrs := []rr{}
+	cur := q
+	for i := 0; i < hops; i++ {
+		next := fmt.Sprintf("hop%d.example.net", i)
+		if i == hops-1 {
+			next = last
+		}
+		rrs = append(rrs, rr{cur, 5, 60, wireName(next)})
+		cur = next
+	}
+	return ipv4(53, dns(q, 0x8180, append(rrs, a(cur, 60, ip))...))
+}
+
+func TestLongCNAMEChainIsCut(t *testing.T) {
+	sink := &fakeSink{}
+	e, _ := newEngine(t, sink)
+	// Правило — на третьем имени цепочки: учитывается.
+	e.HandlePacket(t0, chain("www.other.example", 2, "edge.video.example", "1.1.1.1"))
+	if len(sink.got) != 1 {
+		t.Fatalf("короткая цепочка: %v", sink.got)
+	}
+	// Правило — на двенадцатом имени: цепочка обрезана до maxChain имён, совпадения нет.
+	e.HandlePacket(t0, chain("www.far.example", 11, "edge.video.example", "2.2.2.2"))
+	if len(sink.got) != 1 {
+		t.Errorf("слишком длинная цепочка всё равно учтена: %v", sink.got)
+	}
+	if text, _ := e.Why("2.2.2.2", t0); !strings.Contains(text, "не встречался") {
+		t.Errorf("адрес из обрезанной цепочки попал в память:\n%s", text)
+	}
+}
+
+func TestStoreLimitIsReported(t *testing.T) {
+	e, _ := newEngine(t, nil)
+	for i := 0; i < maxPerAddr+5; i++ {
+		e.HandlePacket(t0, answer(fmt.Sprintf("n%d.video.example", i), "1.1.1.1"))
+	}
+	if s := e.Stats(); s.Dropped != 5 {
+		t.Errorf("отброшено %d, ожидалось 5", s.Dropped)
+	}
+	if !strings.Contains(e.Status(t0), "сверх предела: 5") || !strings.Contains(e.Status(t0), "претензий: 16") {
+		t.Errorf("состояние:\n%s", e.Status(t0))
+	}
+}

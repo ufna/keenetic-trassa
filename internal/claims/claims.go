@@ -29,7 +29,23 @@ type Store struct {
 	cfg    *rules.Config
 	minTTL time.Duration
 	byAddr map[netip.Addr][]Claim
+
+	total   int    // претензий всего, по всем адресам
+	limit   int    // предел total; 0 — без предела
+	perAddr int    // предел претензий на один адрес; 0 — без предела
+	dropped uint64 // претензий, не принятых из-за пределов
 }
+
+// SetLimits ограничивает память хранилища: всего претензий и претензий на один адрес.
+// Устройство в домашней сети может прислать сколько угодно «ответов», и без пределов
+// хранилище росло бы вместе с ними.
+func (s *Store) SetLimits(total, perAddr int) { s.limit, s.perAddr = total, perAddr }
+
+// Total возвращает число претензий по всем адресам.
+func (s *Store) Total() int { return s.total }
+
+// Dropped возвращает число претензий, не принятых из-за пределов.
+func (s *Store) Dropped() uint64 { return s.dropped }
 
 func New(cfg *rules.Config, minTTL time.Duration) *Store {
 	return &Store{cfg: cfg, minTTL: minTTL, byAddr: map[netip.Addr][]Claim{}}
@@ -90,7 +106,7 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	var out []Change
 	for _, a := range addrs {
 		old := s.Effective(a)
-		s.byAddr[a] = upsert(s.byAddr[a], c)
+		s.add(a, c)
 		out = appendChange(out, a, old, s.Effective(a))
 	}
 	return out
@@ -107,6 +123,7 @@ func (s *Store) Expire(now time.Time) []Change {
 				live = append(live, c)
 			}
 		}
+		s.total -= len(cs) - len(live)
 		s.put(a, live)
 		out = appendChange(out, a, old, s.Effective(a))
 	}
@@ -132,6 +149,7 @@ func (s *Store) SetConfig(cfg *rules.Config) []Change {
 			c.Index, c.Action = d.Index, d.Action
 			kept = append(kept, c)
 		}
+		s.total -= len(cs) - len(kept)
 		s.put(a, kept)
 		out = appendChange(out, a, old[a], s.Effective(a))
 	}
@@ -147,19 +165,40 @@ func (s *Store) put(a netip.Addr, cs []Claim) {
 	s.byAddr[a] = cs
 }
 
-// upsert заменяет претензию того же запрошенного имени или добавляет новую.
+// add заменяет претензию того же запрошенного имени или добавляет новую, соблюдая пределы.
 // Срок при замене не укорачивается: новый ответ может только продлить претензию.
-func upsert(cs []Claim, c Claim) []Claim {
+func (s *Store) add(a netip.Addr, c Claim) {
+	cs := s.byAddr[a]
 	for i := range cs {
 		if cs[i].Names[0] == c.Names[0] {
 			if cs[i].Expires.After(c.Expires) {
 				c.Expires = cs[i].Expires
 			}
 			cs[i] = c
-			return cs
+			return
 		}
 	}
-	return append(cs, c)
+	if s.perAddr > 0 && len(cs) >= s.perAddr {
+		// Адрес заполнен: новая претензия вытесняет худшую, только если сама старше её.
+		worst := 0
+		for i := range cs {
+			if cs[i].Index > cs[worst].Index {
+				worst = i
+			}
+		}
+		if cs[worst].Index <= c.Index {
+			s.dropped++
+			return
+		}
+		cs[worst] = c
+		return
+	}
+	if s.limit > 0 && s.total >= s.limit {
+		s.dropped++
+		return
+	}
+	s.byAddr[a] = append(cs, c)
+	s.total++
 }
 
 func appendChange(out []Change, a netip.Addr, old, cur *rules.Action) []Change {
