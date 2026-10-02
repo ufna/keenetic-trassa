@@ -25,6 +25,8 @@ const usage = `trassa — гибкая маршрутизация для дом�
   trassa cleanup                                снять правила перехвата DNS
 `
 
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+
 const defaultSock = "/tmp/trassa.sock"
 
 // sockPath — путь сокета управления; переменная окружения нужна тестам.
