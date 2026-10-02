@@ -308,7 +308,16 @@ cmd_trassa_off() {
         $t -w -t mangle -F TRASSA_DNS 2>/dev/null
         $t -w -t mangle -X TRASSA_DNS 2>/dev/null
       done
-      echo "правил trassa в таблицах: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA)"
+      iptables -w -t mangle -S PREROUTING | grep -- " -j TRASSA$" | sed "s/^-A/-D/" | while read -r r; do iptables -w -t mangle $r; done
+      iptables -w -t mangle -F TRASSA 2>/dev/null
+      iptables -w -t mangle -X TRASSA 2>/dev/null
+      ip rule list | grep "fwmark 0x5452" | while read -r pref rest; do
+        ip rule del pref "${pref%:}"
+        ip route flush table "${rest##*lookup }" 2>/dev/null
+      done
+      for s in $(ipset list -n | grep "^trassa_"); do ipset destroy "$s"; done
+      rm -f /tmp/trassa.state
+      echo "правил trassa в таблицах: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA); правил маршрутизации: $(ip rule list | grep -c "fwmark 0x5452"); списков адресов: $(ipset list -n | grep -c "^trassa_")"
       echo "процессов trassa: $(pidof trassa 2>/dev/null | wc -w)"' \
     || die "не удалось выполнить команду на роутере. Запасной путь: tools/router.sh opkg-off"
   say "trassa остановлен; после перезагрузки роутера сам не запустится"

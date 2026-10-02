@@ -33,7 +33,7 @@ make build >/dev/null
 build/trassa check rules/rules.conf
 
 say "доставка на роутер"
-"${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d'
+"${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d /opt/etc/ndm/iflayerchanged.d'
 put build/trassa-arm64 /opt/sbin/trassa 755
 put rules/rules.conf /opt/etc/trassa/rules.conf 644
 for f in rules/lists/*; do
@@ -44,6 +44,7 @@ done
 # Без права исполнения: после перезагрузки роутера trassa сам не запускается.
 put deploy/S99trassa /opt/etc/init.d/S99trassa 644
 put deploy/50-trassa-netfilter.sh /opt/etc/ndm/netfilter.d/50-trassa.sh 755
+put deploy/50-trassa-iflayer.sh /opt/etc/ndm/iflayerchanged.d/50-trassa.sh 755
 
 say "проверка правил на роутере"
 "${SSH[@]}" '/opt/sbin/trassa check /opt/etc/trassa/rules.conf'
