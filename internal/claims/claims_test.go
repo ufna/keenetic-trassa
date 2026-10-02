@@ -179,3 +179,24 @@ func TestStoreDoesNotAliasCallerSlices(t *testing.T) {
 		t.Errorf("срез, полученный из Claims(), изменился задним числом: %+v", got)
 	}
 }
+
+func TestAddrsOf(t *testing.T) {
+	s := New(config(t, src), hour)
+	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip2, ip1}, hour)
+	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, hour)
+	s.Observe(t0, []string{"www.other.example", "edge.video.example"}, []netip.Addr{netip.MustParseAddr("3.3.3.3")}, hour)
+
+	got := s.AddrsOf("video.example")
+	if len(got) != 2 || got[0] != ip1 || got[1] != ip2 {
+		t.Errorf("AddrsOf(video.example) = %v, ожидалось [1.1.1.1 2.2.2.2]", got)
+	}
+	if got := s.AddrsOf("www.other.example"); len(got) != 1 {
+		t.Errorf("AddrsOf по запрошенному имени цепочки = %v", got)
+	}
+	if got := s.AddrsOf("edge.video.example"); len(got) != 0 {
+		t.Errorf("AddrsOf по CNAME-цели должен быть пуст: %v", got)
+	}
+	if got := s.AddrsOf("nobody.example"); len(got) != 0 {
+		t.Errorf("AddrsOf(nobody.example) = %v", got)
+	}
+}

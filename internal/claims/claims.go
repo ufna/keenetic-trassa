@@ -40,6 +40,21 @@ func (s *Store) Len() int { return len(s.byAddr) }
 // Claims возвращает копию претензий на адрес: хранилище переписывает свои срезы на месте.
 func (s *Store) Claims(addr netip.Addr) []Claim { return append([]Claim(nil), s.byAddr[addr]...) }
 
+// AddrsOf возвращает адреса, на которые претендует запрошенное имя name, по возрастанию.
+func (s *Store) AddrsOf(name string) []netip.Addr {
+	var out []netip.Addr
+	for a, cs := range s.byAddr {
+		for _, c := range cs {
+			if c.Names[0] == name {
+				out = append(out, a)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Less(out[j]) })
+	return out
+}
+
 // Effective возвращает действие, с которым адрес должен быть в динамическом списке, или nil.
 func (s *Store) Effective(addr netip.Addr) *rules.Action {
 	cs := s.byAddr[addr]
