@@ -59,7 +59,8 @@ func run(args []string, out, errw io.Writer) int {
 
 // cmdLive передаёт команду работающему демону.
 func cmdLive(cmd, arg string, out, errw io.Writer) int {
-	text, err := ctl.Call(sockPath(), cmd, arg, 5*time.Second)
+	// Короткое ожидание: по этой же команде сторож судит, жив ли демон.
+	text, err := ctl.Call(sockPath(), cmd, arg, 3*time.Second)
 	fmt.Fprint(out, text)
 	if err != nil {
 		fmt.Fprintln(errw, err)

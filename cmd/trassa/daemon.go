@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	osexec "os/exec"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -58,6 +59,56 @@ func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
 	}
 }
 
+// stallLimit — сколько цикл приёма пакетов может молчать. Он получает управление не реже раза
+// в секунду, поэтому несколько секунд тишины означают, что он застрял с пакетом на руках.
+const stallLimit = 5 * time.Second
+
+// watchStall вызывает fail, если цикл приёма не отмечался дольше limit. Завершается по закрытию stop.
+func watchStall(beat func() time.Time, limit, every time.Duration, stop <-chan struct{}, fail func(idle time.Duration)) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-t.C:
+			if idle := time.Since(beat()); idle > limit {
+				fail(idle)
+				return
+			}
+		}
+	}
+}
+
+// parseOffset разбирает смещение от UTC в виде, который печатает «date +%z»: +0300, -0530.
+func parseOffset(s string) (*time.Location, error) {
+	if len(s) != 5 || s[0] != '+' && s[0] != '-' {
+		return nil, fmt.Errorf("непонятное смещение времени %q", s)
+	}
+	h, err1 := strconv.Atoi(s[1:3])
+	m, err2 := strconv.Atoi(s[3:5])
+	if err1 != nil || err2 != nil || h > 14 || m > 59 {
+		return nil, fmt.Errorf("непонятное смещение времени %q", s)
+	}
+	off := h*3600 + m*60
+	if s[0] == '-' {
+		off = -off
+	}
+	return time.FixedZone(s, off), nil
+}
+
+// useLocalTime переводит время в журнале и в ответах на местное. На роутере нет базы часовых
+// поясов, поэтому смещение спрашивается у системной утилиты; не получилось — остаётся UTC.
+func useLocalTime() {
+	out, err := osexec.Command("date", "+%z").Output()
+	if err != nil {
+		return
+	}
+	if loc, err := parseOffset(strings.TrimSpace(string(out))); err == nil {
+		time.Local = loc
+	}
+}
+
 func cmdCleanup() int {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -90,6 +141,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		tap.Only = a
 	}
+	useLocalTime()
 	logger := log.New(errw, "", log.LstdFlags)
 
 	cfg, ps, ok := load(*rulesPath, errw)
@@ -131,10 +183,19 @@ func cmdRun(args []string, errw io.Writer) int {
 	logger.Printf("trassa запущен: режим наблюдения, правил %d, очередь %d", len(cfg.Rules), tap.Queue)
 
 	var stopping atomic.Bool
+	var beat atomic.Int64 // когда цикл приёма последний раз получал управление
+	beat.Store(time.Now().UnixNano())
+	stopWatch := make(chan struct{})
+	go watchStall(func() time.Time { return time.Unix(0, beat.Load()) }, stallLimit, time.Second, stopWatch, func(idle time.Duration) {
+		// Выход закрывает сокет очереди, и ядро начинает пропускать DNS-ответы без демона.
+		logger.Printf("цикл приёма пакетов молчит %s — аварийное завершение", idle.Round(time.Second))
+		os.Exit(3)
+	})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for !stopping.Load() {
+			beat.Store(time.Now().UnixNano())
 			p, err := q.Recv()
 			if err == nfq.ErrTimeout {
 				continue
@@ -175,6 +236,7 @@ func cmdRun(args []string, errw io.Writer) int {
 				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 				tap.Remove(ctx, runner)
 				cancel()
+				close(stopWatch)
 				stopping.Store(true)
 				select {
 				case <-done:

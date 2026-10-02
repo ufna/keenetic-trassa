@@ -120,3 +120,59 @@ func TestRunRejectsBadArguments(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOffset(t *testing.T) {
+	cases := map[string]int{"+0300": 3 * 3600, "-0530": -(5*3600 + 30*60), "+0000": 0, "+1245": 12*3600 + 45*60}
+	for in, want := range cases {
+		loc, err := parseOffset(in)
+		if err != nil {
+			t.Errorf("parseOffset(%q): %v", in, err)
+			continue
+		}
+		if _, got := time.Date(2026, 1, 1, 0, 0, 0, 0, loc).Zone(); got != want {
+			t.Errorf("parseOffset(%q): смещение %d, ожидалось %d", in, got, want)
+		}
+	}
+	for _, bad := range []string{"", "MSK", "0300", "+03", "+03:00", "+0360", "+2500", "+03xx"} {
+		if _, err := parseOffset(bad); err == nil {
+			t.Errorf("parseOffset(%q): ожидалась ошибка", bad)
+		}
+	}
+}
+
+func TestWatchStall(t *testing.T) {
+	// Цикл приёма замер: сторож должен заметить и сообщить, сколько длится простой.
+	stale := time.Now().Add(-time.Hour)
+	fired := make(chan time.Duration, 1)
+	stop := make(chan struct{})
+	go watchStall(func() time.Time { return stale }, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
+	select {
+	case idle := <-fired:
+		if idle < 59*time.Minute {
+			t.Errorf("простой %s, ожидался около часа", idle)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("сторож не сработал на замерший цикл")
+	}
+	close(stop)
+
+	// Цикл жив: сторож молчит, а по сигналу остановки завершается.
+	fired = make(chan time.Duration, 1)
+	stop = make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		watchStall(time.Now, 20*time.Millisecond, 5*time.Millisecond, stop, func(idle time.Duration) { fired <- idle })
+		close(done)
+	}()
+	select {
+	case idle := <-fired:
+		t.Fatalf("сторож сработал на живой цикл: простой %s", idle)
+	case <-time.After(80 * time.Millisecond):
+	}
+	close(stop)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("сторож не завершился по сигналу остановки")
+	}
+}
