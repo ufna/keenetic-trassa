@@ -33,6 +33,7 @@ trassa_all() {
 # Присмотр: если демон завершился сам, снять его правила и запустить снова.
 # Файлом с номером процесса владеет присмотр: записывает сразу после запуска, удаляет после завершения.
 trassa_supervise() {
+	trap "" HUP PIPE
 	PATH=/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	export PATH
 	trassa_pause=5
@@ -59,6 +60,7 @@ trassa_supervise() {
 
 # Сторож: демон жив, но не отвечает — завершить принудительно. Заодно не даёт журналу расти без предела.
 trassa_watch() {
+	trap "" HUP PIPE
 	trassa_fails=0
 	while [ ! -f $TRASSA_STOP ]; do
 		sleep 5
@@ -98,9 +100,12 @@ trassa_start() {
 		return 1
 	fi
 	rm -f $TRASSA_STOP $TRASSA_PID
-	trassa_supervise &
+	# Потоки присмотра и сторожа отвязываются от сеанса, из которого их запустили. Иначе оболочка,
+	# сообщая о завершённом по сигналу демоне, пишет в закрытый сеанс и гибнет сама — и демон
+	# остаётся без присмотра.
+	trassa_supervise >>$TRASSA_LOG 2>&1 </dev/null &
 	echo $! >$TRASSA_SUP
-	trassa_watch &
+	trassa_watch >>$TRASSA_LOG 2>&1 </dev/null &
 	echo $! >>$TRASSA_SUP
 	echo "trassa запущен"
 }
