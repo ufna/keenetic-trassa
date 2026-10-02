@@ -176,3 +176,49 @@ func TestProblemString(t *testing.T) {
 		t.Errorf("получено %q", got)
 	}
 }
+
+func TestParseRejectsNonUTF8(t *testing.T) {
+	// «*.рф», сохранённое в Windows-1251.
+	_, ps := Parse("exit vpn = W\ndefault direct\n*.\xf0\xf4 -> vpn\n", nil)
+	if !HasErrors(ps) || !strings.Contains(ps[0].Msg, "UTF-8") {
+		t.Errorf("файл не в UTF-8 принят: %v", ps)
+	}
+	read := func(string) (string, error) { return "\xf0\xf4\n", nil }
+	_, ps = Parse("default direct\n@x -> direct\n", read)
+	if !HasErrors(ps) || !strings.Contains(ps[0].Msg, "UTF-8") {
+		t.Errorf("включённый файл не в UTF-8 принят: %v", ps)
+	}
+}
+
+func TestParseMisplacedWords(t *testing.T) {
+	cases := []struct{ rule, msg string }{
+		{"youtube.com strict -> vpn", "strict"},
+		{"youtube.com direct -> vpn", "direct"},
+		{"youtube.com vpn -> direct", "имя выхода"},
+		{"!vpn -> direct", "имя выхода"},
+	}
+	for _, c := range cases {
+		_, ps := Parse("exit vpn = W\ndefault direct\n"+c.rule+"\n", nil)
+		found := false
+		for _, p := range ps {
+			if p.Severity == Error && p.Line == 3 && strings.Contains(p.Msg, c.msg) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q: нет ошибки с текстом %q; получено %v", c.rule, c.msg, ps)
+		}
+	}
+}
+
+func TestParseInterfaceNames(t *testing.T) {
+	for _, bad := range []string{"W;reboot", "$(x)", "a=b", "W'x", "W`x`", "Вайргард"} {
+		_, ps := Parse("exit vpn = "+bad+"\ndefault direct\n", nil)
+		if !HasErrors(ps) || ps[0].Line != 1 || !strings.Contains(ps[0].Msg, "интерфейс") {
+			t.Errorf("имя интерфейса %q принято: %v", bad, ps)
+		}
+	}
+	if _, ps := Parse("exit vpn = GigabitEthernet0/Vlan1, Wireguard2, ISP-2_a.b\ndefault direct\n", nil); len(ps) != 0 {
+		t.Errorf("обычные имена интерфейсов отклонены: %v", ps)
+	}
+}

@@ -115,6 +115,12 @@ func TestWhyBadInput(t *testing.T) {
 	if code, _, errOut := exec("why", "-f", path, "bad..name"); code != 1 || !strings.Contains(errOut, "пустая метка") {
 		t.Errorf("неверное имя: код %d, stderr %q", code, errOut)
 	}
+	if code, _, errOut := exec("why", "-f", path, "149.154.167.50."); code != 1 || !strings.Contains(errOut, "похоже на адрес") {
+		t.Errorf("адрес с лишней точкой: код %d, stderr %q", code, errOut)
+	}
+	if code, _, errOut := exec("why", "-f", path, "2001:db8::1"); code != 1 || !strings.Contains(errOut, "IPv6") {
+		t.Errorf("IPv6-адрес: код %d, stderr %q", code, errOut)
+	}
 	bad := write(t, map[string]string{"rules.conf": "foo.com -> vpn\n"})
 	if code, out, _ := exec("why", "-f", bad, "foo.com"); code != 1 || !strings.Contains(out, "ошибка") {
 		t.Errorf("файл с ошибками: код %d, вывод %q", code, out)

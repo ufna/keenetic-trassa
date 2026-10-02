@@ -1,6 +1,10 @@
 package rules
 
-import "net/netip"
+import (
+	"fmt"
+	"net/netip"
+	"strings"
+)
 
 // Decision — результат сопоставления. Rule == nil означает, что сработал default;
 // Index тогда равен числу правил, то есть ниже любого правила по старшинству.
@@ -56,6 +60,27 @@ func (c *Config) MatchAddr(a netip.Addr) Decision {
 		}
 	}
 	return c.defaultDecision()
+}
+
+// MatchSubject решает судьбу того, что ввёл человек — адреса или имени — и возвращает
+// приведённую запись. Недописанный адрес и IPv6 — ошибка, а не имя: иначе ответ был бы
+// правдоподобным, но неверным.
+func (c *Config) MatchSubject(s string) (string, Decision, error) {
+	s = strings.TrimSpace(s)
+	if a, err := netip.ParseAddr(s); err == nil {
+		if !a.Is4() {
+			return "", Decision{}, fmt.Errorf("адрес %s: IPv6 пока не поддерживается", s)
+		}
+		return a.String(), c.MatchAddr(a), nil
+	}
+	if looksNumeric(s) {
+		return "", Decision{}, fmt.Errorf("%q похоже на адрес, но записано неверно", s)
+	}
+	name, err := NormalizeName(s)
+	if err != nil {
+		return "", Decision{}, err
+	}
+	return name, c.MatchName(name), nil
 }
 
 // MatchChain решает судьбу DNS-ответа: names — запрошенное имя и его CNAME-цели по порядку.

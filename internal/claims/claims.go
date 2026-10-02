@@ -37,7 +37,8 @@ func New(cfg *rules.Config, minTTL time.Duration) *Store {
 
 func (s *Store) Len() int { return len(s.byAddr) }
 
-func (s *Store) Claims(addr netip.Addr) []Claim { return s.byAddr[addr] }
+// Claims возвращает копию претензий на адрес: хранилище переписывает свои срезы на месте.
+func (s *Store) Claims(addr netip.Addr) []Claim { return append([]Claim(nil), s.byAddr[addr]...) }
 
 // Effective возвращает действие, с которым адрес должен быть в динамическом списке, или nil.
 func (s *Store) Effective(addr netip.Addr) *rules.Action {
@@ -68,6 +69,8 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	if ttl < s.minTTL {
 		ttl = s.minTTL
 	}
+	// Копия: срез вызывающего хранится долго и не должен меняться у нас под руками.
+	names = append([]string(nil), names...)
 	c := Claim{Names: names, Index: d.Index, Action: d.Action, Expires: now.Add(ttl)}
 	var out []Change
 	for _, a := range addrs {
@@ -130,9 +133,13 @@ func (s *Store) put(a netip.Addr, cs []Claim) {
 }
 
 // upsert заменяет претензию того же запрошенного имени или добавляет новую.
+// Срок при замене не укорачивается: новый ответ может только продлить претензию.
 func upsert(cs []Claim, c Claim) []Claim {
 	for i := range cs {
 		if cs[i].Names[0] == c.Names[0] {
+			if cs[i].Expires.After(c.Expires) {
+				c.Expires = cs[i].Expires
+			}
 			cs[i] = c
 			return cs
 		}

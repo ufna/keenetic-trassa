@@ -39,3 +39,28 @@ func TestNormalizeNameErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeNameRejectsLookalikes(t *testing.T) {
+	bad := map[string]string{
+		"youtube.com\u200b":  "пробел нулевой ширины в конце",
+		"you\u00adtube.com":  "мягкий перенос",
+		"\ufeffyoutube.com":  "BOM перед именем",
+		"youtube\u3002com":   "идеографическая точка вместо обычной",
+		"youtube.\u0441om":   "кириллическая «с» в латинском слове",
+		"\u0438\u0306ога.рф": "«й», набранная как «и» и отдельный знак",
+		"\ufffd\ufffd.com":   "след неверной кодировки",
+	}
+	for in, what := range bad {
+		if got, err := NormalizeName(in); err == nil {
+			t.Errorf("%s: NormalizeName(%q) = %q, ожидалась ошибка", what, in, got)
+		}
+	}
+}
+
+func TestNormalizeNameAcceptsLetters(t *testing.T) {
+	for _, in := range []string{"йога.рф", "bücher.example", "日本語.jp", "сайт-1.рф"} {
+		if _, err := NormalizeName(in); err != nil {
+			t.Errorf("NormalizeName(%q): неожиданная ошибка %v", in, err)
+		}
+	}
+}

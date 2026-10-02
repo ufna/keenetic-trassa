@@ -100,3 +100,33 @@ func TestLoadStopsAtParseErrors(t *testing.T) {
 		t.Error("ошибки разбора потерялись")
 	}
 }
+
+func TestShadowedByNegationRule(t *testing.T) {
+	ps := problemsOf(t, head+"!*.ru -> vpn\nyoutube.com -> vpn strict\n")
+	if !hasProblem(ps, Warning, 4, "никогда не сработает") || !hasProblem(ps, Warning, 4, "строка 3") {
+		t.Errorf("нет предупреждения о правиле после всеохватного отрицания: %v", ps)
+	}
+	for _, src := range []string{
+		head + "!*.com -> vpn\nyoutube.com -> direct\n",          // youtube.com под отрицанием: раннее правило его не берёт
+		head + "!mail.google.com -> vpn\ngoogle.com -> direct\n", // часть имён позднего правила под отрицанием
+		head + "!~^a -> vpn\nyoutube.com -> direct\n",            // регулярные выражения не судим
+		head + "10.0.0.0/8 -> vpn\nyoutube.com -> direct\n",      // раннее правило только с адресами имён не берёт
+	} {
+		for _, p := range problemsOf(t, src) {
+			if strings.Contains(p.Msg, "никогда не сработает") {
+				t.Errorf("ложное предупреждение для %q: %v", src, p)
+			}
+		}
+	}
+}
+
+func TestExpectationSubjectMustBeValid(t *testing.T) {
+	ps := problemsOf(t, head+"!*.ru -> vpn\ntest 149.154.167 = vpn\n")
+	if !hasProblem(ps, Error, 4, "похоже на адрес") {
+		t.Errorf("недописанный адрес в test принят за имя: %v", ps)
+	}
+	ps = problemsOf(t, head+"test 2001:db8::1 = direct\n")
+	if !hasProblem(ps, Error, 3, "IPv6") {
+		t.Errorf("IPv6-адрес в test не отклонён: %v", ps)
+	}
+}

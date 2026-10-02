@@ -4,7 +4,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,17 +84,10 @@ func cmdWhy(path, subject string, out, errw io.Writer) int {
 		printProblems(out, ps)
 		return 1
 	}
-	var d rules.Decision
-	subject = strings.TrimSpace(subject)
-	if a, err := netip.ParseAddr(subject); err == nil {
-		d = cfg.MatchAddr(a)
-	} else {
-		name, err := rules.NormalizeName(subject)
-		if err != nil {
-			fmt.Fprintln(errw, err)
-			return 1
-		}
-		subject, d = name, cfg.MatchName(name)
+	subject, d, err := cfg.MatchSubject(subject)
+	if err != nil {
+		fmt.Fprintln(errw, err)
+		return 1
 	}
 	fmt.Fprintf(out, "%s → %s\n", subject, d.Action)
 	if d.Rule != nil {

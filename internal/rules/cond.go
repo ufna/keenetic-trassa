@@ -31,7 +31,13 @@ func parseCond(tok string) (Cond, error) {
 		if tok == "~" {
 			return c, errors.New("пустое регулярное выражение")
 		}
-		re, err := regexp.Compile(tok[1:])
+		for _, r := range tok {
+			if r >= 0x80 {
+				return c, fmt.Errorf("регулярное выражение %q: имена сравниваются в виде xn--…, поэтому символ U+%04X не совпадёт никогда", tok[1:], r)
+			}
+		}
+		// Имена приводятся к нижнему регистру, поэтому выражение сравнивается без учёта регистра.
+		re, err := regexp.Compile("(?i)" + tok[1:])
 		if err != nil {
 			return c, fmt.Errorf("регулярное выражение %q: %v", tok[1:], err)
 		}
@@ -49,6 +55,9 @@ func parseCond(tok string) (Cond, error) {
 	}
 	if strings.Contains(name, "*") {
 		return c, fmt.Errorf("условие %q: звёздочка допустима только в начале, в виде *.example.com", tok)
+	}
+	if looksNumeric(name) {
+		return c, fmt.Errorf("условие %q похоже на адрес: адреса и подсети пишутся без =, *. и !", tok)
 	}
 	n, err := NormalizeName(name)
 	if err != nil {
@@ -71,6 +80,15 @@ func (c Cond) Match(name string) bool {
 		return c.re.MatchString(name)
 	}
 	return false
+}
+
+// disjoint сообщает, что ни одно имя не подходит под оба условия сразу.
+// Проверка осторожная: для регулярных выражений ответ всегда «нет».
+func (a Cond) disjoint(b Cond) bool {
+	if a.kind == condRegex || b.kind == condRegex {
+		return false
+	}
+	return a.name != b.name && !strings.HasSuffix(a.name, "."+b.name) && !strings.HasSuffix(b.name, "."+a.name)
 }
 
 // covers сообщает, что любое имя, подходящее под b, подходит и под a.

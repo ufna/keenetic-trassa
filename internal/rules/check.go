@@ -2,7 +2,6 @@ package rules
 
 import (
 	"fmt"
-	"net/netip"
 	"sort"
 	"strings"
 )
@@ -43,8 +42,34 @@ func Check(c *Config) []Problem {
 	return ps
 }
 
+// takes сообщает, что правило заведомо забирает все имена, подходящие под условие b:
+// b перекрыто одним из обычных условий (или обычных условий нет) и не пересекается ни с одним отрицанием.
+func (r *Rule) takes(b Cond) bool {
+	if len(r.Pos) == 0 && len(r.Neg) == 0 {
+		return false
+	}
+	if len(r.Pos) > 0 {
+		covered := false
+		for _, c := range r.Pos {
+			if c.covers(b) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			return false
+		}
+	}
+	for _, c := range r.Neg {
+		if !c.disjoint(b) {
+			return false
+		}
+	}
+	return true
+}
+
 // shadowedBy возвращает перечень строк более ранних правил, целиком перекрывающих правило i,
-// или пустую строку. Проверка осторожная: правила с отрицанием и регулярные выражения не судятся.
+// или пустую строку. Проверка осторожная: само правило с отрицанием и регулярные выражения не судятся.
 func (c *Config) shadowedBy(i int) string {
 	r := &c.Rules[i]
 	if len(r.Neg) > 0 {
@@ -54,15 +79,8 @@ func (c *Config) shadowedBy(i int) string {
 	for _, cond := range r.Pos {
 		line := 0
 		for j := 0; j < i && line == 0; j++ {
-			e := &c.Rules[j]
-			if len(e.Neg) > 0 {
-				continue
-			}
-			for _, ec := range e.Pos {
-				if ec.covers(cond) {
-					line = e.Line
-					break
-				}
+			if c.Rules[j].takes(cond) {
+				line = c.Rules[j].Line
 			}
 		}
 		if line == 0 {
@@ -98,15 +116,9 @@ func (c *Config) shadowedBy(i int) string {
 }
 
 func (c *Config) runTest(t Test) (Problem, bool) {
-	var d Decision
-	if a, err := netip.ParseAddr(t.Subject); err == nil {
-		d = c.MatchAddr(a)
-	} else {
-		n, err := NormalizeName(t.Subject)
-		if err != nil {
-			return Problem{t.Line, Error, fmt.Sprintf("test: %v", err)}, true
-		}
-		d = c.MatchName(n)
+	_, d, err := c.MatchSubject(t.Subject)
+	if err != nil {
+		return Problem{t.Line, Error, fmt.Sprintf("test: %v", err)}, true
 	}
 	if d.Action.Exit == t.Want {
 		return Problem{}, false

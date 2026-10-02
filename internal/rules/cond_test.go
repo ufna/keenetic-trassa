@@ -33,6 +33,7 @@ func TestCondMatch(t *testing.T) {
 		{"X.COM", "x.com", true},
 		{"~^rr[0-9]+---sn-", "rr3---sn-4g5ednsd.googlevideo.com", true},
 		{"~^rr[0-9]+---sn-", "www.youtube.com", false},
+		{"~^YouTube\\.com$", "youtube.com", true},
 	}
 	for _, c := range cases {
 		if got := mustCond(t, c.cond).Match(c.name); got != c.want {
@@ -42,7 +43,7 @@ func TestCondMatch(t *testing.T) {
 }
 
 func TestParseCondErrors(t *testing.T) {
-	for _, tok := range []string{"~", "~(", "foo.*.com", "*", "=", "*.", "bad name"} {
+	for _, tok := range []string{"~", "~(", "foo.*.com", "*", "=", "*.", "bad name", "=1.2.3.4", "*.10.0.0.1", "~\\.рф$"} {
 		if c, err := parseCond(tok); err == nil {
 			t.Errorf("parseCond(%q) = %+v, ожидалась ошибка", tok, c)
 		}

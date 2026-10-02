@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // NormalizeName приводит доменное имя к виду, в котором оно сравнивается:
@@ -28,12 +29,37 @@ func NormalizeName(s string) (string, error) {
 	return strings.Join(labels, "."), nil
 }
 
+// looksNumeric сообщает, что запись состоит только из цифр и точек, то есть похожа на адрес.
+func looksNumeric(s string) bool {
+	return s != "" && strings.Trim(s, "0123456789.") == ""
+}
+
 func toASCIILabel(l string) (string, error) {
+	latin, other, nonASCII := false, false, false
 	for _, r := range l {
-		if r >= 0x80 {
-			l = "xn--" + punycodeEncode(l)
-			break
+		switch {
+		case r < 0x80:
+			latin = latin || r >= 'a' && r <= 'z'
+		case unicode.IsLetter(r):
+			nonASCII = true
+			if unicode.Is(unicode.Latin, r) {
+				latin = true
+			} else {
+				other = true
+			}
+		case unicode.IsDigit(r):
+			nonASCII = true
+		default:
+			// Невидимые символы, знаки препинания, следы неверной кодировки: под такое имя
+			// не подойдёт ни один настоящий домен, поэтому это ошибка, а не punycode.
+			return "", fmt.Errorf("недопустимый символ U+%04X (если он действительно нужен, запишите метку в виде xn--…)", r)
 		}
+	}
+	if latin && other {
+		return "", fmt.Errorf("в метке %q смешаны латинские и нелатинские буквы — проверьте раскладку", l)
+	}
+	if nonASCII {
+		l = "xn--" + punycodeEncode(l)
 	}
 	if len(l) > 63 {
 		return "", errors.New("метка длиннее 63 символов")

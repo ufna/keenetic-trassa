@@ -155,3 +155,27 @@ func TestObserveUsesCNAMEChain(t *testing.T) {
 	got := s.Observe(t0, []string{"www.other.example", "edge.video.example"}, []netip.Addr{ip1}, hour)
 	wantChanges(t, got, "1.1.1.1 - => vpn strict")
 }
+
+func TestObserveNeverShortensClaim(t *testing.T) {
+	s := New(config(t, src), hour)
+	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, 24*hour)
+	s.Observe(t0.Add(time.Minute), []string{"video.example"}, []netip.Addr{ip1}, time.Minute)
+	if cs := s.Claims(ip1); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(24*hour)) {
+		t.Errorf("новый ответ с коротким сроком укоротил претензию: %+v", cs)
+	}
+}
+
+func TestStoreDoesNotAliasCallerSlices(t *testing.T) {
+	s := New(config(t, src), hour)
+	names := []string{"video.example"}
+	s.Observe(t0, names, []netip.Addr{ip1}, hour)
+	names[0] = "unknown.example"
+	wantChanges(t, s.SetConfig(config(t, src))) // правила те же — изменений быть не должно
+
+	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, 3*hour)
+	got := s.Claims(ip1)
+	s.Expire(t0.Add(2 * hour))
+	if len(got) != 2 || got[0].Names[0] != "video.example" {
+		t.Errorf("срез, полученный из Claims(), изменился задним числом: %+v", got)
+	}
+}

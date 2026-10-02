@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Direct — имя выхода напрямую через провайдера.
@@ -104,6 +105,10 @@ type ReadFile func(path string) (string, error)
 // Parse разбирает текст правил. Возвращает ошибки разбора; ожидания и предупреждения проверяет Check.
 func Parse(src string, read ReadFile) (*Config, []Problem) {
 	p := &parser{cfg: &Config{}, read: read}
+	if !utf8.ValidString(src) {
+		p.errf(0, "файл не в кодировке UTF-8: пересохраните его в UTF-8")
+		return p.cfg, p.problems
+	}
 	for i, line := range strings.Split(strings.TrimPrefix(src, "\uFEFF"), "\n") {
 		p.line(i+1, line)
 	}
@@ -170,6 +175,19 @@ func validIdent(s string) bool {
 	return true
 }
 
+// validIface пропускает только символы, из которых состоят имена интерфейсов прошивки:
+// имя потом подставляется в команду роутера.
+func validIface(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' ||
+			c == '_' || c == '.' || c == '/' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *parser) exit(n int, rest string) {
 	name, list, ok := strings.Cut(rest, "=")
 	name = strings.TrimSpace(name)
@@ -194,6 +212,10 @@ func (p *parser) exit(n int, rest string) {
 		x = strings.TrimSpace(x)
 		if x == "" || strings.ContainsAny(x, " \t") {
 			p.errf(n, "пустое имя интерфейса в списке или пропущена запятая")
+			return
+		}
+		if !validIface(x) {
+			p.errf(n, "имя интерфейса %q: допустимы латинские буквы, цифры и символы _ . / -", x)
 			return
 		}
 		ifs = append(ifs, x)
@@ -284,6 +306,10 @@ func (p *parser) include(n int, path string, r *Rule) bool {
 		p.errf(n, "файл %s: %v", path, err)
 		return false
 	}
+	if !utf8.ValidString(text) {
+		p.errf(n, "файл %s не в кодировке UTF-8: пересохраните его в UTF-8", path)
+		return false
+	}
 	good, count := true, 0
 	for i, raw := range strings.Split(strings.TrimPrefix(text, "\uFEFF"), "\n") {
 		for _, tok := range strings.Fields(clean(raw)) {
@@ -315,6 +341,9 @@ func (r *Rule) add(tok string) error {
 	if tok == "" {
 		return errors.New("пустое условие")
 	}
+	if tok == "strict" || tok == Direct {
+		return fmt.Errorf("слово %q стоит среди условий, а пишется оно после ->", tok)
+	}
 	if !strings.HasPrefix(tok, "~") {
 		pfx, isNet, err := parseNet(tok)
 		if err != nil {
@@ -327,7 +356,7 @@ func (r *Rule) add(tok string) error {
 			r.Nets = append(r.Nets, pfx)
 			return nil
 		}
-		if strings.Trim(tok, "0123456789.") == "" {
+		if looksNumeric(tok) {
 			return fmt.Errorf("условие %q похоже на адрес, но записано неверно", tok)
 		}
 	}
@@ -375,6 +404,15 @@ func (p *parser) finish() {
 		}
 		if _, ok := p.cfg.Exit(ref.name); !ok {
 			p.errf(ref.line, "выход %q не объявлен (нужна строка: exit %s = <интерфейсы>)", ref.name, ref.name)
+		}
+	}
+	// Имя выхода среди условий — почти наверняка стрелка не на месте: «youtube.com vpn -> direct».
+	for _, r := range p.cfg.Rules {
+		for _, c := range append(append([]Cond(nil), r.Pos...), r.Neg...) {
+			name := strings.TrimPrefix(c.Text, "!")
+			if _, ok := p.cfg.Exit(name); ok {
+				p.errf(r.Line, "условие %q — это имя выхода, а не домен: выход пишется после ->; если нужна доменная зона, запишите её как *.%s", c.Text, name)
+			}
 		}
 	}
 	sort.SliceStable(p.problems, func(i, j int) bool { return p.problems[i].Line < p.problems[j].Line })
