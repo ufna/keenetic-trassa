@@ -1,7 +1,10 @@
 package claims
 
 import (
+	"bytes"
+	"fmt"
 	"net/netip"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,5 +245,68 @@ func TestLimits(t *testing.T) {
 	s.SetConfig(config(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
 	if s.Total() != 0 || s.Len() != 0 {
 		t.Errorf("после смены правил всего %d, адресов %d", s.Total(), s.Len())
+	}
+}
+
+func TestEntries(t *testing.T) {
+	s := New(config(t, src), hour)
+	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip2, netip.MustParseAddr("10.9.1.1")}, hour)
+	s.Observe(t0, []string{"yandex.ru"}, []netip.Addr{ip1}, hour)
+	got := s.Entries()
+	// 10.9.1.1 входит в подсеть более раннего правила — в динамических списках его нет.
+	want := []Entry{{ip1, rules.Action{Exit: "direct"}}, {ip2, rules.Action{Exit: "vpn", Strict: true}}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Entries = %+v, ожидалось %+v", got, want)
+	}
+}
+
+func TestSaveLoad(t *testing.T) {
+	s := New(config(t, src), hour)
+	s.Observe(t0, []string{"www.other.example", "edge.video.example"}, []netip.Addr{ip1}, 3*hour)
+	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1, ip2}, hour)
+	var buf bytes.Buffer
+	if err := s.Save(&buf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Перезапуск через полтора часа: претензия cdn.example (срок час) истекла, видео — нет.
+	fresh := New(config(t, src), hour)
+	if n := fresh.Load(bytes.NewReader(buf.Bytes()), t0.Add(90*time.Minute)); n != 1 {
+		t.Errorf("принято претензий %d, ожидалась 1", n)
+	}
+	cs := fresh.Claims(ip1)
+	if len(cs) != 1 || cs[0].Names[1] != "edge.video.example" || cs[0].Action.Exit != "vpn" || !cs[0].Expires.Equal(t0.Add(3*hour)) {
+		t.Errorf("восстановленная претензия: %+v", cs)
+	}
+	if fresh.Total() != 1 || len(fresh.Entries()) != 1 {
+		t.Errorf("всего %d, в списках %d", fresh.Total(), len(fresh.Entries()))
+	}
+
+	// Правила с тех пор изменились: претензия решается заново по новым.
+	changed := New(config(t, "exit vpn = W\nexit alt = W\ndefault direct\nother.example -> alt\n"), hour)
+	changed.Load(bytes.NewReader(buf.Bytes()), t0)
+	if cs := changed.Claims(ip1); len(cs) != 1 || cs[0].Action.Exit != "alt" || cs[0].Index != 0 {
+		t.Errorf("после смены правил: %+v", cs)
+	}
+}
+
+func TestLoadIgnoresGarbage(t *testing.T) {
+	far := t0.Add(1000 * hour).Unix()
+	lines := []string{
+		"не JSON вовсе",
+		`{"a":"не-адрес","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
+		`{"a":"2001:db8::1","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
+		`{"a":"1.1.1.1","n":[],"e":` + fmt.Sprint(far) + `}`,
+		`{"a":"1.1.1.1","n":["video.example"],"e":1}`,
+		`{"a":"2.2.2.2","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
+		"",
+	}
+	s := New(config(t, src), hour)
+	if n := s.Load(strings.NewReader(strings.Join(lines, "\n")), t0); n != 1 {
+		t.Errorf("принято %d, ожидалась 1", n)
+	}
+	// Срок из файла ограничен сутками от текущего времени.
+	if cs := s.Claims(ip2); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(24*hour)) {
+		t.Errorf("срок не ограничен: %+v", cs)
 	}
 }

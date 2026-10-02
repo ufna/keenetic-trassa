@@ -3,6 +3,9 @@
 package claims
 
 import (
+	"bufio"
+	"encoding/json"
+	"io"
 	"net/netip"
 	"sort"
 	"time"
@@ -210,4 +213,79 @@ func appendChange(out []Change, a netip.Addr, old, cur *rules.Action) []Change {
 
 func sortChanges(cs []Change) {
 	sort.Slice(cs, func(i, j int) bool { return cs[i].Addr.Less(cs[j].Addr) })
+}
+
+// Entry — адрес и действие, с которым он должен быть в динамическом списке.
+type Entry struct {
+	Addr   netip.Addr
+	Action rules.Action
+}
+
+// Entries возвращает всё, что должно быть в динамических списках, по возрастанию адреса.
+func (s *Store) Entries() []Entry {
+	out := make([]Entry, 0, len(s.byAddr))
+	for a := range s.byAddr {
+		if eff := s.Effective(a); eff != nil {
+			out = append(out, Entry{Addr: a, Action: *eff})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Addr.Less(out[j].Addr) })
+	return out
+}
+
+// maxKeep — на сколько вперёд может смотреть срок претензии, прочитанной из файла.
+const maxKeep = 24 * time.Hour
+
+type saved struct {
+	Addr    string   `json:"a"`
+	Names   []string `json:"n"`
+	Expires int64    `json:"e"`
+}
+
+// Save записывает претензии, по одной в строке. Решения не сохраняются: при чтении
+// каждая претензия решается заново по тем правилам, которые действуют тогда.
+func (s *Store) Save(w io.Writer) error {
+	enc := json.NewEncoder(w)
+	for a, cs := range s.byAddr {
+		for _, c := range cs {
+			if err := enc.Encode(saved{Addr: a.String(), Names: c.Names, Expires: c.Expires.Unix()}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// Load читает претензии, записанные Save, и возвращает число принятых.
+func (s *Store) Load(r io.Reader, now time.Time) int {
+	n := 0
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 64<<10)
+	for sc.Scan() {
+		var v saved
+		if json.Unmarshal(sc.Bytes(), &v) != nil || len(v.Names) == 0 {
+			continue
+		}
+		a, err := netip.ParseAddr(v.Addr)
+		if err != nil || !a.Is4() {
+			continue
+		}
+		expires := time.Unix(v.Expires, 0)
+		if !expires.After(now) {
+			continue
+		}
+		if limit := now.Add(maxKeep); expires.After(limit) {
+			expires = limit
+		}
+		d := s.cfg.MatchChain(v.Names)
+		if d.Rule == nil {
+			continue
+		}
+		before := s.total
+		s.add(a, Claim{Names: v.Names, Index: d.Index, Action: d.Action, Expires: expires})
+		if s.total > before {
+			n++
+		}
+	}
+	return n
 }
