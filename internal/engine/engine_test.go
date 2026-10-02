@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -32,8 +33,10 @@ func config(t *testing.T, s string) *rules.Config {
 }
 
 type fakeSink struct {
-	got  []string
-	fail bool
+	got     []string
+	rebuilt []string // снимок, переданный последнему Rebuild
+	builds  int
+	fail    bool
 }
 
 func (f *fakeSink) Apply(changes []claims.Change) error {
@@ -42,6 +45,18 @@ func (f *fakeSink) Apply(changes []claims.Change) error {
 	}
 	for _, c := range changes {
 		f.got = append(f.got, c.Addr.String()+" "+show(c.Old)+" => "+show(c.New))
+	}
+	return nil
+}
+
+func (f *fakeSink) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
+	f.builds++
+	f.rebuilt = nil
+	for _, e := range entries {
+		f.rebuilt = append(f.rebuilt, e.Addr.String()+" "+e.Action.String())
+	}
+	if f.fail {
+		return errors.New("списки недоступны")
 	}
 	return nil
 }
@@ -231,17 +246,93 @@ func TestHugeTTLIsCapped(t *testing.T) {
 
 func TestReload(t *testing.T) {
 	sink := &fakeSink{}
-	e, _ := newEngine(t, sink)
+	e, l := newEngine(t, sink)
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	e.HandlePacket(t0, answer("yandex.ru", "5.5.5.5"))
 	e.Reload(config(t, "exit vpn = W\ndefault direct\nvideo.example -> vpn\n"))
-	want := "1.1.1.1 - => vpn strict\n1.1.1.1 vpn strict => vpn"
-	if got := strings.Join(sink.got, "\n"); got != want {
-		t.Errorf("изменения:\n%s\nожидалось:\n%s", got, want)
+	// Списки строятся заново целиком: адреса правила, которого больше нет, в снимок не попадают.
+	if sink.builds != 1 || strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn" {
+		t.Errorf("построений %d, снимок %q", sink.builds, sink.rebuilt)
+	}
+	if len(sink.got) != 2 {
+		t.Errorf("смена правил прошла через Apply: %v", sink.got)
+	}
+	if !strings.Contains(strings.Join(l.lines, "\n"), "правила изменены") {
+		t.Errorf("смена правил не отражена в журнале: %q", l.lines)
 	}
 	// Новые ответы решаются уже по новым правилам.
-	e.HandlePacket(t0, answer("yandex.ru", "5.5.5.5"))
+	e.HandlePacket(t0, answer("yandex.ru", "6.6.6.6"))
 	if len(sink.got) != 2 {
 		t.Errorf("правило, которого больше нет, сработало: %v", sink.got)
+	}
+	if e.Config().Rules[0].Action.Strict {
+		t.Error("Config возвращает прежние правила")
+	}
+}
+
+func TestResync(t *testing.T) {
+	sink := &fakeSink{}
+	e, _ := newEngine(t, sink)
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1", "2.2.2.2"))
+	if err := e.Resync(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict\n2.2.2.2 vpn strict" {
+		t.Errorf("снимок: %q", sink.rebuilt)
+	}
+	sink.fail = true
+	if err := e.Resync(); err == nil || e.Stats().ApplyErrors != 1 {
+		t.Errorf("сбой построения: ошибка %v, счётчик %d", err, e.Stats().ApplyErrors)
+	}
+	observe, _ := newEngine(t, nil)
+	if err := observe.Resync(); err != nil {
+		t.Errorf("в режиме наблюдения строить нечего: %v", err)
+	}
+}
+
+func TestStateSurvivesRestart(t *testing.T) {
+	e, _ := newEngine(t, &fakeSink{})
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	var buf bytes.Buffer
+	if err := e.SaveState(&buf); err != nil {
+		t.Fatal(err)
+	}
+	sink := &fakeSink{}
+	fresh, _ := newEngine(t, sink)
+	if n := fresh.LoadState(&buf, t0.Add(10*time.Minute)); n != 1 {
+		t.Fatalf("восстановлено %d претензий", n)
+	}
+	fresh.Resync()
+	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict" {
+		t.Errorf("после перезапуска снимок: %q", sink.rebuilt)
+	}
+	if text, _ := fresh.Why("1.1.1.1", t0.Add(10*time.Minute)); !strings.Contains(text, "претензия: video.example") {
+		t.Errorf("восстановленная претензия не видна:\n%s", text)
+	}
+}
+
+func TestExitsInWhyAndStatus(t *testing.T) {
+	e, _ := newEngine(t, &fakeSink{})
+	text, _ := e.Why("video.example", t0)
+	if strings.Contains(text, "сейчас") {
+		t.Errorf("о выходах ещё ничего не известно:\n%s", text)
+	}
+	e.SetExits(map[string]string{"vpn": "Wireguard2"})
+	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "выход vpn: сейчас через Wireguard2") {
+		t.Errorf("живой туннель:\n%s", text)
+	}
+	if !strings.Contains(e.Status(t0), "выходы: vpn → Wireguard2") {
+		t.Errorf("состояние:\n%s", e.Status(t0))
+	}
+	e.SetExits(map[string]string{"vpn": ""})
+	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "все туннели недоступны — трафик блокируется") {
+		t.Errorf("strict без туннелей:\n%s", text)
+	}
+	if text, _ = e.Why("10.9.0.5", t0); !strings.Contains(text, "все туннели недоступны — трафик идёт напрямую") {
+		t.Errorf("обычное правило без туннелей:\n%s", text)
+	}
+	if !strings.Contains(e.Status(t0), "выходы: vpn → нет живых туннелей") {
+		t.Errorf("состояние:\n%s", e.Status(t0))
 	}
 }
 

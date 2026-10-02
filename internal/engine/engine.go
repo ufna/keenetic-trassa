@@ -3,6 +3,7 @@ package engine
 
 import (
 	"fmt"
+	"io"
 	"net/netip"
 	"strings"
 	"sync"
@@ -28,9 +29,12 @@ const (
 	statusRows     = 10
 )
 
-// Sink применяет изменения списков адресов. nil — режим наблюдения: изменения только журналируются.
+// Sink исполняет решения в ядре. nil — режим наблюдения: изменения только журналируются.
 type Sink interface {
+	// Apply правит динамические списки адресов.
 	Apply(changes []claims.Change) error
+	// Rebuild строит всё заново по правилам и снимку адресов.
+	Rebuild(cfg *rules.Config, entries []claims.Entry) error
 }
 
 type Stats struct {
@@ -63,6 +67,7 @@ type Engine struct {
 	started time.Time
 	stats   Stats
 	recent  []observation
+	exits   map[string]string // выход → имя живого интерфейса; nil — сведений нет
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
@@ -152,14 +157,65 @@ func (e *Engine) Tick(now time.Time) {
 }
 
 // Reload переводит демон на новые правила, не теряя накопленных наблюдений.
+// Списки строятся заново целиком: при смене правил номера пар «выход + режим» сдвигаются.
 func (e *Engine) Reload(cfg *rules.Config) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
-	e.apply(e.store.SetConfig(cfg), "правила изменены")
+	e.note(e.store.SetConfig(cfg), "правила изменены")
+	e.rebuild()
 }
 
-func (e *Engine) apply(changes []claims.Change, why string) {
+// Resync строит всё заново по текущим правилам и памяти: при старте и после того,
+// как прошивка стёрла правила.
+func (e *Engine) Resync() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.rebuild()
+}
+
+func (e *Engine) rebuild() error {
+	if e.sink == nil {
+		return nil
+	}
+	err := e.sink.Rebuild(e.cfg, e.store.Entries())
+	if err != nil {
+		e.stats.ApplyErrors++
+		e.logf("не удалось построить списки и маршруты: %v", err)
+	}
+	return err
+}
+
+// Config возвращает действующие правила.
+func (e *Engine) Config() *rules.Config {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.cfg
+}
+
+// SaveState записывает накопленные претензии, чтобы пережить перезапуск.
+func (e *Engine) SaveState(w io.Writer) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store.Save(w)
+}
+
+// LoadState читает претензии, записанные SaveState. Списки после этого строит Resync.
+func (e *Engine) LoadState(r io.Reader, now time.Time) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.store.Load(r, now)
+}
+
+// SetExits сообщает, через какой интерфейс сейчас идёт каждый выход (пусто — живых нет).
+func (e *Engine) SetExits(active map[string]string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.exits = active
+}
+
+// note записывает изменения в журнал и счётчики.
+func (e *Engine) note(changes []claims.Change, why string) {
 	if len(changes) == 0 {
 		return
 	}
@@ -176,13 +232,31 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 		parts = append(parts, fmt.Sprintf("… ещё %d", more))
 	}
 	e.logf("%s: %s", why, strings.Join(parts, "; "))
-	if e.sink == nil {
+}
+
+func (e *Engine) apply(changes []claims.Change, why string) {
+	e.note(changes, why)
+	if len(changes) == 0 || e.sink == nil {
 		return
 	}
 	if err := e.sink.Apply(changes); err != nil {
 		e.stats.ApplyErrors++
 		e.logf("не удалось применить изменения: %v", err)
 	}
+}
+
+// exitLine описывает нынешнее состояние выхода действия; пусто, если сказать нечего.
+func (e *Engine) exitLine(a rules.Action) string {
+	if a.Exit == rules.Direct || e.exits == nil {
+		return ""
+	}
+	if dev := e.exits[a.Exit]; dev != "" {
+		return fmt.Sprintf("выход %s: сейчас через %s\n", a.Exit, dev)
+	}
+	if a.Strict {
+		return fmt.Sprintf("выход %s: все туннели недоступны — трафик блокируется (strict)\n", a.Exit)
+	}
+	return fmt.Sprintf("выход %s: все туннели недоступны — трафик идёт напрямую\n", a.Exit)
 }
 
 func show(a *rules.Action) string {
@@ -221,6 +295,7 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	} else {
 		fmt.Fprintf(&b, "ни одно правило не подошло, действует default (строка %d)\n", e.cfg.DefaultLine)
 	}
+	b.WriteString(e.exitLine(d.Action))
 	if addr, err := netip.ParseAddr(subj); err == nil {
 		cs := e.store.Claims(addr)
 		if len(cs) == 0 {
@@ -279,6 +354,17 @@ func (e *Engine) Status(now time.Time) string {
 	fmt.Fprintf(&b, "пакетов: %d, ответов с адресами: %d, под правила: %d, изменений: %d\n", s.Packets, s.Answers, s.Claimed, s.Changes)
 	fmt.Fprintf(&b, "пропущено — не DNS: %d, повреждённых: %d, прочих: %d, неверных имён: %d, сверх предела: %d; ошибок применения: %d\n",
 		s.NotDNS, s.Malformed, s.Skipped, s.BadName, s.Dropped, s.ApplyErrors)
+	if e.exits != nil {
+		parts := make([]string, 0, len(e.cfg.Exits))
+		for _, x := range e.cfg.Exits {
+			dev := e.exits[x.Name]
+			if dev == "" {
+				dev = "нет живых туннелей"
+			}
+			parts = append(parts, x.Name+" → "+dev)
+		}
+		fmt.Fprintf(&b, "выходы: %s\n", strings.Join(parts, "; "))
+	}
 	if len(e.recent) == 0 {
 		b.WriteString("наблюдений пока нет\n")
 		return b.String()
