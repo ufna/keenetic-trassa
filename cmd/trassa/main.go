@@ -21,8 +21,9 @@ const usage = `trassa — гибкая маршрутизация для дом�
   trassa why <имя или адрес>                    решение и сведения из DNS у работающего демона
   trassa status                                 состояние демона
   trassa reload                                 перечитать правила без остановки
-  trassa run [-rules файл] [-only адрес]        запустить демон (режим наблюдения)
-  trassa cleanup                                снять правила перехвата DNS
+  trassa run [-rules файл] [-only адрес]        запустить демон в режиме наблюдения
+  trassa run -route [-source адрес]             запустить демон в режиме маршрутизации
+  trassa cleanup                                снять правила перехвата DNS и маршрутизации
 `
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

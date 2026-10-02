@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"trassa/internal/ctl"
 	"trassa/internal/engine"
+	"trassa/internal/exits"
 	"trassa/internal/nfq"
 	"trassa/internal/rules"
 )
@@ -24,7 +26,7 @@ func startDaemonStub(t *testing.T, rulesText string) (rulesPath string) {
 	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
 	sock := filepath.Join(t.TempDir(), "trassa.sock")
 	t.Setenv("TRASSA_SOCK", sock)
-	srv, err := ctl.Serve(sock, handler(eng, reloader(rulesPath, eng)))
+	srv, err := ctl.Serve(sock, handler(eng, reloader(rulesPath, eng, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,5 +269,94 @@ func TestPumpErrorsMustBeConsecutive(t *testing.T) {
 	q := &fakeQueue{script: script}
 	if err := pump(q, func([]byte) {}, func() {}, q.drained, quiet); err != nil {
 		t.Errorf("редкие сбои вперемешку с пакетами остановили цикл: %v", err)
+	}
+}
+
+func TestReloadRejectsUnknownInterface(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	validate := func(c *rules.Config) []rules.Problem {
+		for _, e := range c.Exits {
+			if e.Name == "ghost" {
+				return []rules.Problem{{Line: e.Line, Severity: rules.Error, Msg: "интерфейс Nope не существует на роутере"}}
+			}
+		}
+		return nil
+	}
+	reload := reloader(path, eng, validate)
+	if _, err := reload(); err != nil {
+		t.Fatalf("исправные правила отклонены: %v", err)
+	}
+	os.WriteFile(path, []byte(live+"exit ghost = Nope\n"), 0o644)
+	text, err := reload()
+	if err == nil || !strings.Contains(text, "строка 4: ошибка: интерфейс Nope не существует") || !strings.Contains(err.Error(), "оставлены прежние правила") {
+		t.Errorf("текст %q, ошибка %v", text, err)
+	}
+	if len(eng.Config().Exits) != 1 {
+		t.Error("правила с несуществующим интерфейсом применены")
+	}
+}
+
+func TestSaveState(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	state := filepath.Join(t.TempDir(), "trassa.state")
+	if err := saveState(state, eng); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(state); err != nil || len(b) != 0 {
+		t.Errorf("пустое состояние: %q, %v", b, err)
+	}
+	// Временных файлов рядом не остаётся.
+	if left, _ := filepath.Glob(state + ".*"); len(left) != 0 {
+		t.Errorf("остались временные файлы: %v", left)
+	}
+	if err := saveState(filepath.Join(t.TempDir(), "нет", "такого", "каталога"), eng); err == nil {
+		t.Error("запись в несуществующий каталог должна быть ошибкой")
+	}
+	var buf bytes.Buffer
+	if err := eng.SaveState(&buf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSameExits(t *testing.T) {
+	a := map[string]exits.Choice{"vpn": {Interface: "Wireguard2", System: "nwg2"}, "alt": {}}
+	b := map[string]exits.Choice{"vpn": {Interface: "Wireguard2", System: "nwg2"}, "alt": {}}
+	if !sameExits(a, b) {
+		t.Error("одинаковые состояния признаны разными")
+	}
+	b["alt"] = exits.Choice{Interface: "Wireguard0", System: "nwg0"}
+	if sameExits(a, b) {
+		t.Error("поднявшийся туннель не замечен")
+	}
+	if sameExits(a, map[string]exits.Choice{"vpn": a["vpn"]}) || sameExits(nil, a) {
+		t.Error("разный состав выходов признан одинаковым")
+	}
+}
+
+func TestRunRejectsBadRouteArguments(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cases := []struct {
+		args []string
+		msg  string
+	}{
+		{[]string{"run", "-rules", path, "-source", "192.168.1.94"}, "-source"},
+		{[]string{"run", "-rules", path, "-route", "-source", "не-адрес"}, "-source"},
+		{[]string{"run", "-rules", path, "-route", "-source", "fdbd::1"}, "-source"},
+	}
+	for _, c := range cases {
+		t.Setenv("TRASSA_SOCK", filepath.Join(t.TempDir(), "s.sock"))
+		if code, _, errOut := exec(c.args...); code != 2 || !strings.Contains(errOut, c.msg) {
+			t.Errorf("%v: код %d, stderr %q", c.args, code, errOut)
+		}
+	}
+	// Прошивка недоступна: выходы проверить нельзя, демон в режиме маршрутизации не запускается.
+	t.Setenv("TRASSA_SOCK", filepath.Join(t.TempDir(), "s.sock"))
+	code, _, errOut := exec("run", "-rules", path, "-route", "-rci", "http://127.0.0.1:1")
+	if code != 1 || !strings.Contains(errOut, "прошивка не отвечает") || !strings.Contains(errOut, "демон не запущен") {
+		t.Errorf("недоступная прошивка: код %d, stderr %q", code, errOut)
 	}
 }

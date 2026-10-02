@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/netip"
 	"os"
 	osexec "os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -21,17 +23,22 @@ import (
 	"trassa/internal/ctl"
 	"trassa/internal/dataplane"
 	"trassa/internal/engine"
+	"trassa/internal/exits"
 	"trassa/internal/nfq"
 	"trassa/internal/rules"
 )
 
 // reloader возвращает функцию, перечитывающую файл правил. При ошибках правила остаются прежними.
-func reloader(path string, eng *engine.Engine) func() (string, error) {
+// validate, если задана, проверяет выходы новых правил на роутере.
+func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []rules.Problem) func() (string, error) {
 	return func() (string, error) {
 		var readErr bytes.Buffer
 		cfg, ps, ok := load(path, &readErr)
 		if !ok {
 			return "", errors.New(strings.TrimSpace(readErr.String()) + "; оставлены прежние правила")
+		}
+		if validate != nil && !rules.HasErrors(ps) {
+			ps = append(ps, validate(cfg)...)
 		}
 		var b strings.Builder
 		printProblems(&b, ps)
@@ -42,6 +49,38 @@ func reloader(path string, eng *engine.Engine) func() (string, error) {
 		fmt.Fprintf(&b, "правила перечитаны: правил %d, выходов %d\n", len(cfg.Rules), len(cfg.Exits))
 		return b.String(), nil
 	}
+}
+
+// saveState записывает состояние во временный файл и подменяет им прежний: при сбое
+// посреди записи прежний файл остаётся целым.
+func saveState(path string, eng *engine.Engine) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	if err := eng.SaveState(f); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
+
+// sameExits сравнивает два состояния выходов.
+func sameExits(a, b map[string]exits.Choice) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
 }
 
 // handler исполняет команды, пришедшие по сокету управления.
@@ -167,9 +206,10 @@ func useLocalTime() {
 }
 
 func cmdCleanup() int {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dataplane.DNSTap{}.Remove(ctx, dataplane.Exec{})
+	dataplane.Teardown(ctx, dataplane.Exec{})
 	return 0
 }
 
@@ -181,6 +221,10 @@ func cmdRun(args []string, errw io.Writer) int {
 	lan := fs.String("lan", "br0", "")
 	queue := fs.Uint("queue", 5353, "")
 	only := fs.String("only", "", "")
+	route := fs.Bool("route", false, "")
+	source := fs.String("source", "", "")
+	statePath := fs.String("state", "/tmp/trassa.state", "")
+	rci := fs.String("rci", "http://127.0.0.1:79", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fmt.Fprint(errw, usage)
 		return 2
@@ -198,6 +242,15 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		tap.Only = a
 	}
+	var sourceAddr netip.Addr
+	if *source != "" {
+		a, err := netip.ParseAddr(*source)
+		if err != nil || !a.Is4() || !*route {
+			fmt.Fprintln(errw, "-source: нужен адрес IPv4, и только вместе с -route")
+			return 2
+		}
+		sourceAddr = a
+	}
 	useLocalTime()
 	logger := log.New(errw, "", log.LstdFlags)
 
@@ -210,8 +263,66 @@ func cmdRun(args []string, errw io.Writer) int {
 		fmt.Fprintln(errw, "в файле правил ошибки, демон не запущен")
 		return 1
 	}
-	eng := engine.New(cfg, nil, logger.Printf, time.Now())
-	reload := reloader(*rulesPath, eng)
+	var router *dataplane.Router
+	var sink engine.Sink
+	var validate func(*rules.Config) []rules.Problem
+	var src exits.Source
+	mode := "режим наблюдения"
+	if *route {
+		mode = "режим маршрутизации"
+		if sourceAddr.IsValid() {
+			mode += " для " + sourceAddr.String()
+		}
+		src = exits.RCI{Base: *rci, Client: &http.Client{Timeout: 3 * time.Second}}
+		validate = func(c *rules.Config) []rules.Problem {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return exits.Validate(ctx, c, src)
+		}
+		if ps := validate(cfg); rules.HasErrors(ps) {
+			printProblems(errw, ps)
+			fmt.Fprintln(errw, "выходы не прошли проверку на роутере, демон не запущен")
+			return 1
+		}
+		router = dataplane.NewRouter(dataplane.Exec{}, *lan, sourceAddr)
+		sink = router
+	}
+	eng := engine.New(cfg, sink, logger.Printf, time.Now())
+	reload := reloader(*rulesPath, eng, validate)
+
+	// refreshExits спрашивает прошивку о туннелях и, если что-то изменилось, меняет маршруты.
+	var current map[string]exits.Choice
+	refreshExits := func() {
+		if router == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		active, err := exits.Active(ctx, eng.Config(), src)
+		if err != nil {
+			logger.Printf("состояние туннелей неизвестно, маршруты не меняются: %v", err)
+			return
+		}
+		if sameExits(active, current) {
+			return
+		}
+		systems, names := map[string]string{}, map[string]string{}
+		for exit, c := range active {
+			systems[exit], names[exit] = c.System, c.Interface
+			if old, known := current[exit]; !known || old != c {
+				if c.System == "" {
+					logger.Printf("выход %s: живых туннелей нет", exit)
+				} else {
+					logger.Printf("выход %s: идёт через %s", exit, c.Interface)
+				}
+			}
+		}
+		current = active
+		eng.SetExits(names)
+		if err := router.SetExits(systems); err != nil {
+			logger.Printf("маршруты выходов: %v", err)
+		}
+	}
 
 	// Сокет первым: он же проверяет, что другой экземпляр не запущен.
 	srv, err := ctl.Serve(sockPath(), handler(eng, reload))
@@ -220,6 +331,23 @@ func cmdRun(args []string, errw io.Writer) int {
 		return 1
 	}
 	defer srv.Close()
+
+	if router != nil {
+		refreshExits()
+		if f, err := os.Open(*statePath); err == nil {
+			n := eng.LoadState(f, time.Now())
+			f.Close()
+			logger.Printf("из сохранённого состояния восстановлено претензий: %d", n)
+		}
+		if err := eng.Resync(); err != nil {
+			// Строка об ошибке уже в журнале. Без списков и маршрутов режим маршрутизации не работает.
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			dataplane.Teardown(ctx, dataplane.Exec{})
+			cancel()
+			fmt.Fprintln(errw, "списки и маршруты не построены, демон не запущен")
+			return 1
+		}
+	}
 
 	q, err := nfq.Open(tap.Queue)
 	if err != nil {
@@ -264,11 +392,16 @@ func cmdRun(args []string, errw io.Writer) int {
 	if *pidPath != "" {
 		os.WriteFile(*pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 	}
-	logger.Printf("trassa запущен: режим наблюдения, правил %d, очередь %d", len(cfg.Rules), tap.Queue)
+	logger.Printf("trassa запущен: %s, правил %d, очередь %d", mode, len(cfg.Rules), tap.Queue)
 
 	// shutdown снимает правило, дожидается цикла приёма и закрывает очередь — в этом порядке:
 	// пакеты не должны ждать вердикта, которого не будет.
 	shutdown := func() {
+		if router != nil {
+			if err := saveState(*statePath, eng); err != nil {
+				logger.Printf("состояние не сохранено: %v", err)
+			}
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		tap.Remove(ctx, runner)
 		cancel()
@@ -279,15 +412,37 @@ func cmdRun(args []string, errw io.Writer) int {
 		case <-time.After(3 * time.Second):
 		}
 		q.Close()
+		if router != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			dataplane.Teardown(ctx, runner)
+			cancel()
+		}
 		if *pidPath != "" {
 			os.Remove(*pidPath)
 		}
 	}
 
-	sig := make(chan os.Signal, 4)
-	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1)
+	// checkRoutes восстанавливает списки и маршруты, если прошивка их стёрла.
+	checkRoutes := func() {
+		if router == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := router.Check(ctx); err != nil {
+			logger.Printf("%v — строю заново", err)
+			eng.Resync()
+		}
+	}
+
+	sig := make(chan os.Signal, 8)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGUSR1, syscall.SIGUSR2)
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
+	exitsTick := time.NewTicker(5 * time.Second)
+	defer exitsTick.Stop()
+	stateTick := time.NewTicker(5 * time.Minute)
+	defer stateTick.Stop()
 	for {
 		select {
 		case err := <-failed:
@@ -297,15 +452,28 @@ func cmdRun(args []string, errw io.Writer) int {
 		case <-tick.C:
 			eng.Tick(time.Now())
 			ensure()
+			checkRoutes()
+		case <-exitsTick.C:
+			refreshExits()
+		case <-stateTick.C:
+			if router != nil {
+				if err := saveState(*statePath, eng); err != nil {
+					logger.Printf("состояние не сохранено: %v", err)
+				}
+			}
 		case s := <-sig:
 			switch s {
 			case syscall.SIGUSR1:
 				ensure()
+				checkRoutes()
+			case syscall.SIGUSR2:
+				refreshExits()
 			case syscall.SIGHUP:
 				if text, err := reload(); err != nil {
 					logger.Printf("перечитывание правил: %v\n%s", err, text)
 				} else {
 					logger.Print(strings.TrimSpace(text))
+					refreshExits()
 				}
 			default:
 				shutdown()
