@@ -108,6 +108,9 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	c := Claim{Names: names, Index: d.Index, Action: d.Action, Expires: now.Add(ttl)}
 	var out []Change
 	for _, a := range addrs {
+		if !usable(a) {
+			continue
+		}
 		old := s.Effective(a)
 		s.add(a, c)
 		out = appendChange(out, a, old, s.Effective(a))
@@ -215,6 +218,17 @@ func sortChanges(cs []Change) {
 	sort.Slice(cs, func(i, j int) bool { return cs[i].Addr.Less(cs[j].Addr) })
 }
 
+// usable сообщает, что адрес может быть назначением обычного трафика. Нулевой адрес (им
+// отвечают блокирующие DNS-серверы) список адресов ядра не принимает вовсе, и одна такая
+// запись срывала бы всё перестроение списков; остальные служебные адреса маршрутизировать незачем.
+func usable(a netip.Addr) bool {
+	if !a.Is4() {
+		return false
+	}
+	b := a.As4()
+	return b[0] != 0 && b[0] != 127 && b[0] < 224 && !(b[0] == 169 && b[1] == 254)
+}
+
 // Entry — адрес и действие, с которым он должен быть в динамическом списке.
 type Entry struct {
 	Addr   netip.Addr
@@ -267,7 +281,7 @@ func (s *Store) Load(r io.Reader, now time.Time) int {
 			continue
 		}
 		a, err := netip.ParseAddr(v.Addr)
-		if err != nil || !a.Is4() {
+		if err != nil || !usable(a) {
 			continue
 		}
 		expires := time.Unix(v.Expires, 0)

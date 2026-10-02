@@ -116,6 +116,7 @@ func TestParseErrors(t *testing.T) {
 		{"exit vpn =\ndefault direct\n", 1, "пустое имя интерфейса"},
 		{"exit Bad Name = W\ndefault direct\n", 1, "имя выхода"},
 		{"default direct\n10.0.0.0/33 -> direct\n", 2, "неверная запись"},
+		{"default direct\n0.0.0.0/0 -> direct\n", 2, "есть default"},
 		{"default direct\n!10.0.0.0/8 -> direct\n", 2, "отрицание адресов"},
 		{"default direct\n2001:db8::1 -> direct\n", 2, "IPv6"},
 		{"default direct\n1.2.3 -> direct\n", 2, "похоже на адрес"},

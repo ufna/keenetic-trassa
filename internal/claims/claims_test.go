@@ -310,3 +310,28 @@ func TestLoadIgnoresGarbage(t *testing.T) {
 		t.Errorf("срок не ограничен: %+v", cs)
 	}
 }
+
+func TestUnusableAddressesAreIgnored(t *testing.T) {
+	// Блокирующие DNS-серверы отвечают 0.0.0.0; список адресов ядра такой адрес не принимает,
+	// и одна такая запись ломала бы всё перестроение списков.
+	bad := []string{"0.0.0.0", "0.1.2.3", "127.0.0.1", "169.254.1.1", "224.0.0.1", "240.0.0.1", "255.255.255.255"}
+	var addrs []netip.Addr
+	for _, a := range bad {
+		addrs = append(addrs, netip.MustParseAddr(a))
+	}
+	addrs = append(addrs, ip1)
+	s := New(config(t, src), hour)
+	wantChanges(t, s.Observe(t0, []string{"video.example"}, addrs, hour), "1.1.1.1 - => vpn strict")
+	if s.Len() != 1 || s.Total() != 1 {
+		t.Errorf("адресов %d, претензий %d — служебные адреса попали в память", s.Len(), s.Total())
+	}
+	far := fmt.Sprint(t0.Add(10 * hour).Unix())
+	var file strings.Builder
+	for _, a := range append(bad, "2.2.2.2") {
+		file.WriteString(`{"a":"` + a + `","n":["video.example"],"e":` + far + "}\n")
+	}
+	fresh := New(config(t, src), hour)
+	if n := fresh.Load(strings.NewReader(file.String()), t0); n != 1 || fresh.Len() != 1 {
+		t.Errorf("из файла принято %d претензий, адресов %d; ожидалась одна — 2.2.2.2", n, fresh.Len())
+	}
+}

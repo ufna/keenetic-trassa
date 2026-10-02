@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -128,5 +129,21 @@ func TestExpectationSubjectMustBeValid(t *testing.T) {
 	ps = problemsOf(t, head+"test 2001:db8::1 = direct\n")
 	if !hasProblem(ps, Error, 3, "IPv6") {
 		t.Errorf("IPv6-адрес в test не отклонён: %v", ps)
+	}
+}
+
+func TestTooManyExits(t *testing.T) {
+	var b strings.Builder
+	for i := 0; i < MaxExits+1; i++ {
+		fmt.Fprintf(&b, "exit e%d = W\n", i)
+	}
+	b.WriteString("default direct\n")
+	ps := problemsOf(t, b.String())
+	if !hasProblem(ps, Error, MaxExits+1, "не больше 29") {
+		t.Errorf("тридцатый выход не отклонён: %v", ps)
+	}
+	ok := strings.Replace(b.String(), fmt.Sprintf("exit e%d = W\n", MaxExits), "", 1)
+	if ps := problemsOf(t, ok); len(ps) != 0 {
+		t.Errorf("29 выходов дали проблемы: %v", ps)
 	}
 }

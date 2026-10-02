@@ -16,7 +16,6 @@ const (
 	markPrefix = "fwmark 0x5452" // так метки trassa выглядят в выводе ip rule
 	tableBase  = 540
 	prefBase   = 200
-	maxExits   = 29 // таблицы 540–599
 	routeChain = "TRASSA"
 	setPrefix  = "trassa_"
 )
@@ -54,8 +53,8 @@ type Layout struct {
 }
 
 func NewLayout(cfg *rules.Config) (*Layout, error) {
-	if len(cfg.Exits) > maxExits {
-		return nil, fmt.Errorf("выходов %d, поддерживается не больше %d", len(cfg.Exits), maxExits)
+	if len(cfg.Exits) > rules.MaxExits {
+		return nil, fmt.Errorf("выходов %d, поддерживается не больше %d", len(cfg.Exits), rules.MaxExits)
 	}
 	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, exits: map[string]int{}}
 	for i, e := range cfg.Exits {
@@ -64,23 +63,35 @@ func NewLayout(cfg *rules.Config) (*Layout, error) {
 	}
 	for i, r := range cfg.Rules {
 		if len(r.Nets) > 0 {
-			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: l.Slot(r.Action)})
+			slot, ok := l.Slot(r.Action)
+			if !ok {
+				return nil, fmt.Errorf("строка %d: выход %q не объявлен", r.Line, r.Action.Exit)
+			}
+			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot})
 		}
 	}
-	l.Default = l.Slot(cfg.Default)
+	def, ok := l.Slot(cfg.Default)
+	if !ok {
+		return nil, fmt.Errorf("default: выход %q не объявлен", cfg.Default.Exit)
+	}
+	l.Default = def
 	return l, nil
 }
 
-// Slot возвращает пару для действия.
-func (l *Layout) Slot(a rules.Action) Slot {
+// Slot возвращает пару для действия; false — такого выхода в раскладке нет.
+func (l *Layout) Slot(a rules.Action) (Slot, bool) {
 	if a.Exit == rules.Direct {
-		return l.Slots[0]
+		return l.Slots[0], true
 	}
-	i := 1 + 2*l.exits[a.Exit]
+	x, ok := l.exits[a.Exit]
+	if !ok {
+		return Slot{}, false
+	}
+	i := 1 + 2*x
 	if a.Strict {
 		i++
 	}
-	return l.Slots[i]
+	return l.Slots[i], true
 }
 
 func (l *Layout) hasSet(name string) bool {
@@ -110,7 +121,10 @@ func (l *Layout) setsScript(entries []claims.Entry) string {
 		}
 	}
 	for _, e := range entries {
-		fmt.Fprintf(&b, "add %s %s -exist\n", l.Slot(e.Action).Set(), e.Addr)
+		// Снимок сделан по тем же правилам, что и раскладка; запись с неизвестным выходом пропускается.
+		if slot, ok := l.Slot(e.Action); ok {
+			fmt.Fprintf(&b, "add %s %s -exist\n", slot.Set(), e.Addr)
+		}
 	}
 	return b.String()
 }
@@ -127,17 +141,21 @@ func (l *Layout) chainScript() string {
 	// Установленное соединение идёт прежним путём.
 	rule("-m connmark --mark 0x%x/%s -j CONNMARK --restore-mark", markBase, markMask)
 	rule("-m mark ! --mark 0x0 -j RETURN")
+	// Метку получает только первый пакет соединения. Уже идущее соединение без метки не
+	// перекидывается на другой путь посреди передачи, а ответы на входящие соединения
+	// не принимаются за исходящие.
+	const fresh = "-m mark --mark 0x0 -m conntrack --ctstate NEW"
 	for _, s := range l.Slots {
-		rule("-m mark --mark 0x0 -m set --match-set %s dst -j MARK --set-mark %s", s.Set(), s.Mark())
+		rule(fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Set(), s.Mark())
 	}
 	for _, s := range l.Static {
-		rule("-m mark --mark 0x0 -m set --match-set %s dst -j MARK --set-mark %s", s.Name, s.Slot.Mark())
+		rule(fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Name, s.Slot.Mark())
 	}
 	if l.Default.Index != 0 {
 		for _, n := range localNets {
 			rule("-m mark --mark 0x0 -d %s -j RETURN", n)
 		}
-		rule("-m mark --mark 0x0 -j MARK --set-mark %s", l.Default.Mark())
+		rule(fresh+" -j MARK --set-mark %s", l.Default.Mark())
 	}
 	rule("-m mark --mark 0x%x/%s -j CONNMARK --save-mark", markBase, markMask)
 	b.WriteString("COMMIT\n")

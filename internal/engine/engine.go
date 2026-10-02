@@ -68,6 +68,7 @@ type Engine struct {
 	stats   Stats
 	recent  []observation
 	exits   map[string]string // выход → имя живого интерфейса; nil — сведений нет
+	dirty   bool              // списки в ядре могли разойтись с памятью: нужно перестроение
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
@@ -158,12 +159,21 @@ func (e *Engine) Tick(now time.Time) {
 
 // Reload переводит демон на новые правила, не теряя накопленных наблюдений.
 // Списки строятся заново целиком: при смене правил номера пар «выход + режим» сдвигаются.
-func (e *Engine) Reload(cfg *rules.Config) {
+// Новые правила действуют и тогда, когда построить списки не удалось: возвращается ошибка,
+// а построение повторяется, пока не получится (см. NeedsResync).
+func (e *Engine) Reload(cfg *rules.Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
 	e.note(e.store.SetConfig(cfg), "правила изменены")
-	e.rebuild()
+	return e.rebuild()
+}
+
+// NeedsResync сообщает, что последнее обращение к спискам не удалось и их нужно построить заново.
+func (e *Engine) NeedsResync() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dirty
 }
 
 // Resync строит всё заново по текущим правилам и памяти: при старте и после того,
@@ -179,6 +189,7 @@ func (e *Engine) rebuild() error {
 		return nil
 	}
 	err := e.sink.Rebuild(e.cfg, e.store.Entries())
+	e.dirty = err != nil
 	if err != nil {
 		e.stats.ApplyErrors++
 		e.logf("не удалось построить списки и маршруты: %v", err)
@@ -240,6 +251,9 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 		return
 	}
 	if err := e.sink.Apply(changes); err != nil {
+		// Память уже учла изменение, а список в ядре — нет: повторного изменения для этого
+		// адреса не будет, поэтому расхождение устраняет только перестроение.
+		e.dirty = true
 		e.stats.ApplyErrors++
 		e.logf("не удалось применить изменения: %v", err)
 	}

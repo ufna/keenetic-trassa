@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,6 +55,9 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	defer r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	defer cancel()
+	// Пока построение не завершилось успехом, раскладки нет: Apply по прежней раскладке
+	// положил бы адрес в список чужого выхода.
+	r.layout = nil
 	l, err := NewLayout(cfg)
 	if err != nil {
 		return err
@@ -64,16 +68,17 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	if _, err := r.run.RunInput(ctx, l.chainScript(), "iptables-restore", "-n"); err != nil {
 		return err
 	}
-	r.layout = l
+	// Сначала правила и маршруты, потом прыжок: метки начинают ставиться, когда для них уже есть путь.
+	if err := r.syncRules(ctx, l); err != nil {
+		return err
+	}
+	if err := r.syncRoutes(ctx, l); err != nil {
+		return err
+	}
 	if err := r.syncJump(ctx); err != nil {
 		return err
 	}
-	if err := r.syncRules(ctx); err != nil {
-		return err
-	}
-	if err := r.syncRoutes(ctx); err != nil {
-		return err
-	}
+	r.layout = l
 	// Лишние списки удаляются последними: до замены цепочки на них ещё ссылались правила.
 	names, _ := r.run.Run(ctx, "ipset", "list", "-n")
 	for _, name := range strings.Fields(names) {
@@ -113,13 +118,13 @@ func (r *Router) syncJump(ctx context.Context) error {
 }
 
 // syncRules добавляет недостающие правила маршрутизации и удаляет свои лишние.
-func (r *Router) syncRules(ctx context.Context) error {
+func (r *Router) syncRules(ctx context.Context, l *Layout) error {
 	out, err := r.run.Run(ctx, "ip", "rule", "list")
 	if err != nil {
 		return err
 	}
 	want := map[string]bool{}
-	for _, s := range r.layout.Slots[1:] {
+	for _, s := range l.Slots[1:] {
 		want[s.Pref()] = true
 		if strings.Contains(out, "fwmark "+s.Mark()+" lookup "+s.Table()) {
 			continue
@@ -130,11 +135,19 @@ func (r *Router) syncRules(ctx context.Context) error {
 	}
 	for _, own := range ownRules(out) {
 		if !want[own.pref] {
-			r.run.Run(ctx, "ip", "rule", "del", "pref", own.pref)
-			r.run.Run(ctx, "ip", "route", "flush", "table", own.table)
+			dropRule(ctx, r.run, own)
 		}
 	}
 	return nil
+}
+
+// dropRule удаляет своё правило маршрутизации и очищает его таблицу — но только если это
+// таблица из диапазона trassa: чужую таблицу не трогаем, что бы ни стояло в правиле.
+func dropRule(ctx context.Context, run Runner, own ownRule) {
+	run.Run(ctx, "ip", "rule", "del", "pref", own.pref)
+	if t, err := strconv.Atoi(own.table); err == nil && t > tableBase && t < tableBase+2*rules.MaxExits+2 {
+		run.Run(ctx, "ip", "route", "flush", "table", own.table)
+	}
 }
 
 type ownRule struct{ pref, table string }
@@ -156,9 +169,21 @@ func ownRules(list string) []ownRule {
 }
 
 // syncRoutes приводит маршрут в таблице каждой пары к состоянию её выхода.
-func (r *Router) syncRoutes(ctx context.Context) error {
+func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	var first error
-	for _, s := range r.layout.Slots[1:] {
+	note := func(err error) {
+		if err != nil && first == nil {
+			first = err
+		}
+	}
+	for _, s := range l.Slots[1:] {
+		if s.Strict {
+			// Постоянная «чёрная дыра» с низким приоритетом: когда интерфейс туннеля выключают,
+			// ядро само удаляет маршрут через него, и без неё таблица на несколько секунд
+			// оставалась бы пустой — трафик уходил бы через провайдера.
+			_, err := r.run.Run(ctx, "ip", "route", "replace", "blackhole", "default", "table", s.Table(), "metric", "1000")
+			note(err)
+		}
 		var err error
 		switch dev := r.active[s.Exit]; {
 		case dev != "":
@@ -170,9 +195,7 @@ func (r *Router) syncRoutes(ctx context.Context) error {
 			// Таблица пуста — пакет идёт по основной, то есть через провайдера.
 			_, err = r.run.Run(ctx, "ip", "route", "flush", "table", s.Table())
 		}
-		if err != nil && first == nil {
-			first = err
-		}
+		note(err)
 	}
 	return first
 }
@@ -185,12 +208,24 @@ func (r *Router) Apply(changes []claims.Change) error {
 		return errors.New("списки адресов ещё не построены")
 	}
 	var b strings.Builder
+	line := func(op string, a rules.Action, addr netip.Addr) error {
+		slot, ok := r.layout.Slot(a)
+		if !ok {
+			return fmt.Errorf("выхода %q нет в построенной раскладке", a.Exit)
+		}
+		fmt.Fprintf(&b, "%s %s %s -exist\n", op, slot.Set(), addr)
+		return nil
+	}
 	for _, c := range changes {
 		if c.Old != nil {
-			fmt.Fprintf(&b, "del %s %s -exist\n", r.layout.Slot(*c.Old).Set(), c.Addr)
+			if err := line("del", *c.Old, c.Addr); err != nil {
+				return err
+			}
 		}
 		if c.New != nil {
-			fmt.Fprintf(&b, "add %s %s -exist\n", r.layout.Slot(*c.New).Set(), c.Addr)
+			if err := line("add", *c.New, c.Addr); err != nil {
+				return err
+			}
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), applyTimeout)
@@ -209,17 +244,27 @@ func (r *Router) SetExits(active map[string]string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	defer cancel()
-	return r.syncRoutes(ctx)
+	return r.syncRoutes(ctx, r.layout)
 }
 
-// Check сообщает, на месте ли прыжок в цепочку. Прошивка переписывает таблицу целиком,
-// поэтому отсутствие прыжка означает, что нет и самой цепочки.
-func (r *Router) Check(ctx context.Context) error {
+// Reconcile сверяет построенное с ядром. Прошивка переписывает таблицу mangle целиком, поэтому
+// отсутствие прыжка означает, что нет и цепочки: возвращается ErrMissing, и вызывающий строит
+// всё заново. Правила и маршруты ставятся повторно при каждой сверке: ядро удаляет маршрут,
+// когда интерфейс выключают, и узнать об этом иначе неоткуда.
+func (r *Router) Reconcile(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.layout == nil {
+		return ErrMissing
+	}
 	args, _ := r.jump()
 	if _, err := r.run.Run(ctx, "iptables", mangle(append([]string{"-C", "PREROUTING"}, args...)...)...); err != nil {
 		return ErrMissing
 	}
-	return nil
+	if err := r.syncRules(ctx, r.layout); err != nil {
+		return err
+	}
+	return r.syncRoutes(ctx, r.layout)
 }
 
 // Teardown удаляет всё, что trassa построил для маршрутизации, не зная раскладки:
@@ -236,8 +281,7 @@ func Teardown(ctx context.Context, run Runner) {
 	run.Run(ctx, "iptables", mangle("-X", routeChain)...)
 	list, _ := run.Run(ctx, "ip", "rule", "list")
 	for _, own := range ownRules(list) {
-		run.Run(ctx, "ip", "rule", "del", "pref", own.pref)
-		run.Run(ctx, "ip", "route", "flush", "table", own.table)
+		dropRule(ctx, run, own)
 	}
 	names, _ := run.Run(ctx, "ipset", "list", "-n")
 	for _, name := range strings.Fields(names) {

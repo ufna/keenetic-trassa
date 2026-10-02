@@ -18,6 +18,10 @@ func Load(src string, read ReadFile) (*Config, []Problem) {
 // Check проверяет ожидания test и ищет подозрительные правила.
 func Check(c *Config) []Problem {
 	var ps []Problem
+	if len(c.Exits) > MaxExits {
+		ps = append(ps, Problem{c.Exits[MaxExits].Line, Error,
+			fmt.Sprintf("выходов %d: поддерживается не больше %d", len(c.Exits), MaxExits)})
+	}
 	if c.Default.Strict {
 		ps = append(ps, Problem{c.DefaultLine, Warning,
 			"strict в default: при падении всех туннелей выхода пропадёт весь интернет, кроме правил direct"})

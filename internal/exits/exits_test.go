@@ -108,7 +108,7 @@ func TestValidate(t *testing.T) {
 func TestActive(t *testing.T) {
 	src := firmware(t)
 	cfg := config(t, "exit first = Wireguard0, Wireguard3, Wireguard2\nexit dead = Wireguard0\nexit flaky = Broken, Wireguard2\ndefault direct\n")
-	got, err := Active(context.Background(), cfg, src)
+	got, err := Active(context.Background(), cfg, src, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,28 @@ func TestActive(t *testing.T) {
 		t.Errorf("flaky: %+v — сбой одного интерфейса не должен мешать выбрать следующий", got["flaky"])
 	}
 	// Прошивка не ответила ни разу: это ошибка, а не «все туннели упали».
-	if _, err := Active(context.Background(), cfg, RCI{Base: "http://127.0.0.1:1"}); err == nil {
+	if _, err := Active(context.Background(), cfg, RCI{Base: "http://127.0.0.1:1"}, nil); err == nil {
 		t.Error("недоступная прошивка должна быть ошибкой")
+	}
+}
+
+func TestActiveKeepsPreviousWhenFirmwareSilent(t *testing.T) {
+	src := firmware(t)
+	// О первом по порядку интерфейсе прошивка не ответила, остальные выключены.
+	cfg := config(t, "exit vpn = Broken, Wireguard0\nexit calm = Wireguard0\ndefault direct\n")
+	prev := map[string]Choice{"vpn": {"Broken", "nwg9"}, "calm": {"Wireguard0", "nwg0"}}
+	got, err := Active(context.Background(), cfg, src, prev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["vpn"] != prev["vpn"] {
+		t.Errorf("vpn: %+v — молчание прошивки принято за падение туннеля, ожидался прежний выбор", got["vpn"])
+	}
+	if got["calm"] != (Choice{}) {
+		t.Errorf("calm: %+v — прошивка ответила, что туннель выключен: выбор должен сняться", got["calm"])
+	}
+	// Прежнего выбора нет — придумывать его не из чего.
+	if got, _ := Active(context.Background(), cfg, src, nil); got["vpn"] != (Choice{}) {
+		t.Errorf("vpn без прежнего выбора: %+v", got["vpn"])
 	}
 }

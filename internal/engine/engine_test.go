@@ -480,3 +480,31 @@ func TestStoreLimitIsReported(t *testing.T) {
 		t.Errorf("состояние:\n%s", e.Status(t0))
 	}
 }
+
+func TestFailuresAskForResync(t *testing.T) {
+	sink := &fakeSink{}
+	e, _ := newEngine(t, sink)
+	if e.NeedsResync() {
+		t.Error("исправному демону перестроение не нужно")
+	}
+	sink.fail = true
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	if !e.NeedsResync() {
+		t.Error("после сбоя Apply списки расходятся с памятью: нужно перестроение")
+	}
+	if err := e.Resync(); err == nil || !e.NeedsResync() {
+		t.Errorf("неудачное перестроение: ошибка %v, флаг %v", err, e.NeedsResync())
+	}
+	sink.fail = false
+	if err := e.Resync(); err != nil || e.NeedsResync() {
+		t.Errorf("удачное перестроение: ошибка %v, флаг %v", err, e.NeedsResync())
+	}
+	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict" {
+		t.Errorf("после перестроения адрес, потерянный при сбое, не вернулся: %q", sink.rebuilt)
+	}
+
+	sink.fail = true
+	if err := e.Reload(config(t, "exit vpn = W\ndefault direct\nvideo.example -> vpn\n")); err == nil || !e.NeedsResync() {
+		t.Errorf("Reload должен сообщить о сбое построения: ошибка %v, флаг %v", err, e.NeedsResync())
+	}
+}

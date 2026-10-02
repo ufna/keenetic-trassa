@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"strings"
 	"testing"
+	"time"
 
 	"trassa/internal/claims"
 	"trassa/internal/rules"
@@ -101,24 +102,27 @@ func TestRebuildFromScratch(t *testing.T) {
 			"-A TRASSA -m mark ! --mark 0x0 -j RETURN\n" +
 			"-A TRASSA -m connmark --mark 0x54520000/0xffff0000 -j CONNMARK --restore-mark\n" +
 			"-A TRASSA -m mark ! --mark 0x0 -j RETURN\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_d0 dst -j MARK --set-mark 0x54520000\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_d1 dst -j MARK --set-mark 0x54520001\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_d2 dst -j MARK --set-mark 0x54520002\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_d3 dst -j MARK --set-mark 0x54520003\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_d4 dst -j MARK --set-mark 0x54520004\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_s1 dst -j MARK --set-mark 0x54520002\n" +
-			"-A TRASSA -m mark --mark 0x0 -m set --match-set trassa_s3 dst -j MARK --set-mark 0x54520000\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d0 dst -j MARK --set-mark 0x54520000\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d1 dst -j MARK --set-mark 0x54520001\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d2 dst -j MARK --set-mark 0x54520002\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d3 dst -j MARK --set-mark 0x54520003\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d4 dst -j MARK --set-mark 0x54520004\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s1 dst -j MARK --set-mark 0x54520002\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s3 dst -j MARK --set-mark 0x54520000\n" +
 			"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\n" +
 			"COMMIT\n",
-		"iptables -w -t mangle -A PREROUTING -s 192.168.1.94 -i br0 -j TRASSA",
 		"ip rule add fwmark 0x54520001/0xffffffff lookup 541 pref 201",
 		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
 		"ip rule add fwmark 0x54520003/0xffffffff lookup 543 pref 203",
 		"ip rule add fwmark 0x54520004/0xffffffff lookup 544 pref 204",
 		"ip route replace default dev nwg2 table 541",
+		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace default dev nwg2 table 542",
 		"ip route flush table 543",
+		"ip route replace blackhole default table 544 metric 1000",
 		"ip route replace blackhole default table 544",
+		// Прыжок — последним: метки начинают ставиться, когда правила и маршруты уже есть.
+		"iptables -w -t mangle -A PREROUTING -s 192.168.1.94 -i br0 -j TRASSA",
 	})
 }
 
@@ -161,7 +165,7 @@ func TestDefaultThroughTunnelSkipsLocalNetworks(t *testing.T) {
 		"-A TRASSA -m mark --mark 0x0 -d 172.16.0.0/12 -j RETURN\n" +
 		"-A TRASSA -m mark --mark 0x0 -d 192.168.0.0/16 -j RETURN\n" +
 		"-A TRASSA -m mark --mark 0x0 -d 224.0.0.0/3 -j RETURN\n" +
-		"-A TRASSA -m mark --mark 0x0 -j MARK --set-mark 0x54520001\n" +
+		"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -j MARK --set-mark 0x54520001\n" +
 		"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\nCOMMIT\n"
 	if !strings.HasSuffix(tail, want) {
 		t.Errorf("хвост цепочки:\n%s\nожидалось окончание:\n%s", tail, want)
@@ -246,34 +250,44 @@ func TestRoutesFollowExits(t *testing.T) {
 
 	run.calls = nil
 	r.SetExits(map[string]string{"vpn": ""}) // все туннели упали
-	equal(t, run.calls, []string{"ip route flush table 541", "ip route replace blackhole default table 542"})
+	equal(t, run.calls, []string{
+		"ip route flush table 541",
+		"ip route replace blackhole default table 542 metric 1000",
+		"ip route replace blackhole default table 542",
+	})
 
 	run.calls = nil
 	r.SetExits(map[string]string{"vpn": "nwg0"}) // поднялся запасной
-	equal(t, run.calls, []string{"ip route replace default dev nwg0 table 541", "ip route replace default dev nwg0 table 542"})
+	equal(t, run.calls, []string{
+		"ip route replace default dev nwg0 table 541",
+		"ip route replace blackhole default table 542 metric 1000",
+		"ip route replace default dev nwg0 table 542",
+	})
 }
 
 func TestCheckDetectsMissingJump(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.MustParseAddr("192.168.1.94"))
-	if err := r.Check(context.Background()); err != nil {
-		t.Errorf("прыжок на месте, а Check вернул %v", err)
+	if err := r.Reconcile(context.Background()); !errors.Is(err, ErrMissing) {
+		t.Errorf("до построения сверять нечего: %v", err)
 	}
-	equal(t, run.calls, []string{"iptables -w -t mangle -C PREROUTING -s 192.168.1.94 -i br0 -j TRASSA"})
+	r.SetExits(map[string]string{"vpn": "nwg2"})
+	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
+	run.calls = nil
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Errorf("прыжок на месте, а Reconcile вернул %v", err)
+	}
+	// Сверка заново ставит правила и маршруты: ядро удаляет маршрут, когда интерфейс выключают.
+	equal(t, run.changed(), []string{
+		"ip rule add fwmark 0x54520001/0xffffffff lookup 541 pref 201",
+		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
+		"ip route replace default dev nwg2 table 541",
+		"ip route replace blackhole default table 542 metric 1000",
+		"ip route replace default dev nwg2 table 542",
+	})
 	run.fail = []string{" -C "}
-	if err := r.Check(context.Background()); err == nil {
-		t.Error("пропавший прыжок не замечен")
-	}
-}
-
-func TestTooManyExits(t *testing.T) {
-	var b strings.Builder
-	for i := 0; i < 30; i++ {
-		b.WriteString("exit e" + string(rune('a'+i%26)) + string(rune('a'+i/26)) + " = W\n")
-	}
-	b.WriteString("default direct\n")
-	if err := NewRouter(&scripted{}, "br0", netip.Addr{}).Rebuild(cfgOf(t, b.String()), nil); err == nil {
-		t.Error("тридцать выходов должны быть отклонены")
+	if err := r.Reconcile(context.Background()); !errors.Is(err, ErrMissing) {
+		t.Errorf("пропавший прыжок не замечен: %v", err)
 	}
 }
 
@@ -295,4 +309,66 @@ func TestTeardown(t *testing.T) {
 		"ipset destroy trassa_d0",
 		"ipset destroy trassa_s3",
 	})
+}
+
+func TestFailedRebuildLeavesNoStaleLayout(t *testing.T) {
+	run := &scripted{}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil); err != nil {
+		t.Fatal(err)
+	}
+	// Новые правила с другим составом выходов; замена цепочки не удалась.
+	run.fail = []string{"iptables-restore"}
+	if err := r.Rebuild(cfgOf(t, twoExits), nil); err == nil {
+		t.Fatal("сбой iptables-restore должен вернуться ошибкой")
+	}
+	// Прежняя раскладка больше не годится: по ней адрес попал бы в список чужого выхода.
+	alt := rules.Action{Exit: "alt", Strict: true}
+	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &alt}}); err == nil {
+		t.Error("после неудачного построения изменения должны отклоняться, пока построение не повторят")
+	}
+	run.fail = nil
+	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &alt}}); err != nil {
+		t.Errorf("после удачного построения: %v", err)
+	}
+}
+
+func TestApplyRejectsUnknownExit(t *testing.T) {
+	run := &scripted{}
+	r := NewRouter(run, "br0", netip.Addr{})
+	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
+	run.calls = nil
+	ghost := rules.Action{Exit: "ghost"}
+	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &ghost}}); err == nil {
+		t.Error("действие с выходом, которого нет в раскладке, должно быть ошибкой")
+	}
+	if len(run.calls) != 0 {
+		t.Errorf("при неизвестном выходе списки не трогаются: %v", run.calls)
+	}
+}
+
+func TestTeardownFlushesOnlyOwnTables(t *testing.T) {
+	// Строка с меткой trassa, но чужой таблицей: правило удаляется, таблица main не очищается.
+	run := &scripted{out: map[string]string{
+		"ip rule list": "201:\tfrom all fwmark 0x54520001 lookup main \n202:\tfrom all fwmark 0x54520002 lookup 542 \n",
+	}}
+	Teardown(context.Background(), run)
+	got := strings.Join(run.changed(), "\n")
+	if strings.Contains(got, "flush table main") || !strings.Contains(got, "ip route flush table 542") || !strings.Contains(got, "ip rule del pref 201") {
+		t.Errorf("команды:\n%s", got)
+	}
+}
+
+func TestExecHonoursTimeoutWithLingeringChild(t *testing.T) {
+	// Утилита завершилась по времени, но её дочерний процесс держит поток вывода.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Exec{}.Run(ctx, "sh", "-c", "sleep 5 & sleep 5")
+	if err == nil || time.Since(start) > 2*time.Second {
+		t.Errorf("ошибка %v, заняло %s — ожидался отказ не позже чем через две секунды", err, time.Since(start).Round(time.Millisecond))
+	}
 }

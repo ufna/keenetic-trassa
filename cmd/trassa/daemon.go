@@ -45,7 +45,10 @@ func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []ru
 		if rules.HasErrors(ps) {
 			return b.String(), errors.New("в файле правил ошибки; оставлены прежние правила")
 		}
-		eng.Reload(cfg)
+		if err := eng.Reload(cfg); err != nil {
+			// Правила приняты, но в ядре пока прежнее состояние: об успехе сообщать нельзя.
+			return b.String(), fmt.Errorf("правила приняты, но списки и маршруты построить не удалось: %v; попытка повторится в течение 30 секунд", err)
+		}
 		fmt.Fprintf(&b, "правила перечитаны: правил %d, выходов %d\n", len(cfg.Rules), len(cfg.Exits))
 		return b.String(), nil
 	}
@@ -298,7 +301,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		active, err := exits.Active(ctx, eng.Config(), src)
+		active, err := exits.Active(ctx, eng.Config(), src, current)
 		if err != nil {
 			logger.Printf("состояние туннелей неизвестно, маршруты не меняются: %v", err)
 			return
@@ -317,15 +320,28 @@ func cmdRun(args []string, errw io.Writer) int {
 				}
 			}
 		}
-		current = active
 		eng.SetExits(names)
 		if err := router.SetExits(systems); err != nil {
+			// Прежнее состояние не забываем: на следующем шаге попытка повторится.
 			logger.Printf("маршруты выходов: %v", err)
+			return
 		}
+		current = active
 	}
 
 	// Сокет первым: он же проверяет, что другой экземпляр не запущен.
-	srv, err := ctl.Serve(sockPath(), handler(eng, reload))
+	// После перечитывания правил по сокету туннели перепроверяются сразу: новый выход иначе
+	// считался бы недоступным до следующего опроса.
+	kick := make(chan struct{}, 1)
+	reloadAndKick := func() (string, error) {
+		text, err := reload()
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+		return text, err
+	}
+	srv, err := ctl.Serve(sockPath(), handler(eng, reloadAndKick))
 	if err != nil {
 		logger.Printf("сокет управления: %v", err)
 		return 1
@@ -352,6 +368,11 @@ func cmdRun(args []string, errw io.Writer) int {
 	q, err := nfq.Open(tap.Queue)
 	if err != nil {
 		logger.Printf("очередь пакетов %d: %v", tap.Queue, err)
+		if router != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			dataplane.Teardown(ctx, dataplane.Exec{})
+			cancel()
+		}
 		return 1
 	}
 
@@ -429,9 +450,17 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := router.Check(ctx); err != nil {
+		if eng.NeedsResync() {
+			logger.Print("списки расходятся с памятью после сбоя — строю заново")
+			eng.Resync()
+			return
+		}
+		switch err := router.Reconcile(ctx); {
+		case errors.Is(err, dataplane.ErrMissing):
 			logger.Printf("%v — строю заново", err)
 			eng.Resync()
+		case err != nil:
+			logger.Printf("сверка правил и маршрутов: %v", err)
 		}
 	}
 
@@ -454,6 +483,8 @@ func cmdRun(args []string, errw io.Writer) int {
 			ensure()
 			checkRoutes()
 		case <-exitsTick.C:
+			refreshExits()
+		case <-kick:
 			refreshExits()
 		case <-stateTick.C:
 			if router != nil {

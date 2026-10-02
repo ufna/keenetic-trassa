@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Runner запускает системную утилиту. В тестах подменяется.
@@ -28,6 +29,9 @@ func (e Exec) Run(ctx context.Context, name string, args ...string) (string, err
 
 func (Exec) RunInput(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	// Утилита может оставить дочерний процесс, который держит поток вывода; без этого предела
+	// ожидание вывода длилось бы дольше отведённого времени.
+	cmd.WaitDelay = time.Second
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}

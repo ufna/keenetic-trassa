@@ -12,6 +12,10 @@ import (
 // Direct — имя выхода напрямую через провайдера.
 const Direct = "direct"
 
+// MaxExits — сколько выходов можно объявить: на каждый нужны две таблицы маршрутов,
+// а номера таблиц trassa — 540–599.
+const MaxExits = 29
+
 type Severity int
 
 const (
@@ -390,6 +394,9 @@ func parseNet(tok string) (pfx netip.Prefix, isNet bool, err error) {
 	}
 	if !p.Addr().Is4() {
 		return pfx, true, fmt.Errorf("подсеть %s: IPv6 пока не поддерживается", tok)
+	}
+	if p.Bits() == 0 {
+		return pfx, true, fmt.Errorf("подсеть %s: «всё остальное» задаётся не подсетью — для этого есть default", tok)
 	}
 	return p.Masked(), true, nil
 }

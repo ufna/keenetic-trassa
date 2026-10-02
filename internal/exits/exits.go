@@ -119,26 +119,32 @@ type Choice struct {
 }
 
 // Active выбирает для каждого выхода первый живой интерфейс по порядку из файла правил.
-// Интерфейс, о котором прошивка не ответила, считается неживым. Ошибка возвращается, только
-// если прошивка не ответила ни на один запрос: это не то же самое, что «все туннели упали».
-func Active(ctx context.Context, cfg *rules.Config, src Source) (map[string]Choice, error) {
+// Молчание прошивки — не то же самое, что упавший туннель: если живого интерфейса не нашлось,
+// но о каком-то интерфейсе выхода прошивка не ответила, за выходом остаётся прежний выбор из prev.
+// Ошибка возвращается, только если прошивка не ответила ни на один запрос.
+func Active(ctx context.Context, cfg *rules.Config, src Source, prev map[string]Choice) (map[string]Choice, error) {
 	out := make(map[string]Choice, len(cfg.Exits))
 	asked, answered := 0, 0
 	var last error
 	for _, e := range cfg.Exits {
-		out[e.Name] = Choice{}
+		var choice Choice
+		silent := false
 		for _, name := range e.Interfaces {
 			asked++
 			st, err := src.Interface(ctx, name)
 			if err != nil {
-				last = err
+				last, silent = err, true
 				continue
 			}
 			answered++
-			if st.Up && out[e.Name].System == "" {
-				out[e.Name] = Choice{Interface: name, System: st.System}
+			if st.Up && choice.System == "" {
+				choice = Choice{Interface: name, System: st.System}
 			}
 		}
+		if choice.System == "" && silent {
+			choice = prev[e.Name]
+		}
+		out[e.Name] = choice
 	}
 	if asked > 0 && answered == 0 {
 		return nil, last

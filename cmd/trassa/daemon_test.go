@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"trassa/internal/claims"
 	"trassa/internal/ctl"
 	"trassa/internal/engine"
 	"trassa/internal/exits"
@@ -358,5 +359,28 @@ func TestRunRejectsBadRouteArguments(t *testing.T) {
 	code, _, errOut := exec("run", "-rules", path, "-route", "-rci", "http://127.0.0.1:1")
 	if code != 1 || !strings.Contains(errOut, "прошивка не отвечает") || !strings.Contains(errOut, "демон не запущен") {
 		t.Errorf("недоступная прошивка: код %d, stderr %q", code, errOut)
+	}
+}
+
+// brokenSink — списки и маршруты, которые не удаётся построить.
+type brokenSink struct{}
+
+func (brokenSink) Apply([]claims.Change) error { return errors.New("ipset недоступен") }
+func (brokenSink) Rebuild(*rules.Config, []claims.Entry) error {
+	return errors.New("ipset недоступен")
+}
+
+func TestReloadReportsBuildFailure(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, brokenSink{}, func(string, ...any) {}, time.Now())
+	os.WriteFile(path, []byte(live+"vimeo.com -> vpn\n"), 0o644)
+	text, err := reloader(path, eng, nil)()
+	if err == nil || !strings.Contains(err.Error(), "построить не удалось") || strings.Contains(text, "правила перечитаны") {
+		t.Errorf("сбой построения выдан за успех: текст %q, ошибка %v", text, err)
+	}
+	// Правила при этом приняты, а построение будет повторено.
+	if len(eng.Config().Rules) != 2 || !eng.NeedsResync() {
+		t.Errorf("правил %d, нужно перестроение: %v", len(eng.Config().Rules), eng.NeedsResync())
 	}
 }
