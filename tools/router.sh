@@ -33,6 +33,7 @@ usage() {
   components install|remove <имя>...   изменить набор компонентов и перезагрузить
 
 Откат (каждая команда спрашивает подтверждение):
+  trassa-off         остановить trassa и снять его правила (без перезагрузки)
   opkg-off           отключить Entware и перезагрузить: сторонние программы перестают запускаться
   restore-config     вернуть настройки из резервной копии и перезагрузить
   restore-firmware   вернуть прошивку из резервной копии и перезагрузить
@@ -291,6 +292,17 @@ cmd_restore_all() {
   cmd_check || true
 }
 
+# Остановить trassa и снять его правила. Работает по SSH, интернет не нужен.
+cmd_trassa_off() {
+  local key=$ROOT/backup/ssh/router_ed25519
+  [ -r "$key" ] || die "нет ключа $key"
+  ssh -i "$key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$ROOT/backup/ssh/known_hosts" \
+    -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 \
+    'sh /opt/etc/init.d/S99trassa stop; chmod 644 /opt/etc/init.d/S99trassa; /opt/sbin/trassa cleanup; echo "правил trassa в таблицах: $(iptables-save 2>/dev/null | grep -c TRASSA)"' \
+    || die "не удалось выполнить команду на роутере. Запасной путь: tools/router.sh opkg-off"
+  say "trassa остановлен; после перезагрузки роутера сам не запустится"
+}
+
 case "${1:-}" in
   check)            cmd_check ;;
   wait)             wait_up; wait_internet ;;
@@ -298,6 +310,7 @@ case "${1:-}" in
   cli)              [ -n "${2:-}" ] || die "укажите команду"; login; cli "$2" ;;
   selftest-upload)  cmd_selftest_upload ;;
   components)       shift; cmd_components "$@" ;;
+  trassa-off)       cmd_trassa_off ;;
   opkg-off)         cmd_opkg_off ;;
   restore-config)   cmd_restore_config ;;
   restore-firmware) cmd_restore_firmware ;;

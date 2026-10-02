@@ -3,6 +3,7 @@
 test:
 	go vet ./...
 	go test ./...
+	go build -o /dev/null ./cmd/trassa
 
 build:
 	go build -o build/trassa ./cmd/trassa

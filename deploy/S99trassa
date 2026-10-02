@@ -1,0 +1,106 @@
+#!/bin/sh
+# trassa: запуск, присмотр и остановка демона.
+# Журнал и служебные файлы лежат в /tmp (оперативная память), чтобы не изнашивать флеш.
+
+TRASSA_BIN=/opt/sbin/trassa
+TRASSA_CONF=/opt/etc/trassa
+TRASSA_PID=/tmp/trassa.pid
+TRASSA_SUP=/tmp/trassa.supervisor.pids
+TRASSA_STOP=/tmp/trassa.stop
+TRASSA_LOG=/tmp/trassa.log
+
+trassa_alive() {
+	[ -f "$1" ] && kill -0 "$(cat "$1")" 2>/dev/null
+}
+
+# Присмотр: если демон завершился сам, снять его правила и запустить снова.
+trassa_supervise() {
+	trassa_pause=5
+	while [ ! -f $TRASSA_STOP ]; do
+		trassa_args=""
+		[ -r $TRASSA_CONF/args ] && trassa_args=$(cat $TRASSA_CONF/args)
+		trassa_t0=$(date +%s)
+		$TRASSA_BIN run -rules $TRASSA_CONF/rules.conf -pid $TRASSA_PID $trassa_args >>$TRASSA_LOG 2>&1
+		trassa_code=$?
+		# Демон проработал больше минуты — это не череда падений, пауза возвращается к начальной.
+		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
+		$TRASSA_BIN cleanup >>$TRASSA_LOG 2>&1
+		[ -f $TRASSA_STOP ] && break
+		echo "$(date '+%Y/%m/%d %H:%M:%S') демон завершился с кодом $trassa_code, перезапуск через $trassa_pause с" >>$TRASSA_LOG
+		sleep $trassa_pause
+		[ $trassa_pause -lt 60 ] && trassa_pause=$((trassa_pause * 2))
+	done
+}
+
+# Сторож: демон жив, но не отвечает — завершить принудительно.
+trassa_watch() {
+	trassa_fails=0
+	while [ ! -f $TRASSA_STOP ]; do
+		sleep 20
+		if $TRASSA_BIN status >/dev/null 2>&1; then
+			trassa_fails=0
+		else
+			trassa_fails=$((trassa_fails + 1))
+		fi
+		if [ $trassa_fails -ge 2 ] && trassa_alive $TRASSA_PID; then
+			echo "$(date '+%Y/%m/%d %H:%M:%S') демон не отвечает, принудительное завершение" >>$TRASSA_LOG
+			kill -9 "$(cat $TRASSA_PID)" 2>/dev/null
+			trassa_fails=0
+		fi
+	done
+}
+
+trassa_start() {
+	if [ -f $TRASSA_SUP ] && kill -0 $(cat $TRASSA_SUP) 2>/dev/null; then
+		echo "trassa уже запущен"
+		return 0
+	fi
+	if [ ! -x $TRASSA_BIN ]; then
+		echo "нет $TRASSA_BIN"
+		return 1
+	fi
+	if ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
+		echo "в правилах ошибки, trassa не запущен: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
+		return 1
+	fi
+	rm -f $TRASSA_STOP
+	trassa_supervise &
+	echo $! >$TRASSA_SUP
+	trassa_watch &
+	echo $! >>$TRASSA_SUP
+	echo "trassa запущен"
+}
+
+trassa_stop() {
+	touch $TRASSA_STOP
+	[ -f $TRASSA_SUP ] && kill $(cat $TRASSA_SUP) 2>/dev/null
+	trassa_alive $TRASSA_PID && kill "$(cat $TRASSA_PID)" 2>/dev/null
+	trassa_i=0
+	while trassa_alive $TRASSA_PID && [ $trassa_i -lt 10 ]; do
+		sleep 1
+		trassa_i=$((trassa_i + 1))
+	done
+	trassa_alive $TRASSA_PID && kill -9 "$(cat $TRASSA_PID)" 2>/dev/null
+	$TRASSA_BIN cleanup >/dev/null 2>&1
+	rm -f $TRASSA_SUP $TRASSA_PID
+	echo "trassa остановлен"
+}
+
+case "$1" in
+start)
+	trassa_start
+	;;
+stop)
+	trassa_stop
+	;;
+restart)
+	trassa_stop
+	trassa_start
+	;;
+status)
+	$TRASSA_BIN status
+	;;
+*)
+	echo "Использование: $0 {start|stop|restart|status}"
+	;;
+esac
