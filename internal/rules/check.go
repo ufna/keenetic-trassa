@@ -39,14 +39,15 @@ func Check(c *Config) []Problem {
 			ps = append(ps, Problem{r.Line, Warning,
 				"strict on a negation rule: if all of the exit's tunnels go down, almost the whole internet is lost"})
 		}
-		if r.All && r.forMask == 0 && r.notMask == 0 {
+		// For all devices or all but some lists, * decides nearly everyone's internet.
+		if r.All && r.forMask == 0 {
 			switch {
 			case r.Action.Strict:
 				ps = append(ps, Problem{r.Line, Warning,
-					"strict on * for every device: if all of the exit's tunnels go down, the whole internet is lost except for the rules above"})
+					"strict on * for every device or nearly every one: if all of the exit's tunnels go down, the whole internet is lost except for the rules above"})
 			case r.Action.Exit == None:
 				ps = append(ps, Problem{r.Line, Warning,
-					"* -> none for every device: everything the rules above do not let through is blocked"})
+					"* -> none for every device or nearly every one: everything the rules above do not let through is blocked"})
 			}
 		}
 		if r.Action.Exit == None && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
@@ -101,6 +102,12 @@ func (r *Rule) takes(b Cond) bool {
 // and regular expressions are never judged.
 func (c *Config) shadowedBy(i int) string {
 	r := &c.Rules[i]
+	// Below a "*" that covers all of its devices a rule never applies, whatever its conditions.
+	for j := 0; j < i; j++ {
+		if c.Rules[j].All && c.Rules[j].coversDevices(r) {
+			return fmt.Sprintf("line %d", c.Rules[j].Line)
+		}
+	}
 	if len(r.Neg) > 0 {
 		return ""
 	}

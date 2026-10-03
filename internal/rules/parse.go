@@ -374,6 +374,11 @@ func (p *parser) include(n int, path string, r *Rule) bool {
 	for i, raw := range strings.Split(strings.TrimPrefix(text, "\uFEFF"), "\n") {
 		for _, tok := range strings.Fields(clean(raw)) {
 			count++
+			if tok == "*" {
+				p.errf(n, "file %s, line %d: * cannot be in a file: it stands alone in its rule", path, i+1)
+				good = false
+				continue
+			}
 			if strings.HasPrefix(tok, "@") {
 				p.errf(n, "file %s, line %d: nested includes are not supported", path, i+1)
 				good = false

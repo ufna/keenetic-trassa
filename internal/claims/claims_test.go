@@ -536,12 +536,37 @@ func TestCatchAllEndsTheRulesForItsDevices(t *testing.T) {
 	s := New(config(t, "exit vpn = W\ndevice dd = 192.168.1.50\ndefault direct\n* -> direct for dd\nyoutube.example -> vpn\n"), hour)
 	s.SetViews([]rules.View{1})
 	s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour)
-	if a, b := show(s.Effective(ip1)), show(s.EffectiveFor(1, ip1)); a != "vpn" || b != "direct" {
-		t.Errorf("no list: %s, dd: %s; want vpn and direct", a, b)
+	// For dd the answer is not in a set at all: the end of dd's chain sends its traffic direct.
+	if a, b := show(s.Effective(ip1)), show(s.EffectiveFor(1, ip1)); a != "vpn" || b != "-" {
+		t.Errorf("no list: %s, dd: %s; want vpn and -", a, b)
 	}
 	// A name no real rule matches is not kept: * is not a reason to remember every answer.
 	s.Observe(t0, []string{"other.example"}, []netip.Addr{ip2}, hour)
 	if s.Known(ip2) {
 		t.Error("an answer matched only by * was kept")
+	}
+}
+
+// Review of *: a * decision is not a claim. Its priority must not stand in for the claim's own rule
+// (eviction), and a private address must not land in a tunnel's set through it.
+func TestCatchAllDecisionsAreNotStored(t *testing.T) {
+	s := New(config(t, "exit vpn = W\ndevice dd = 192.168.1.50\ndefault direct\n* -> direct for dd\nbank.example -> direct\n*.example -> vpn\n"), hour)
+	s.SetViews([]rules.View{1})
+	s.SetLimits(0, 2)
+	for _, n := range []string{"a.example", "b.example", "bank.example"} {
+		s.Observe(t0, []string{n}, []netip.Addr{ip1}, hour)
+	}
+	if got := show(s.Effective(ip1)); got != "direct" {
+		t.Errorf("devices in no list: %s, want direct (bank.example's earlier rule)", got)
+	}
+	if got := fmt.Sprint(s.Entries()); strings.Contains(got, "{1 ") {
+		t.Errorf("a * decision reached the sets: %s", got)
+	}
+	tv := New(config(t, "exit vpn = W\ndevice tv = 192.168.1.40\ndefault direct\n* -> vpn for tv\n*.home.arpa -> direct\n"), hour)
+	tv.SetViews([]rules.View{1})
+	nas := netip.MustParseAddr("192.168.1.20")
+	tv.Observe(t0, []string{"nas.home.arpa"}, []netip.Addr{nas}, hour)
+	if got := show(tv.EffectiveFor(1, nas)); got != "-" {
+		t.Errorf("a home-network address in the TV's set: %s", got)
 	}
 }

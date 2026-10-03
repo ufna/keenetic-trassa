@@ -108,7 +108,9 @@ func (s *Store) decideFor(v rules.View, names []string, any int32) int32 {
 	if any >= 0 && s.cfg.Rules[any].AppliesTo(v) && int(any) < s.cfg.CatchAll(v) {
 		return any
 	}
-	if d := s.cfg.MatchChainFor(v, names); d.Rule != nil {
+	// A "*" decision is not kept: the end of the view's chain gives every address the same, and its
+	// position would stand in for the claim's own rule.
+	if d := s.cfg.MatchChainFor(v, names); d.Rule != nil && !d.Rule.All {
 		return int32(d.Index)
 	}
 	return -1

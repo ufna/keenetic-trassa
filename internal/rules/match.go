@@ -72,7 +72,7 @@ func (c *Config) Explain(subject string) (string, error) {
 // to, and what they get when nothing above it matches. firstName and MatchAddrFor stop at it and
 // report "no rule"; the callers then take DefaultFor.
 func (c *Config) firstName(v View, all bool, name string) Decision {
-	limit := len(c.Rules)
+	limit := c.universalEnd()
 	if !all {
 		limit = c.CatchAll(v)
 	}
@@ -90,6 +90,17 @@ func (c *Config) firstName(v View, all bool, name string) Decision {
 func (c *Config) CatchAll(v View) int {
 	for i := range c.Rules {
 		if c.Rules[i].All && c.Rules[i].AppliesTo(v) {
+			return i
+		}
+	}
+	return len(c.Rules)
+}
+
+// universalEnd returns the position of the first "*" rule for every device, or the number of rules:
+// no rule below it applies to anyone.
+func (c *Config) universalEnd() int {
+	for i := range c.Rules {
+		if r := &c.Rules[i]; r.All && r.forMask == 0 && r.notMask == 0 {
 			return i
 		}
 	}

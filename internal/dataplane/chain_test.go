@@ -462,12 +462,12 @@ youtube.com -> vpn
 	r := NewRouter(run, "br0", netip.Addr{})
 	r.SetExits(map[string]string{"vpn": "nwg2"})
 	v, direct := rules.Action{Exit: "vpn"}, rules.Action{Exit: "direct"}
+	// As the address memory gives them: youtube for devices in no list only (for the lists with a
+	// * it is their * that decides), a .ru site for the TV, allowed.example for kids.
 	entries := []claims.Entry{
-		{Addr: ip("5.5.5.5"), Action: v},                  // youtube for everyone else
-		{View: dd, Addr: ip("5.5.5.5"), Action: direct},   // youtube for direct_devices: their *
-		{View: tv, Addr: ip("5.5.5.5"), Action: v},        // youtube for the TV: its *
-		{View: tv, Addr: ip("7.7.7.7"), Action: direct},   // a .ru site for the TV
-		{View: kids, Addr: ip("6.6.6.6"), Action: direct}, // allowed.example for kids
+		{Addr: ip("5.5.5.5"), Action: v},
+		{View: tv, Addr: ip("7.7.7.7"), Action: direct},
+		{View: kids, Addr: ip("6.6.6.6"), Action: direct},
 	}
 	sources := map[rules.View][]netip.Addr{dd: {ip("192.168.1.50")}, tv: {ip("192.168.1.40")}, kids: {ip("192.168.1.70")}}
 	if err := r.Rebuild(cfgOf(t, src), sources, entries); err != nil {
@@ -480,7 +480,7 @@ youtube.com -> vpn
 		from, to string
 		want     uint32
 	}{
-		{"192.168.1.50", "5.5.5.5", markBase}, {"192.168.1.50", "91.108.4.9", 0}, {"192.168.1.50", "8.8.8.8", 0},
+		{"192.168.1.50", "5.5.5.5", 0}, {"192.168.1.50", "91.108.4.9", 0}, {"192.168.1.50", "8.8.8.8", 0},
 		{"192.168.1.40", "5.5.5.5", vm}, {"192.168.1.40", "8.8.8.8", vm}, {"192.168.1.40", "91.108.4.9", vm},
 		{"192.168.1.40", "7.7.7.7", markBase}, {"192.168.1.40", "192.168.1.1", 0},
 		{"192.168.1.70", "6.6.6.6", markBase}, {"192.168.1.70", "8.8.8.8", nm}, {"192.168.1.70", "192.168.1.1", 0},

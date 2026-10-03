@@ -845,8 +845,8 @@ func TestCatchAllInTheEngine(t *testing.T) {
 	if o := e.State().Recent[0]; o.Action != "direct" || o.Line != 4 {
 		t.Errorf("the answer to a device of direct_devices: %+v", o)
 	}
-	if !slices.Contains(sink.got, "1.1.1.1 - => vpn") {
-		t.Errorf("other devices still get the rule: %v", sink.got)
+	if !slices.Contains(sink.got, "1.1.1.1 - => vpn") || len(sink.got) != 1 {
+		t.Errorf("other devices get the rule, and nothing goes into the list's sets: %v", sink.got)
 	}
 	if text, _ := e.Why("video.example", t0); !strings.Contains(text, "for direct_devices: direct (line 4)") {
 		t.Errorf("why:\n%s", text)
@@ -854,5 +854,18 @@ func TestCatchAllInTheEngine(t *testing.T) {
 	e.HandlePacket(t0, answer("other.example", "2.2.2.2"))
 	if e.store.Known(netip.MustParseAddr("2.2.2.2")) {
 		t.Error("an answer only * matches must not be kept")
+	}
+}
+
+// Review of *: a * decision is what everything else gets, not a matched rule.
+func TestCatchAllIsNotCountedAsAMatch(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndefault direct\n* -> vpn\n"), &fakeSink{}, l.printf, t0)
+	e.HandlePacket(t0, answer("any.example", "1.1.1.1"))
+	if s := e.Stats(); s.Claimed != 0 || e.store.Len() != 0 {
+		t.Errorf("matched rules %d, addresses kept %d", s.Claimed, e.store.Len())
+	}
+	if o := e.State().Recent[0]; o.Action != "vpn" || o.Line != 3 {
+		t.Errorf("observation: %+v", o)
 	}
 }

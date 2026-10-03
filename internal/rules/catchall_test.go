@@ -114,3 +114,34 @@ func TestCatchAllWarnings(t *testing.T) {
 	warn("allowed.example -> direct for kids\n* -> none for kids\n", "")
 	warn("* -> vpn strict for kids\n", "")
 }
+
+// Review of *: * in a file of conditions, warnings around *, and rules below a * for everyone.
+func TestCatchAllInAFile(t *testing.T) {
+	read := func(string) (string, error) { return "youtube.com\n*\n", nil }
+	if _, ps := Parse("exit vpn = W\ndefault direct\n@lists/x.txt -> vpn\n", read); !HasErrors(ps) || !strings.Contains(fmt.Sprint(ps), "* cannot be in a file") {
+		t.Errorf("* in a file: %v", ps)
+	}
+}
+
+func TestCatchAllMoreWarnings(t *testing.T) {
+	const head = "exit vpn = W\ndevice dd = 1.1.1.1\ndefault direct\n"
+	cases := []struct{ rules, want string }{
+		{"* -> direct for dd\n* -> vpn for dd\n", "can never match"},
+		{"* -> vpn\n* -> direct\n", "can never match"},
+		{"* -> vpn\n!*.ru -> direct\n", "can never match"},
+		{"* -> none for !dd\n", "* -> none for every device"},
+		{"* -> vpn strict for !dd\n", "strict on * for every device"},
+	}
+	for _, k := range cases {
+		if _, ps := Load(head+k.rules, nil); !strings.Contains(fmt.Sprint(ps), k.want) {
+			t.Errorf("%q: %v, want %q", k.rules, ps, k.want)
+		}
+	}
+}
+
+func TestRulesBelowAStarForEveryoneMatchNobody(t *testing.T) {
+	c := devConfig(t, "exit vpn = W\ndefault direct\n* -> vpn\nx.example -> direct\n")
+	if d := c.MatchChainAny([]string{"x.example"}); d.Rule != nil {
+		t.Errorf("a rule below * for every device applies to nobody, yet MatchChainAny found line %d", d.Rule.Line)
+	}
+}

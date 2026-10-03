@@ -143,7 +143,9 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	o := observation{at: now, client: u.Dst, device: e.devs.Labels[u.Dst], name: names[0], action: d.Action}
 	if d.Rule != nil {
 		o.line = d.Rule.Line
-		e.stats.Claimed++
+		if !d.Rule.All { // "*" is what everything else gets, not a match
+			e.stats.Claimed++
+		}
 	}
 	e.remember(o)
 	life := time.Duration(ttl) * time.Second
@@ -151,7 +153,7 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 		life = maxTTL
 	}
 	// Without device lists the asking device's decision is everyone's: no rule, nothing to keep.
-	if d.Rule == nil && len(e.cfg.Devices) == 0 {
+	if (d.Rule == nil || d.Rule.All) && len(e.cfg.Devices) == 0 {
 		return
 	}
 	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", who(u.Dst, o.device), names[0]))

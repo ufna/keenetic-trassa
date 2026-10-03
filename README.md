@@ -151,8 +151,9 @@ test yandex.ru = direct
   the devices it is for; the rules below it do not, and the rest of their traffic goes to its
   exit, a default of their own at that place. `* -> direct for office` takes the office devices
   out of the VPN rules below it; `* -> vpn for tv` sends the whole TV through the tunnel; with the
-  allowed sites above it, `* -> none for kids` blocks everything else. Without `for`, `*` is the
-  same as `default`. It stands alone in its rule.
+  allowed sites above it, `* -> none for kids` blocks everything else. Without `for`, a `*` at the
+  end is the same as `default`; anywhere else the rules below it apply to nobody. `*` stands alone
+  in its rule and cannot be in a file of conditions.
 - `none` blocks: new connections to the addresses of matching names and subnets are refused (the
   device gets an ICMP "prohibited": Linux and Android give up at once, Windows and Apple systems
   retry for a few seconds). Blocking works on addresses, as routing does: a site without a rule
