@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -78,6 +79,10 @@ type Rule struct {
 	Neg    []Cond // none matches
 	Nets   []netip.Prefix
 	Action Action
+	For    []string // device lists the rule applies to; empty means every device
+	NotFor []string // device lists the rule does not apply to
+
+	forMask, notMask View // For and NotFor as view bits, set when parsing finishes
 }
 
 // Test is an expectation from a "test <name or address> = <exit>" line.
@@ -89,6 +94,7 @@ type Test struct {
 
 type Config struct {
 	Exits       []Exit
+	Devices     []DeviceList
 	Default     Action
 	DefaultLine int
 	Rules       []Rule
@@ -137,11 +143,17 @@ func (p *parser) errf(line int, format string, args ...any) {
 	p.problems = append(p.problems, Problem{line, Error, fmt.Sprintf(format, args...)})
 }
 
-// clean strips a comment, a carriage return and surrounding whitespace.
+// clean strips a comment, a carriage return and surrounding whitespace. In a device line a # inside
+// double quotes belongs to a device name.
 func clean(raw string) string {
 	s := strings.TrimRight(raw, "\r")
+	quotes := strings.HasPrefix(strings.TrimSpace(s), "device ")
+	in := false
 	for i := 0; i < len(s); i++ {
-		if s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
+		if quotes && s[i] == '"' {
+			in = !in
+		}
+		if !in && s[i] == '#' && (i == 0 || s[i-1] == ' ' || s[i-1] == '\t') {
 			s = s[:i]
 			break
 		}
@@ -162,13 +174,15 @@ func (p *parser) line(n int, raw string) {
 		p.def(n, f[1:])
 	case "test":
 		p.test(n, s[len("test"):])
+	case "device":
+		p.device(n, s[len("device"):])
 	default:
 		p.rule(n, s)
 	}
 }
 
 func validIdent(s string) bool {
-	if s == "" || s == "strict" {
+	if s == "" || s == "strict" || s == "for" {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -243,6 +257,10 @@ func (p *parser) action(n int, f []string) (Action, bool) {
 }
 
 func (p *parser) def(n int, f []string) {
+	if slices.Contains(f, "for") {
+		p.errf(n, "default applies to every device: for is not allowed here")
+		return
+	}
 	a, ok := p.action(n, f)
 	if !ok {
 		return
@@ -257,6 +275,10 @@ func (p *parser) def(n int, f []string) {
 func (p *parser) test(n int, rest string) {
 	subj, want, ok := strings.Cut(rest, "=")
 	subj, want = strings.TrimSpace(subj), strings.TrimSpace(want)
+	if slices.Contains(strings.Fields(want), "for") {
+		p.errf(n, "test checks a device in no list: for is not allowed here")
+		return
+	}
 	if !ok || subj == "" || want == "" || strings.ContainsAny(subj+want, " \t") {
 		p.errf(n, "expected: test <name or address> = <exit>")
 		return
@@ -276,11 +298,20 @@ func (p *parser) rule(n int, s string) {
 		p.errf(n, "no conditions before ->")
 		return
 	}
-	a, ok := p.action(n, strings.Fields(right))
+	act := strings.Fields(right)
+	lists, hasFor := "", false
+	if i := slices.Index(act, "for"); i >= 0 {
+		lists, hasFor = strings.Join(act[i+1:], " "), true
+		act = act[:i]
+	}
+	a, ok := p.action(n, act)
 	if !ok {
 		return
 	}
 	r := Rule{Line: n, Text: s, Action: a}
+	if hasFor && !p.forLists(n, lists, &r) {
+		return
+	}
 	good := true
 	for _, tok := range toks {
 		if strings.HasPrefix(tok, "@") {
@@ -434,5 +465,6 @@ func (p *parser) finish() {
 			}
 		}
 	}
+	p.finishDevices()
 	sort.SliceStable(p.problems, func(i, j int) bool { return p.problems[i].Line < p.problems[j].Line })
 }
