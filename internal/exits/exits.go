@@ -20,6 +20,8 @@ type Status struct {
 	Type   string // тип в прошивке, например Wireguard
 	System string // системное имя, например nwg2; пусто, если интерфейс не может быть выходом
 	Up     bool
+	// Description — описание из настроек прошивки.
+	Description string
 }
 
 // Source отвечает на вопрос о состоянии интерфейса. В тестах подменяется.
@@ -34,12 +36,13 @@ type RCI struct {
 }
 
 type ifaceJSON struct {
-	ID        string `json:"id"`
-	Index     *int   `json:"index"`
-	Type      string `json:"type"`
-	Link      string `json:"link"`
-	Connected string `json:"connected"`
-	Wireguard struct {
+	ID          string `json:"id"`
+	Description string `json:"description"`
+	Index       *int   `json:"index"`
+	Type        string `json:"type"`
+	Link        string `json:"link"`
+	Connected   string `json:"connected"`
+	Wireguard   struct {
 		Peer []struct {
 			Online bool `json:"online"`
 		} `json:"peer"`
@@ -74,7 +77,7 @@ func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
 	if j.ID == "" {
 		return st, nil
 	}
-	st.Exists, st.Type = true, j.Type
+	st.Exists, st.Type, st.Description = true, j.Type, j.Description
 	if j.Type != "Wireguard" || j.Index == nil {
 		return st, nil
 	}
@@ -150,4 +153,34 @@ func Active(ctx context.Context, cfg *rules.Config, src Source, prev map[string]
 		return nil, last
 	}
 	return out, nil
+}
+
+// Tunnel — интерфейс выхода и что о нём знает прошивка; для страницы.
+type Tunnel struct {
+	Exit        string `json:"exit"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Up          bool   `json:"up"`
+	Error       string `json:"error,omitempty"`
+}
+
+// Tunnels спрашивает прошивку обо всех интерфейсах всех выходов, по порядку из файла правил.
+func Tunnels(ctx context.Context, cfg *rules.Config, src Source) []Tunnel {
+	out := []Tunnel{}
+	for _, e := range cfg.Exits {
+		for _, name := range e.Interfaces {
+			t := Tunnel{Exit: e.Name, Name: name}
+			st, err := src.Interface(ctx, name)
+			switch {
+			case err != nil:
+				t.Error = err.Error()
+			case !st.Exists:
+				t.Error = "интерфейса нет на роутере"
+			default:
+				t.Description, t.Up = st.Description, st.Up
+			}
+			out = append(out, t)
+		}
+	}
+	return out
 }

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	wgUp     = `{"id":"Wireguard2","index":2,"type":"Wireguard","link":"up","connected":"yes","wireguard":{"peer":[{"online":false},{"online":true}]}}`
+	wgUp     = `{"id":"Wireguard2","description":"tunnel-a","index":2,"type":"Wireguard","link":"up","connected":"yes","wireguard":{"peer":[{"online":false},{"online":true}]}}`
 	wgDown   = `{"id":"Wireguard0","index":0,"type":"Wireguard","link":"down","connected":"no"}`
 	wgNoPeer = `{"id":"Wireguard3","index":3,"type":"Wireguard","link":"up","connected":"yes","wireguard":{"peer":[{"online":false}]}}`
 	ethernet = `{"id":"GigabitEthernet1","index":1,"type":"GigabitEthernet","link":"up","connected":"yes"}`
@@ -59,7 +59,7 @@ func TestInterface(t *testing.T) {
 		name string
 		want Status
 	}{
-		{"Wireguard2", Status{Name: "Wireguard2", Exists: true, Type: "Wireguard", System: "nwg2", Up: true}},
+		{"Wireguard2", Status{Name: "Wireguard2", Exists: true, Type: "Wireguard", System: "nwg2", Up: true, Description: "tunnel-a"}},
 		{"Wireguard0", Status{Name: "Wireguard0", Exists: true, Type: "Wireguard", System: "nwg0"}},
 		{"Wireguard3", Status{Name: "Wireguard3", Exists: true, Type: "Wireguard", System: "nwg3"}},
 		{"GigabitEthernet1", Status{Name: "GigabitEthernet1", Exists: true, Type: "GigabitEthernet"}},
@@ -145,5 +145,24 @@ func TestActiveKeepsPreviousWhenFirmwareSilent(t *testing.T) {
 	// Прежнего выбора нет — придумывать его не из чего.
 	if got, _ := Active(context.Background(), cfg, src, nil); got["vpn"] != (Choice{}) {
 		t.Errorf("vpn без прежнего выбора: %+v", got["vpn"])
+	}
+}
+
+func TestTunnels(t *testing.T) {
+	cfg := config(t, "exit vpn = Wireguard2, Wireguard0, Ghost, Broken\ndefault direct\n")
+	got := Tunnels(context.Background(), cfg, firmware(t))
+	want := []Tunnel{
+		{Exit: "vpn", Name: "Wireguard2", Description: "tunnel-a", Up: true},
+		{Exit: "vpn", Name: "Wireguard0"},
+		{Exit: "vpn", Name: "Ghost", Error: "интерфейса нет на роутере"},
+		{Exit: "vpn", Name: "Broken", Error: "прошивка ответила кодом 500"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("%d: %+v, ожидалось %+v", i, got[i], want[i])
+		}
 	}
 }
