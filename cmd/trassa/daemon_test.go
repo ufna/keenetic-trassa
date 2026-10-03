@@ -318,8 +318,18 @@ func TestSaveState(t *testing.T) {
 	if left, _ := filepath.Glob(state + ".*"); len(left) != 0 {
 		t.Errorf("temporary files left: %v", left)
 	}
-	if err := saveState(filepath.Join(t.TempDir(), "no", "such", "directory"), eng); err == nil {
-		t.Error("writing to a nonexistent directory must be an error")
+	// The state directory is created private to root; a file where the directory should be is an error.
+	dir := filepath.Join(t.TempDir(), "var", "trassa")
+	if err := saveState(filepath.Join(dir, "state"), eng); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(dir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("state directory: %v, %v", fi.Mode().Perm(), err)
+	}
+	blocker := filepath.Join(t.TempDir(), "file")
+	os.WriteFile(blocker, nil, 0o600)
+	if err := saveState(filepath.Join(blocker, "state"), eng); err == nil {
+		t.Error("a file in place of the directory must be an error")
 	}
 	var buf bytes.Buffer
 	if err := eng.SaveState(&buf); err != nil {
@@ -397,5 +407,25 @@ func TestHandlerState(t *testing.T) {
 	var st ctl.State
 	if err != nil || json.Unmarshal([]byte(text), &st) != nil || st.Mode != "observe" || st.Rules != 1 {
 		t.Errorf("answer %q, error %v", text, err)
+	}
+}
+
+// The state file is not read through a symlink planted in its place.
+func TestStateIsNotReadThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere")
+	os.WriteFile(target, []byte("{}\n"), 0o600)
+	link := filepath.Join(dir, "state")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if f, err := openState(link); err == nil {
+		f.Close()
+		t.Error("the state file was opened through a symlink")
+	}
+	if f, err := openState(target); err != nil {
+		t.Errorf("a regular state file: %v", err)
+	} else {
+		f.Close()
 	}
 }

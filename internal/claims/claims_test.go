@@ -335,3 +335,23 @@ func TestUnusableAddressesAreIgnored(t *testing.T) {
 		t.Errorf("%d claims accepted from the file, %d addresses; want one, 2.2.2.2", n, fresh.Len())
 	}
 }
+
+// Names read from the state file are checked like names from DNS: the file sits on flash and
+// outlives the daemon, so it is input like any other.
+func TestLoadNormalizesNames(t *testing.T) {
+	far := t0.Add(10 * hour).Unix()
+	lines := []string{
+		`{"a":"1.1.1.1","n":["WWW.Video.Example."],"e":` + fmt.Sprint(far) + `}`,
+		`{"a":"2.2.2.2","n":["bad\u001bname.example"],"e":` + fmt.Sprint(far) + `}`,
+	}
+	s := New(config(t, src), hour)
+	if n := s.Load(strings.NewReader(strings.Join(lines, "\n")), t0); n != 1 {
+		t.Errorf("%d accepted, want 1", n)
+	}
+	if cs := s.Claims(ip1); len(cs) != 1 || cs[0].Names[0] != "www.video.example" || cs[0].Action.Exit != "vpn" {
+		t.Errorf("normalized claim: %+v", cs)
+	}
+	if cs := s.Claims(ip2); len(cs) != 0 {
+		t.Errorf("a name with a control character was loaded: %+v", cs)
+	}
+}

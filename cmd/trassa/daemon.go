@@ -56,23 +56,43 @@ func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []ru
 	}
 }
 
-// saveState writes the state to a temporary file and replaces the old one with it: if writing
-// fails halfway, the old file stays intact.
+// openState opens the state file without following a symlink planted in its place.
+func openState(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+}
+
+// saveState snapshots the claims into memory under the engine lock and writes them outside it:
+// the file lives on flash, and a slow write must not hold up the packet loop. The directory is
+// private to root; the file is replaced whole and synced.
 func saveState(path string, eng *engine.Engine) error {
-	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	var buf bytes.Buffer
+	if err := eng.SaveState(&buf); err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, filepath.Base(path)+".*")
 	if err != nil {
 		return err
 	}
-	if err := eng.SaveState(f); err != nil {
-		f.Close()
+	_, werr := f.Write(buf.Bytes())
+	if werr == nil {
+		werr = f.Sync()
+	}
+	if err := errors.Join(werr, f.Close()); err != nil {
 		os.Remove(f.Name())
 		return err
 	}
-	if err := f.Close(); err != nil {
+	if err := os.Rename(f.Name(), path); err != nil {
 		os.Remove(f.Name())
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	return nil
 }
 
 // sameExits compares two exit states.
@@ -233,7 +253,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	only := fs.String("only", "", "")
 	route := fs.Bool("route", false, "")
 	source := fs.String("source", "", "")
-	statePath := fs.String("state", "/tmp/trassa.state", "")
+	statePath := fs.String("state", "/opt/var/lib/trassa/state", "")
 	rci := fs.String("rci", "http://127.0.0.1:79", "")
 	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
 		fmt.Fprint(errw, usage)
@@ -357,7 +377,7 @@ func cmdRun(args []string, errw io.Writer) int {
 
 	if router != nil {
 		refreshExits()
-		if f, err := os.Open(*statePath); err == nil {
+		if f, err := openState(*statePath); err == nil {
 			n := eng.LoadState(f, time.Now())
 			f.Close()
 			logger.Printf("claims restored from the saved state: %d", n)
@@ -477,7 +497,8 @@ func cmdRun(args []string, errw io.Writer) int {
 	defer tick.Stop()
 	exitsTick := time.NewTicker(5 * time.Second)
 	defer exitsTick.Stop()
-	stateTick := time.NewTicker(5 * time.Minute)
+	// The state is on flash: written rarely, and on every stop.
+	stateTick := time.NewTicker(30 * time.Minute)
 	defer stateTick.Stop()
 	for {
 		select {

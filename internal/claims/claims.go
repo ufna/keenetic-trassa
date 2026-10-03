@@ -280,6 +280,10 @@ func (s *Store) Load(r io.Reader, now time.Time) int {
 		if json.Unmarshal(sc.Bytes(), &v) != nil || len(v.Names) == 0 {
 			continue
 		}
+		// Names from the file are checked like names from DNS: the file outlives the daemon.
+		if !normalize(v.Names) {
+			continue
+		}
 		a, err := netip.ParseAddr(v.Addr)
 		if err != nil || !usable(a) {
 			continue
@@ -302,4 +306,16 @@ func (s *Store) Load(r io.Reader, now time.Time) int {
 		}
 	}
 	return n
+}
+
+// normalize brings names to the form they are matched in; false if any of them is not a domain name.
+func normalize(names []string) bool {
+	for i, n := range names {
+		norm, err := rules.NormalizeName(n)
+		if err != nil {
+			return false
+		}
+		names[i] = norm
+	}
+	return true
 }
