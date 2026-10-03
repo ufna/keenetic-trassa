@@ -37,6 +37,8 @@ type Router struct {
 	mu     sync.Mutex
 	layout *Layout
 	active map[string]string // exit → system name of the live interface; empty means none is live
+	// cleanup means a rebuild could not remove stale chains or sets: each reconcile retries.
+	cleanup bool
 }
 
 func NewRouter(run InputRunner, lan string, source netip.Addr) *Router {
@@ -84,18 +86,14 @@ func (r *Router) Rebuild(cfg *rules.Config, sources map[rules.View][]netip.Addr,
 	}
 	r.pruneRules(ctx, l, seen)
 	// Chains of views that are gone: the new main chain no longer leads to them.
-	r.dropViewChains(ctx, l)
+	chainsErr := r.dropViewChains(ctx, l)
 	if err := r.syncJump(ctx); err != nil {
 		return err
 	}
 	r.layout = l
 	// Stale sets are removed last: until the chain was replaced, rules still referenced them.
-	names, _ := r.run.Run(ctx, "ipset", "list", "-n")
-	for _, name := range strings.Fields(names) {
-		if strings.HasPrefix(name, setPrefix) && !l.hasSet(name) {
-			r.run.Run(ctx, "ipset", "destroy", name)
-		}
-	}
+	setsErr := r.dropStaleSets(ctx, l)
+	r.cleanup = chainsErr != nil || setsErr != nil
 	return nil
 }
 
@@ -337,8 +335,11 @@ func (r *Router) Reconcile(ctx context.Context) error {
 	if err := r.syncRoutes(ctx, r.layout); err != nil {
 		return err
 	}
-	// Chains of earlier views, in case listing them failed during the rebuild.
-	r.dropViewChains(ctx, r.layout)
+	// Chains and sets of earlier layouts, if the rebuild could not remove them.
+	if r.cleanup {
+		chainsErr := r.dropViewChains(ctx, r.layout)
+		r.cleanup = chainsErr != nil || r.dropStaleSets(ctx, r.layout) != nil
+	}
 	return r.syncRules(ctx, r.layout)
 }
 
@@ -354,7 +355,8 @@ func Teardown(ctx context.Context, run Runner) {
 	}
 	run.Run(ctx, "iptables", mangle("-F", routeChain)...)
 	// View chains go after the main chain stopped leading to them and before it is deleted.
-	for _, name := range viewChains(ctx, run) {
+	chains, _ := viewChains(ctx, run)
+	for _, name := range chains {
 		run.Run(ctx, "iptables", mangle("-F", name)...)
 		run.Run(ctx, "iptables", mangle("-X", name)...)
 	}
@@ -383,8 +385,11 @@ func viewsOf(sources map[rules.View][]netip.Addr) []rules.View {
 }
 
 // viewChains lists trassa's view chains in the mangle table.
-func viewChains(ctx context.Context, run Runner) []string {
-	out, _ := run.Run(ctx, "iptables-save", "-t", "mangle")
+func viewChains(ctx context.Context, run Runner) ([]string, error) {
+	out, err := run.Run(ctx, "iptables-save", "-t", "mangle")
+	if err != nil {
+		return nil, err
+	}
 	var names []string
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(strings.TrimPrefix(line, ":"))
@@ -396,17 +401,39 @@ func viewChains(ctx context.Context, run Runner) []string {
 			names = append(names, f[0])
 		}
 	}
-	return names
+	return names, nil
 }
 
 // dropViewChains removes the view chains the layout does not have.
-func (r *Router) dropViewChains(ctx context.Context, l *Layout) {
-	for _, name := range viewChains(ctx, r.run) {
+func (r *Router) dropViewChains(ctx context.Context, l *Layout) error {
+	names, err := viewChains(ctx, r.run)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
 		if !l.hasChain(name) {
-			r.run.Run(ctx, "iptables", mangle("-F", name)...)
-			r.run.Run(ctx, "iptables", mangle("-X", name)...)
+			_, ferr := r.run.Run(ctx, "iptables", mangle("-F", name)...)
+			_, xerr := r.run.Run(ctx, "iptables", mangle("-X", name)...)
+			err = errors.Join(err, ferr, xerr)
 		}
 	}
+	return err
+}
+
+// dropStaleSets removes trassa's sets the layout does not have. A set a rule still references
+// cannot be destroyed: that is an error, and the cleanup is retried.
+func (r *Router) dropStaleSets(ctx context.Context, l *Layout) error {
+	names, err := r.run.Run(ctx, "ipset", "list", "-n")
+	if err != nil {
+		return err
+	}
+	for _, name := range strings.Fields(names) {
+		if strings.HasPrefix(name, setPrefix) && !l.hasSet(name) {
+			_, derr := r.run.Run(ctx, "ipset", "destroy", name)
+			err = errors.Join(err, derr)
+		}
+	}
+	return err
 }
 
 // SetSources refills the views' source sets after a device changed its address. If the views

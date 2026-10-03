@@ -428,6 +428,8 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 		switch eff := e.store.Effective(addr); {
 		case eff != nil:
 			fmt.Fprintf(&b, "in the dynamic set: %s\n", *eff)
+		case len(cs) > 0 && claims.PrivateAddr(addr) && !slices.ContainsFunc(cs, func(c claims.Claim) bool { return c.Action.Exit != rules.None }):
+			b.WriteString("not in the dynamic set: a name does not block a private address\n")
 		case len(cs) > 0:
 			b.WriteString("not in the dynamic set: the address is in a subnet of an earlier rule\n")
 		}

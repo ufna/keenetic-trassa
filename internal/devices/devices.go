@@ -208,6 +208,7 @@ const (
 	stateOn      = "on the network"
 	stateOff     = "not on the network"
 	stateUnknown = "not in the router's device list"
+	stateUnread  = "device list not read yet"
 )
 
 // List is a device list and its devices.
@@ -224,7 +225,8 @@ type Map struct {
 }
 
 // Resolve finds the addresses of the device lists' devices. An address written in the rules counts
-// always; a name or a MAC counts while the device is on the network or holds a DHCP lease.
+// always; a name or a MAC counts while the device is on the network or holds a DHCP lease. nil hosts
+// means the firmware's list has not been read yet.
 func Resolve(cfg *rules.Config, hosts []Host) Map {
 	m := Map{Views: map[netip.Addr]rules.View{}, Labels: map[netip.Addr]string{}}
 	for _, h := range hosts {
@@ -240,6 +242,9 @@ func Resolve(cfg *rules.Config, hosts []Host) Map {
 		l := List{Name: d.Name}
 		for _, ref := range d.Members {
 			mem := Member{Ref: ref, State: stateUnknown}
+			if hosts == nil {
+				mem.State = stateUnread // the firmware has not answered yet
+			}
 			found := func(h *Host) {
 				mem.Label, mem.State = h.Label(), stateOff
 				if h.Online && h.IP.IsValid() {

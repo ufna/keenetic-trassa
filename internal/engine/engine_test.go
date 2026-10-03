@@ -810,3 +810,27 @@ func TestNoneInObserveMode(t *testing.T) {
 		t.Errorf("why in observe mode:\n%s", text)
 	}
 }
+
+// Review of the minors: why for a private address claimed by none, and for an address whose list's
+// rule differs from the rule devices on the network get.
+func TestWhyForAddressesNoneAndAwayLists(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\nexit alt = W\ndevice tv = \"Living room TV\"\ndefault direct\n*.io -> none\nx.example -> vpn for tv\n*.example -> alt\n"), &fakeSink{}, l.printf, t0)
+	e.Resync()
+	e.HandlePacket(t0, answer("nas.io", "10.1.2.3"))
+	if text, _ := e.Why("10.1.2.3", t0); !strings.Contains(text, "a name does not block a private address") || strings.Contains(text, "subnet of an earlier rule") {
+		t.Errorf("why for a private address under none:\n%s", text)
+	}
+	e.HandlePacket(t0, answer("x.example", "2.2.2.2"))
+	if text, _ := e.Why("2.2.2.2", t0); !strings.Contains(text, "claim for devices not on the network now: x.example → vpn (line 6") {
+		t.Errorf("why for an address with the TV away:\n%s", text)
+	}
+}
+
+func TestStatusBeforeTheFirmwareAnswers(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, devSrc), nil, l.printf, t0)
+	if s := e.Status(t0); !strings.Contains(s, `devices tv: "Living room TV" — device list not read yet`) {
+		t.Errorf("status before the first answer:\n%s", s)
+	}
+}

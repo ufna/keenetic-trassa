@@ -740,8 +740,9 @@ func TestOnlyNumberedViewChainsAreRemoved(t *testing.T) {
 	}
 }
 
-// If listing the chains failed during a rebuild, the next reconcile removes the stale ones.
-func TestReconcileRemovesStaleViewChains(t *testing.T) {
+// Review of the minors: a reconcile lists the chains only when a rebuild could not clean up, and
+// then removes the stale sets as well.
+func TestReconcileCleansUpOnlyAfterAFailure(t *testing.T) {
 	ip := netip.MustParseAddr
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
@@ -749,12 +750,38 @@ func TestReconcileRemovesStaleViewChains(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.calls = nil
-	run.out = map[string]string{"iptables-save -t mangle": ":TRASSA - [0:0]\n:TRASSA_V1 - [0:0]\n:TRASSA_V9 - [0:0]\n"}
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range run.calls {
+		if strings.HasPrefix(c, "iptables-save") || strings.HasPrefix(c, "ipset list") {
+			t.Errorf("a reconcile after a clean rebuild ran %q", c)
+		}
+	}
+	// The listing fails during the rebuild: the next reconcile removes the stale chain and its sets.
+	run.fail = []string{"iptables-save"}
+	if err := r.Rebuild(cfgOf(t, devicesSrc), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.fail, run.calls = nil, nil
+	run.out = map[string]string{
+		"iptables-save -t mangle": ":TRASSA - [0:0]\n:TRASSA_V1 - [0:0]\n:TRASSA_V9 - [0:0]\n",
+		"ipset list -n":           "trassa_d0\ntrassa_v1\ntrassa_v9\ntrassa_v9d1\n",
+	}
 	if err := r.Reconcile(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(run.changed(), "\n")
-	if !strings.Contains(all, "iptables -w -t mangle -F TRASSA_V9\niptables -w -t mangle -X TRASSA_V9") || strings.Contains(all, "TRASSA_V1\n") {
-		t.Errorf("reconcile:\n%s", all)
+	for _, want := range []string{"iptables -w -t mangle -X TRASSA_V9", "ipset destroy trassa_v9\nipset destroy trassa_v9d1"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q in\n%s", want, all)
+		}
+	}
+	run.calls = nil
+	r.Reconcile(context.Background())
+	for _, c := range run.calls {
+		if strings.HasPrefix(c, "iptables-save") {
+			t.Errorf("the cleanup is done, yet a reconcile listed the chains again")
+		}
 	}
 }

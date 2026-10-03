@@ -150,12 +150,12 @@ func (s *Store) AddrsOf(name string) []netip.Addr {
 	return out
 }
 
-// Untracked returns the claims on an address that no tracked view has a rule for: they wait for a
-// device of their lists to join. Index and Action are those of the rule found with "for" ignored.
+// Untracked returns the claims on an address whose rule with "for" ignored is no tracked view's
+// decision: a rule of lists with no device on the network now. Index and Action are that rule's.
 func (s *Store) Untracked(addr netip.Addr) []Claim {
 	var out []Claim
 	for _, c := range s.byAddr[addr] {
-		if slices.ContainsFunc(c.dec, func(d int32) bool { return d >= 0 }) {
+		if slices.Contains(c.dec, c.any) {
 			continue
 		}
 		c.Index, c.Action = int(c.any), s.cfg.Rules[c.any].Action
@@ -181,7 +181,7 @@ func (s *Store) Effective(addr netip.Addr) *rules.Action { return s.EffectiveFor
 
 func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
 	best := int32(-1)
-	private := privateAddr(addr)
+	private := PrivateAddr(addr)
 	for _, c := range s.byAddr[addr] {
 		d := c.dec[i]
 		// Blocking by name never closes a private network, just as default none leaves them open.
@@ -427,9 +427,9 @@ func sortChanges(cs []Change) {
 	})
 }
 
-// privateAddr reports whether the address is in a private or carrier-grade NAT network: the home
-// network, another network behind the router or a tunnel.
-func privateAddr(a netip.Addr) bool { return a.IsPrivate() || cgnat.Contains(a) }
+// PrivateAddr reports whether the address is in a private or carrier-grade NAT network: the home
+// network, another network behind the router or a tunnel. A name under none never blocks it.
+func PrivateAddr(a netip.Addr) bool { return a.IsPrivate() || cgnat.Contains(a) }
 
 var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
