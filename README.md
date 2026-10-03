@@ -114,6 +114,10 @@ examples.
 exit vpn = Wireguard0, Wireguard1     # an exit: tunnels in order of preference
 exit work = office-tunnel             # a tunnel may be named by its description in the firmware
 
+device tv     = "Living room TV"      # device lists for "for": a device is a name from the
+device phones = "Pixel", aa:bb:cc:dd:ee:ff
+device office = 192.168.1.50          # router's device list, a MAC or an IPv4 address
+
 default direct                        # where everything that matches no rule goes
 
 telegram.org t.me -> vpn              # a domain and all its subdomains
@@ -123,6 +127,8 @@ telegram.org t.me -> vpn              # a domain and all its subdomains
 91.108.4.0/22 203.0.113.7 -> vpn      # subnets and addresses
 example.org -> vpn strict             # strict: blocked while all tunnels of the exit are down
 @lists/streaming.txt -> vpn           # conditions from a file in /opt/etc/trassa, one per line
+twitch.tv -> vpn for tv, phones       # only for the devices of lists tv and phones
+reddit.com -> vpn for !office         # for every device except those of list office
 !*.ru -> vpn                          # negation: everything except .ru (a broad rule: keep it last)
 
 test t.me = vpn                       # expectations, checked every time the file is checked
@@ -132,6 +138,12 @@ test yandex.ru = direct
 - `direct` is the ISP, i.e. the router's normal routing. It is always available.
 - Without `strict`, traffic of a rule whose tunnels are all down goes direct.
 - Internationalized names may be written as they are (`сайт.рф`); they are compared in punycode.
+- A rule with `for` applies only to the devices of those lists, or with `!` to every device
+  except them; other devices skip it. `default` and `test` are about devices in no list.
+- trassa looks devices up in the router's device list every 30 seconds and follows their
+  addresses; give listed devices a permanent address in the router's DHCP settings. A device's
+  rules use every DNS answer on the network, not only the device's own.
+- At most 16 device lists and 64 devices in all of them.
 - A file with errors is never applied: the previous rules stay. Warnings (for example, a rule
   that can never match because an earlier one covers it) need an explicit confirmation.
 
@@ -145,7 +157,8 @@ router's administrator login and password: the page checks them with the firmwar
 the password never leaves the browser (only a response to a one-time challenge does).
 
 On the page: the rules editor with errors and warnings by line, "why" for any name, address or
-link, the state of the exits and tunnels, the latest DNS answers and the version history with
+link, the state of the exits and tunnels, the latest DNS answers with the device's name from the
+router's device list, and the version history with
 one-click restore (the last 20 versions are kept). The page listens on the home network only.
 
 The switch in the header turns trassa off and on. Off, the daemon stops and removes its routes,
@@ -183,7 +196,8 @@ trassa cleanup                                remove the DNS tap and routing rul
 | `/opt/etc/ndm/netfilter.d/50-trassa.sh`, `/opt/etc/ndm/iflayerchanged.d/50-trassa.sh` | firmware hooks: rebuild after the firmware rewrites its tables, recheck tunnels when an interface changes |
 | `/tmp/trassa.log` | the log, in RAM, trimmed above 1 MB |
 
-In the kernel trassa uses the `mangle` chains `TRASSA` and `TRASSA_DNS`, the queue 5353,
+In the kernel trassa uses the `mangle` chains `TRASSA`, `TRASSA_DNS` and `TRASSA_V<n>` (one per
+combination of device lists in use), the queue 5353,
 address sets `trassa_*`, marks `0x5452xxxx`, routing rules with priorities 199–299 and routing
 tables 541–599. Nothing else in the firmware's tables is changed.
 
@@ -206,7 +220,11 @@ tables 541–599. Nothing else in the firmware's tables is changed.
     $t -w -t mangle -F TRASSA_DNS; $t -w -t mangle -X TRASSA_DNS
   done
   iptables -w -t mangle -S PREROUTING | grep -- " -j TRASSA$" | sed "s/^-A/-D/" | while read -r r; do iptables -w -t mangle $r; done
-  iptables -w -t mangle -F TRASSA; iptables -w -t mangle -X TRASSA
+  iptables -w -t mangle -F TRASSA
+  for c in $(iptables-save -t mangle | sed -n "s/^:\(TRASSA_V[0-9]*\) .*/\1/p"); do
+    iptables -w -t mangle -F $c; iptables -w -t mangle -X $c
+  done
+  iptables -w -t mangle -X TRASSA
   ip rule list | grep "fwmark 0x5452" | while read -r pref rest; do
     ip rule del pref "${pref%:}"
     t=${rest##*lookup }; t=${t%% *}

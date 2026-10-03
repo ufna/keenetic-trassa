@@ -387,7 +387,7 @@
       tr.appendChild(el("td", "t", clock(new Date(o.at))));
       // The device address goes under the name: a long IPv6 address in its own column would squeeze the name.
       var name = el("td", "name", o.name);
-      name.appendChild(el("span", "dev", o.client));
+      name.appendChild(el("span", "dev", o.device ? o.device + " · " + o.client : o.client));
       tr.appendChild(name);
       var td = el("td", "path");
       td.appendChild(el("span", "badge " + (o.action === "direct" ? "direct" : "tunnel"), o.action));

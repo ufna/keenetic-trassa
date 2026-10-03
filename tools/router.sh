@@ -323,6 +323,9 @@ cmd_trassa_off() {
       done
       iptables -w -t mangle -S PREROUTING | grep -- " -j TRASSA$" | sed "s/^-A/-D/" | while read -r r; do iptables -w -t mangle $r; done
       iptables -w -t mangle -F TRASSA 2>/dev/null
+      for c in $(iptables-save -t mangle 2>/dev/null | sed -n "s/^:\(TRASSA_V[0-9]*\) .*/\1/p"); do
+        iptables -w -t mangle -F "$c"; iptables -w -t mangle -X "$c"
+      done
       iptables -w -t mangle -X TRASSA 2>/dev/null
       ip rule list | grep "fwmark 0x5452" | while read -r pref rest; do
         ip rule del pref "${pref%:}"

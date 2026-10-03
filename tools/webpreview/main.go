@@ -108,12 +108,12 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 		Stats: ctl.Stats{Packets: 1140, Answers: 870, Claimed: 31, Changes: 50},
 		Exits: []ctl.ExitState{{Name: "vpn", Via: "Wireguard2", Known: true}},
 		Recent: []ctl.Observation{
-			{At: now.Add(-5 * time.Second), Client: "192.168.1.97", Name: "ps5.np.playstation.net", Action: "direct"},
-			{At: now.Add(-20 * time.Second), Client: "192.168.1.94", Name: "www.youtube.com", Action: "vpn", Line: 8},
+			{At: now.Add(-5 * time.Second), Client: "192.168.1.97", Device: "Game console", Name: "ps5.np.playstation.net", Action: "direct"},
+			{At: now.Add(-20 * time.Second), Client: "192.168.1.94", Device: "Desktop", Name: "www.youtube.com", Action: "vpn", Line: 8},
 			{At: now.Add(-41 * time.Second), Client: "fe80::c803:47ff:fe04:97ae", Name: "passport.yandex.by", Action: "direct"},
-			{At: now.Add(-63 * time.Second), Client: "192.168.1.94", Name: "t.me", Action: "vpn", Line: 13},
-			{At: now.Add(-70 * time.Second), Client: "192.168.1.94", Name: "rr3---sn-4g5lznlz.googlevideo.com", Action: "vpn", Line: 8},
-			{At: now.Add(-75 * time.Second), Client: "192.168.1.97", Name: "e9126.dscx.akamaiedge.net", Action: "direct"},
+			{At: now.Add(-63 * time.Second), Client: "192.168.1.94", Device: "Desktop", Name: "t.me", Action: "vpn", Line: 13},
+			{At: now.Add(-70 * time.Second), Client: "192.168.1.94", Device: "Desktop", Name: "rr3---sn-4g5lznlz.googlevideo.com", Action: "vpn", Line: 8},
+			{At: now.Add(-75 * time.Second), Client: "192.168.1.97", Device: "Game console", Name: "e9126.dscx.akamaiedge.net", Action: "direct"},
 		}}
 	for i, n := 0, len(state.Recent); i < 8; i++ {
 		o := state.Recent[i%n]
