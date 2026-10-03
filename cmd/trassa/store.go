@@ -55,6 +55,41 @@ func applyViaDaemon() (store.Applied, string) {
 	return store.Rejected, strings.TrimSpace(text + "\n" + err.Error())
 }
 
+// cmdPower turns trassa on or off, like the switch on the web page. Off: the mark is written
+// first, then the daemon is asked to stop; the init script does not start it while the mark exists.
+func cmdPower(on bool, args []string, out, errw io.Writer) int {
+	name := "disable"
+	if on {
+		name = "enable"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	dir := fs.String("dir", defaultDir, "")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprint(errw, usage)
+		return 2
+	}
+	st := &store.Store{Dir: *dir}
+	if on {
+		if err := st.Enable(); err != nil {
+			fmt.Fprintln(errw, "trassa not turned on:", err)
+			return 1
+		}
+		fmt.Fprintln(out, "trassa is turned on: the init script starts the daemon within a few seconds")
+		return 0
+	}
+	if err := st.Disable(); err != nil {
+		fmt.Fprintln(errw, "trassa not turned off:", err)
+		return 1
+	}
+	if _, err := ctl.Call(sockPath(), "stop", "", 3*time.Second); err != nil && !errors.Is(err, ctl.ErrNoDaemon) {
+		fmt.Fprintln(out, "trassa is turned off, but the daemon did not confirm the stop:", err)
+		return 1
+	}
+	fmt.Fprintln(out, "trassa is turned off: the daemon removes its routes and stays off after a reboot; turn on: trassa enable")
+	return 0
+}
+
 // printResult prints the outcome of restoring a version. Exit code 0 means the rules are in effect
 // or will take effect when the daemon starts.
 func printResult(out io.Writer, res store.Result) int {

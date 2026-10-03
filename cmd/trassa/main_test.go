@@ -129,7 +129,7 @@ func TestWhyBadInput(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"web", "x"}, {"web", "-nonsense"}, {"nonsense"}} {
+	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"enable", "x"}, {"disable", "x"}, {"web", "x"}, {"web", "-nonsense"}, {"nonsense"}} {
 		if code, _, errOut := exec(args...); code != 2 || !strings.Contains(errOut, "Usage") {
 			t.Errorf("%v: code %d, stderr %q", args, code, errOut)
 		}
@@ -180,5 +180,18 @@ func TestDefaultRules(t *testing.T) {
 	code, out, errOut = exec("check", write(t, map[string]string{"rules.conf": b.String()}))
 	if code != 0 || !strings.Contains(out, "exits: 1") || !strings.Contains(out, "expectations: 2, warnings: 0") {
 		t.Errorf("with the examples enabled: code %d, output %q, stderr %q\n%s", code, out, errOut, b.String())
+	}
+}
+
+func TestDisableEnableCommands(t *testing.T) {
+	t.Setenv("TRASSA_SOCK", filepath.Join(t.TempDir(), "none.sock"))
+	dir := t.TempDir()
+	code, out, errOut := exec("disable", "-dir", dir)
+	if _, err := os.Stat(filepath.Join(dir, "disabled")); code != 0 || err != nil || !strings.Contains(out, "turned off") {
+		t.Errorf("disable: code %d, output %q, stderr %q, mark %v", code, out, errOut, err)
+	}
+	code, out, errOut = exec("enable", "-dir", dir)
+	if _, err := os.Stat(filepath.Join(dir, "disabled")); code != 0 || err == nil || !strings.Contains(out, "turned on") {
+		t.Errorf("enable: code %d, output %q, stderr %q", code, out, errOut)
 	}
 }

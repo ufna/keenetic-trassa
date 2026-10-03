@@ -118,8 +118,8 @@ func sameExits(a, b map[string]exits.Choice) bool {
 	return true
 }
 
-// handler executes commands that arrive over the control socket.
-func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
+// handler executes commands that arrive over the control socket. stop asks the daemon to stop.
+func handler(eng *engine.Engine, reload func() (string, error), stop func()) ctl.Handler {
 	return func(cmd, arg string) (string, error) {
 		switch cmd {
 		case "why":
@@ -131,6 +131,9 @@ func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
 			return string(b), err
 		case "reload":
 			return reload()
+		case "stop":
+			stop()
+			return "trassa is stopping\n", nil
 		}
 		return "", fmt.Errorf("unknown command %q", cmd)
 	}
@@ -383,7 +386,15 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		return text, err
 	}
-	srv, err := ctl.Serve(sockPath(), handler(eng, reloadAndKick))
+	// A stop over the socket comes from "trassa disable" or the web page turning trassa off.
+	stopReq := make(chan struct{}, 1)
+	requestStop := func() {
+		select {
+		case stopReq <- struct{}{}:
+		default:
+		}
+	}
+	srv, err := ctl.Serve(sockPath(), handler(eng, reloadAndKick, requestStop))
 	if err != nil {
 		logger.Printf("control socket: %v", err)
 		return 1
@@ -539,6 +550,11 @@ func cmdRun(args []string, errw io.Writer) int {
 					logger.Printf("state not saved: %v", err)
 				}
 			}
+		case <-stopReq:
+			logger.Print("stop requested over the control socket")
+			shutdown()
+			logger.Print("trassa stopped")
+			return 0
 		case s := <-sig:
 			switch s {
 			case syscall.SIGUSR1:

@@ -28,7 +28,7 @@ func startDaemonStub(t *testing.T, rulesText string) (rulesPath string) {
 	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
 	sock := filepath.Join(t.TempDir(), "trassa.sock")
 	t.Setenv("TRASSA_SOCK", sock)
-	srv, err := ctl.Serve(sock, handler(eng, reloader(rulesPath, eng, nil)))
+	srv, err := ctl.Serve(sock, handler(eng, reloader(rulesPath, eng, nil), nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestHandlerState(t *testing.T) {
 	path := write(t, map[string]string{"rules.conf": live})
 	cfg, _, _ := load(path, os.Stderr)
 	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
-	text, err := handler(eng, nil)("state", "")
+	text, err := handler(eng, nil, nil)("state", "")
 	var st ctl.State
 	if err != nil || json.Unmarshal([]byte(text), &st) != nil || st.Mode != "observe" || st.Rules != 1 {
 		t.Errorf("answer %q, error %v", text, err)
@@ -440,5 +440,16 @@ func TestLoadTime(t *testing.T) {
 	}
 	if got := loadTime(written.Add(time.Hour), written); !got.Equal(written.Add(time.Hour)) {
 		t.Errorf("clock ahead of the file: %v", got)
+	}
+}
+
+// The page and "trassa disable" ask the daemon to stop over the control socket.
+func TestHandlerStop(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	stopped := 0
+	if text, err := handler(eng, nil, func() { stopped++ })("stop", ""); err != nil || stopped != 1 || text == "" {
+		t.Errorf("stop: %q, %v, stopped %d", text, err, stopped)
 	}
 }

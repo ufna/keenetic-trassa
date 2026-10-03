@@ -58,12 +58,13 @@ type stateJSON struct {
 	Daemon      *ctl.State     `json:"daemon"`      // nil means the daemon is not answering
 	DaemonState string         `json:"daemonState"` // running, not-running, no-reply or error
 	DaemonError string         `json:"daemonError,omitempty"`
+	Enabled     bool           `json:"enabled"` // false: trassa is turned off and the daemon is not started
 	Tunnels     []exits.Tunnel `json:"tunnels"`
 	Now         time.Time      `json:"now"`
 }
 
 func (s *Server) state(w http.ResponseWriter, r *http.Request) {
-	out := stateJSON{Tunnels: []exits.Tunnel{}, Now: s.now()}
+	out := stateJSON{Tunnels: []exits.Tunnel{}, Now: s.now(), Enabled: !s.Store.Disabled()}
 	text, err := s.Daemon("state", "")
 	if err == nil {
 		var st ctl.State
@@ -216,4 +217,40 @@ func (s *Server) why(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"text": text, "source": "file"})
+}
+
+// power turns trassa on or off. Off: the mark is written first, then the daemon is asked to stop;
+// the init script does not restart it while the mark exists and starts it within seconds once the
+// mark is gone.
+func (s *Server) power(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		On *bool `json:"on"`
+	}
+	if !readJSON(w, r, &in) {
+		return
+	}
+	if in.On == nil {
+		writeError(w, http.StatusBadRequest, "on is required: true or false")
+		return
+	}
+	if *in.On {
+		if err := s.Store.Enable(); err != nil {
+			writeError(w, http.StatusInternalServerError, "trassa not turned on: "+err.Error())
+			return
+		}
+		s.logf("trassa turned on from the page (%s)", clientIP(r))
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": true,
+			"message": "trassa is turned on: the daemon starts within a few seconds"})
+		return
+	}
+	if err := s.Store.Disable(); err != nil {
+		writeError(w, http.StatusInternalServerError, "trassa not turned off: "+err.Error())
+		return
+	}
+	s.logf("trassa turned off from the page (%s)", clientIP(r))
+	msg := "trassa is turned off: the daemon is stopping and removing its routes, traffic goes as without trassa"
+	if _, err := s.Daemon("stop", ""); err != nil && !errors.Is(err, ctl.ErrNoDaemon) {
+		msg = "trassa is turned off, but the daemon did not confirm the stop: " + err.Error()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "message": msg})
 }

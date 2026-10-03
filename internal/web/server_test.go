@@ -185,6 +185,7 @@ func TestDataNeedsSession(t *testing.T) {
 	for _, rq := range [][2]string{
 		{"GET", "/api/state"}, {"GET", "/api/rules"}, {"POST", "/api/check"}, {"POST", "/api/save"},
 		{"GET", "/api/history"}, {"GET", "/api/version?id=x"}, {"POST", "/api/rollback"}, {"POST", "/api/why"},
+		{"POST", "/api/power"},
 	} {
 		if code, _, _ := e.do(rq[0], rq[1], map[string]string{}); code != 401 {
 			t.Errorf("%s %s not signed in: %d", rq[0], rq[1], code)
@@ -431,5 +432,39 @@ func TestSaveRejectedByDaemon(t *testing.T) {
 	}
 	if text, _ := e.srv.Store.Current(); text != rulesText {
 		t.Errorf("the rules file changed: %q", text)
+	}
+}
+
+func TestPower(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	stops := 0
+	e.daemon = func(cmd, arg string) (string, error) {
+		if cmd == "stop" {
+			stops++
+			return "stopping", nil
+		}
+		return "", fmt.Errorf("%w (test)", ctl.ErrNoDaemon)
+	}
+	_, b, _ := e.do("GET", "/api/state", nil)
+	if !decode[stateJSON](t, b).Enabled {
+		t.Fatalf("turned on by default: %s", b)
+	}
+	if code, b, _ := e.do("POST", "/api/power", map[string]any{"on": false}); code != 200 || decode[map[string]any](t, b)["enabled"] != false {
+		t.Fatalf("turn off: %d %s", code, b)
+	}
+	if !e.srv.Store.Disabled() || stops != 1 {
+		t.Errorf("after turning off: disabled %v, daemon asked to stop %d times", e.srv.Store.Disabled(), stops)
+	}
+	if _, b, _ = e.do("GET", "/api/state", nil); decode[stateJSON](t, b).Enabled {
+		t.Errorf("state after turning off: %s", b)
+	}
+	// The daemon may already be down: turning off still succeeds.
+	e.daemon = func(cmd, arg string) (string, error) { return "", fmt.Errorf("%w (test)", ctl.ErrNoDaemon) }
+	if code, _, _ := e.do("POST", "/api/power", map[string]any{"on": false}); code != 200 {
+		t.Errorf("turn off with no daemon: %d", code)
+	}
+	if code, _, _ := e.do("POST", "/api/power", map[string]any{"on": true}); code != 200 || e.srv.Store.Disabled() {
+		t.Errorf("turn on: %d, disabled %v", code, e.srv.Store.Disabled())
 	}
 }

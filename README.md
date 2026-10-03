@@ -148,6 +148,10 @@ On the page: the rules editor with errors and warnings by line, "why" for any na
 link, the state of the exits and tunnels, the latest DNS answers and the version history with
 one-click restore (the last 20 versions are kept). The page listens on the home network only.
 
+The **Turn off** button in the header (it asks for a second click) stops the daemon: it removes
+its routes and the router routes all traffic as without trassa. trassa stays off after a reboot
+until **Turn on** is pressed; the page itself keeps working, and the rules can still be edited.
+
 ## Commands
 
 ```
@@ -157,6 +161,8 @@ trassa why <name, address or link>            decision and DNS details from the 
 trassa status                                 daemon state
 trassa reload                                 reload the rules without stopping
 trassa rollback [-y] [-dir directory]         undo the last rules change (run again to redo it)
+trassa disable [-dir directory]               turn trassa off: stop the daemon, keep it off after a reboot
+trassa enable [-dir directory]                turn trassa on again
 trassa run [-rules file] [-only address]      run the daemon in observe mode
 trassa run -route [-source address]           run the daemon in routing mode
 trassa web [-listen address] [-dir directory] web page for editing the rules
@@ -171,6 +177,7 @@ trassa cleanup                                remove the DNS tap and routing rul
 | `/opt/etc/trassa/rules.conf` | the rules |
 | `/opt/etc/trassa/history/` | the last 20 versions of the rules |
 | `/opt/etc/trassa/args`, `web.args` | daemon and web page options |
+| `/opt/etc/trassa/disabled` | present while trassa is turned off (the page's switch, `trassa disable`) |
 | `/opt/var/lib/trassa/state` | addresses learnt from DNS, kept across restarts (written every 30 minutes and on stop) |
 | `/opt/etc/init.d/S99trassa` | start at boot, supervision, stop |
 | `/opt/etc/ndm/netfilter.d/50-trassa.sh`, `/opt/etc/ndm/iflayerchanged.d/50-trassa.sh` | firmware hooks: rebuild after the firmware rewrites its tables, recheck tunnels when an interface changes |
@@ -185,6 +192,8 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 - If the daemon stops or crashes, DNS keeps working (the kernel passes DNS answers by itself)
   and traffic goes as without trassa; `strict` rules block their traffic until the daemon is
   back. The supervisor restarts it within seconds.
+- The quickest way back to the router's own routing is **Turn off** on the page or
+  `trassa disable` on the router: the daemon removes everything it built and stays off.
 - `tools/router.sh trassa-off` stops trassa, disables the start at boot and removes everything
   it built, without relying on trassa itself. The same by hand on the router:
 

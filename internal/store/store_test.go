@@ -358,3 +358,26 @@ func TestChangingExitsNeedsConfirmation(t *testing.T) {
 		t.Errorf("changing interfaces only: %+v", res)
 	}
 }
+
+// Turning trassa off is a mark in the rules directory: it survives a reboot.
+func TestDisableEnable(t *testing.T) {
+	s := newStore(t, textA)
+	if s.Disabled() {
+		t.Fatal("a fresh installation is turned on")
+	}
+	if err := s.Disable(); err != nil || !s.Disabled() {
+		t.Fatalf("disable: %v, disabled %v", err, s.Disabled())
+	}
+	if fi, err := os.Stat(filepath.Join(s.Dir, DisabledFile)); err != nil || fi.Mode().Perm() != 0o644 {
+		t.Errorf("the mark: %v, %v", fi, err)
+	}
+	if err := s.Disable(); err != nil {
+		t.Errorf("turning off twice: %v", err)
+	}
+	if err := s.Enable(); err != nil || s.Disabled() {
+		t.Fatalf("enable: %v, disabled %v", err, s.Disabled())
+	}
+	if err := s.Enable(); err != nil {
+		t.Errorf("turning on twice: %v", err)
+	}
+}

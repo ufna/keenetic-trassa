@@ -21,6 +21,8 @@ Usage:
   trassa status                                 daemon state
   trassa reload                                 reload the rules without stopping
   trassa rollback [-y] [-dir directory]         undo the last rules change (run again to redo it)
+  trassa disable [-dir directory]               turn trassa off: stop the daemon, keep it off after a reboot
+  trassa enable [-dir directory]                turn trassa on again
   trassa run [-rules file] [-only address]      run the daemon in observe mode
   trassa run -route [-source address]           run the daemon in routing mode
   trassa web [-listen address] [-dir directory] web page for editing the rules (192.168.1.1:8090)
@@ -45,6 +47,9 @@ func run(args []string, out, errw io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "rollback" {
 		return cmdRollback(args[1:], out, errw)
+	}
+	if len(args) > 0 && (args[0] == "enable" || args[0] == "disable") {
+		return cmdPower(args[0] == "enable", args[1:], out, errw)
 	}
 	if len(args) > 0 && args[0] == "web" {
 		return cmdWeb(args[1:], errw)

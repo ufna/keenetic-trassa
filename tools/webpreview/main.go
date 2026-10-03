@@ -81,8 +81,9 @@ func signIn(do func(*http.Request) (*http.Response, error), base, password strin
 	return nil, fmt.Errorf("sign-in failed: %s %s", resp.Status, b)
 }
 
-// demo is the page with rules from rulesPath and a made-up but plausible daemon state.
-func demo(rulesPath string) (http.Handler, error) {
+// demo is the page with rules from rulesPath and a made-up but plausible daemon state; off starts
+// it with trassa turned off.
+func demo(rulesPath string, off bool) (http.Handler, error) {
 	text, err := os.ReadFile(rulesPath)
 	if err != nil {
 		return nil, err
@@ -96,6 +97,9 @@ func demo(rulesPath string) (http.Handler, error) {
 	}
 	st := &store.Store{Dir: dir, Apply: func() (store.Applied, string) { return store.Running, "rules reloaded" }}
 	st.Save(string(text)+"# example edit from the page\n", true)
+	if off {
+		st.Disable()
+	}
 	now := time.Now()
 	state := ctl.State{Mode: "route", Started: now.Add(-124 * time.Minute), Rules: 12, Addrs: 25, Claims: 33,
 		Stats: ctl.Stats{Packets: 1140, Answers: 870, Claimed: 31, Changes: 50},
@@ -112,7 +116,10 @@ func demo(rulesPath string) (http.Handler, error) {
 		Store: st,
 		Auth:  demoAuth{},
 		Daemon: func(cmd, arg string) (string, error) {
-			if cmd == "state" {
+			if cmd == "stop" {
+				return "trassa is stopping\n", nil
+			}
+			if cmd == "state" && !st.Disabled() {
 				b, _ := json.Marshal(state)
 				return string(b), nil
 			}
@@ -173,11 +180,12 @@ func main() {
 	rulesPath := flag.String("rules", "rules/rules.conf", "rules file for the demo")
 	router := flag.String("router", "", "address of the real page, e.g. http://192.168.1.1:8090")
 	passFile := flag.String("pass", "backup/.router-pass", "file with the router administrator password")
+	off := flag.Bool("off", false, "demo: start with trassa turned off")
 	flag.Parse()
 
 	var h http.Handler
 	if *router == "" {
-		inner, err := demo(*rulesPath)
+		inner, err := demo(*rulesPath, *off)
 		if err != nil {
 			log.Fatal(err)
 		}

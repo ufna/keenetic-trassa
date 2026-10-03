@@ -21,6 +21,8 @@ import (
 const (
 	// RulesFile is the rules file in the rules directory.
 	RulesFile = "rules.conf"
+	// DisabledFile marks trassa as turned off: while it exists, the init script does not start the daemon.
+	DisabledFile = "disabled"
 	// Keep is how many versions the history keeps.
 	Keep = 20
 	// MaxSize is the maximum size of the rules text.
@@ -423,6 +425,40 @@ func (s *Store) lock() (func(), error) {
 	return func() { f.Close() }, nil // closing the file releases the lock
 }
 
+const disabledText = "trassa is turned off: the daemon does not start while this file exists.\n" +
+	"Turn it on from the web page or with: trassa enable\n"
+
+// Disabled reports whether trassa is turned off.
+func (s *Store) Disabled() bool {
+	_, err := os.Lstat(filepath.Join(s.Dir, DisabledFile))
+	return err == nil
+}
+
+// Disable turns trassa off. The mark is on flash, so trassa stays off after a reboot too.
+func (s *Store) Disable() error {
+	return writeAtomic(filepath.Join(s.Dir, DisabledFile), []byte(disabledText))
+}
+
+// Enable turns trassa on again.
+func (s *Store) Enable() error {
+	if err := os.Remove(filepath.Join(s.Dir, DisabledFile)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	syncDir(s.Dir)
+	return nil
+}
+
+// syncDir flushes the directory itself, so that a rename or a removal survives a power cut.
+func syncDir(dir string) {
+	if d, err := os.Open(dir); err == nil {
+		d.Sync()
+		d.Close()
+	}
+}
+
 // writeTemp writes data to a temporary file in dir and flushes it to storage.
 func writeTemp(dir string, data []byte) (string, error) {
 	f, err := os.CreateTemp(dir, ".tmp-*")
@@ -451,10 +487,7 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	if d, err := os.Open(filepath.Dir(path)); err == nil {
-		d.Sync()
-		d.Close()
-	}
+	syncDir(filepath.Dir(path))
 	return nil
 }
 

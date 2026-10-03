@@ -8,6 +8,8 @@
   var saved = "";           // rules text in effect
   var marks = {};           // line number → "err" or "wrn"
   var confirmAction = null; // what to run on the "Apply with warnings" button
+  var enabled = null;       // trassa is turned on, from the last state; null until it arrives
+  var startingUntil = 0;    // after turning on, "not running" means "starting" until this time
   var pollTimer = null;
   var signedIn = false;
 
@@ -280,7 +282,27 @@
   function renderState(s) {
     var d = s.daemon, chips = $("chips"), banner = $("banner");
     chips.replaceChildren();
-    if (!d) {
+    if (s.enabled !== enabled) {
+      enabled = s.enabled;
+      renderPower();
+    }
+    if (!s.enabled) {
+      chips.appendChild(chip("turned off", "off"));
+      banner.textContent = "trassa is turned off: the daemon is stopped and the router routes all traffic as without trassa. " +
+        "You can still edit and save rules: they take effect when trassa is turned on." +
+        (d ? " The daemon is still stopping." : "");
+      banner.hidden = false;
+      renderCounters(null);
+      renderTunnels(s.tunnels, null);
+      renderObs(null);
+      return;
+    }
+    if (d) startingUntil = 0;
+    if (!d && s.daemonState === "not-running" && Date.now() < startingUntil) {
+      chips.appendChild(chip("starting", "off"));
+      banner.textContent = "trassa is turned on: the daemon is starting, this takes a few seconds.";
+      banner.hidden = false;
+    } else if (!d) {
       var kind = {
         "not-running": ["daemon not running", "The trassa daemon is not running. You can still edit and save rules: " +
           "they will take effect when it starts. No counters or DNS answers until then."],
@@ -373,6 +395,41 @@
     });
   }
 
+  /* ---- Turning trassa on and off ---- */
+  function renderPower() {
+    var b = $("power");
+    delete b.dataset.armed;
+    b.hidden = enabled === null;
+    b.className = enabled ? "btn power" : "btn primary power";
+    b.textContent = enabled ? "Turn off" : "Turn on";
+  }
+
+  async function power() {
+    var b = $("power");
+    if (enabled && !b.dataset.armed) {
+      b.dataset.armed = "1";
+      b.className = "btn warn power";
+      b.textContent = "Turn off? Click again";
+      // As with restoring a version: a stray click later turns nothing off.
+      setTimeout(function () { if (b.dataset.armed) renderPower(); }, 5000);
+      return;
+    }
+    b.disabled = true;
+    try {
+      var r = await api("POST", "/api/power", { on: !enabled });
+      enabled = r.enabled;
+      startingUntil = enabled ? Date.now() + 30000 : 0;
+      renderPower();
+      await loadState();
+    } catch (e) {
+      renderPower();
+      $("banner").textContent = e.message;
+      $("banner").hidden = false;
+    } finally {
+      b.disabled = false;
+    }
+  }
+
   async function loadState() {
     try {
       renderState(await api("GET", "/api/state"));
@@ -437,6 +494,7 @@
   rulesEl.addEventListener("scroll", function () { $("gutter").scrollTop = rulesEl.scrollTop; });
   $("check").addEventListener("click", check);
   $("save").addEventListener("click", function () { save(false); });
+  $("power").addEventListener("click", power);
   $("revert").addEventListener("click", function () {
     rulesEl.value = saved;
     clearProblems();

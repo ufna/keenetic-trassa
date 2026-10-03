@@ -10,6 +10,8 @@ TRASSA_CONF=/opt/etc/trassa
 TRASSA_PID=/tmp/trassa.pid
 TRASSA_WEB_PID=/tmp/trassa-web.pid
 TRASSA_SUP=/tmp/trassa.supervisor.pids
+TRASSA_SUP_DAEMON=/tmp/trassa.supervisor.pid
+TRASSA_OFF=$TRASSA_CONF/disabled
 TRASSA_STOP=/tmp/trassa.stop
 TRASSA_LOG=/tmp/trassa.log
 TRASSA_LOG_MAX=1048576
@@ -35,14 +37,34 @@ trassa_all() {
 	done
 }
 
+# Is the daemon supervisor alive. While trassa is turned off it waits with no daemon running.
+trassa_sup_alive() {
+	trassa_p=$(cat $TRASSA_SUP_DAEMON 2>/dev/null)
+	[ -n "$trassa_p" ] && [ -r "/proc/$trassa_p/cmdline" ] && tr '\0' ' ' <"/proc/$trassa_p/cmdline" | grep -q "S99trassa"
+}
+
 # Supervisor: if the daemon exits on its own, remove its rules and start it again.
 # The supervisor owns the pid file: it writes it right after start and removes it after exit.
+# While trassa is turned off (the web page or "trassa disable" writes $TRASSA_OFF) it does not
+# start the daemon and checks every 2 seconds whether trassa has been turned on.
 trassa_supervise() {
 	trap "" HUP PIPE
 	PATH=/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	export PATH
 	trassa_pause=5
+	trassa_off=0
 	while [ ! -f $TRASSA_STOP ]; do
+		if [ -f $TRASSA_OFF ]; then
+			[ $trassa_off = 0 ] && echo "$(date '+%Y/%m/%d %H:%M:%S') trassa is turned off: the daemon stays stopped until it is turned on" >>$TRASSA_LOG
+			trassa_off=1
+			sleep 2
+			continue
+		fi
+		if [ $trassa_off = 1 ]; then
+			echo "$(date '+%Y/%m/%d %H:%M:%S') trassa turned on: starting the daemon" >>$TRASSA_LOG
+			trassa_pause=5
+		fi
+		trassa_off=0
 		trassa_args=""
 		[ -r $TRASSA_CONF/args ] && trassa_args=$(cat $TRASSA_CONF/args)
 		trassa_t0=$(date +%s)
@@ -55,6 +77,8 @@ trassa_supervise() {
 		rm -f $TRASSA_PID
 		$TRASSA_BIN cleanup >>$TRASSA_LOG 2>&1
 		[ -f $TRASSA_STOP ] && break
+		# Turned off: the daemon stopped on request, this is not a crash.
+		[ -f $TRASSA_OFF ] && continue
 		# The daemon ran for over a minute, so this is not a crash loop: reset the pause to the initial value.
 		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
 		echo "$(date '+%Y/%m/%d %H:%M:%S') daemon exited with code $trassa_code, restart in $trassa_pause s" >>$TRASSA_LOG
@@ -122,7 +146,7 @@ trassa_start() {
 		return 1
 	fi
 	trassa_daemon_up=0
-	if $TRASSA_BIN status >/dev/null 2>&1 || [ -n "$(trassa_all run)" ]; then
+	if $TRASSA_BIN status >/dev/null 2>&1 || [ -n "$(trassa_all run)" ] || trassa_sup_alive; then
 		trassa_daemon_up=1
 	fi
 	trassa_web_up=0
@@ -137,8 +161,12 @@ trassa_start() {
 	# The daemon and the page start independently: the page is needed even when the rules
 	# have errors, so that they can be fixed.
 	if [ $trassa_daemon_up = 1 ]; then
-		echo "trassa daemon is already running"
-	elif ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
+		if [ -f $TRASSA_OFF ]; then
+			echo "trassa is turned off; it starts once turned on (the web page or: trassa enable)"
+		else
+			echo "trassa daemon is already running"
+		fi
+	elif [ ! -f $TRASSA_OFF ] && ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
 		echo "the rules have errors, trassa daemon not started: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
 		trassa_rc=1
 	else
@@ -148,9 +176,14 @@ trassa_start() {
 		# itself, leaving the daemon unsupervised.
 		trassa_supervise >>$TRASSA_LOG 2>&1 </dev/null &
 		echo $! >>$TRASSA_SUP
+		echo $! >$TRASSA_SUP_DAEMON
 		trassa_watch >>$TRASSA_LOG 2>&1 </dev/null &
 		echo $! >>$TRASSA_SUP
-		echo "trassa daemon started"
+		if [ -f $TRASSA_OFF ]; then
+			echo "trassa is turned off; it starts once turned on (the web page or: trassa enable)"
+		else
+			echo "trassa daemon started"
+		fi
 	fi
 	# The page is started only if its address is configured.
 	if [ -f $TRASSA_CONF/web.args ]; then
@@ -185,7 +218,7 @@ trassa_stop() {
 		kill -9 "$trassa_p" 2>/dev/null
 	done
 	$TRASSA_BIN cleanup >/dev/null 2>&1
-	rm -f $TRASSA_SUP $TRASSA_PID $TRASSA_WEB_PID
+	rm -f $TRASSA_SUP $TRASSA_SUP_DAEMON $TRASSA_PID $TRASSA_WEB_PID
 	echo "trassa stopped"
 }
 
@@ -201,6 +234,7 @@ restart)
 	trassa_start
 	;;
 status)
+	[ -f $TRASSA_OFF ] && echo "trassa is turned off (the web page or: trassa enable)"
 	$TRASSA_BIN status
 	trassa_w=$(trassa_all web | head -1)
 	if [ -n "$trassa_w" ]; then

@@ -77,6 +77,7 @@ header.top { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px
 .btn.primary { background: var(--tunnel); border-color: var(--tunnel); color: var(--panel); }
 .btn.warn { background: var(--warn); border-color: var(--warn); color: var(--panel); }
 .btn:disabled { opacity: .5; cursor: default; }
+.btn.power { padding: 4px 12px; font-size: 13px; }
 .status-line { font-size: 13px; color: var(--ink-soft); }
 .status-line.ok { color: var(--ok); }
 .status-line.warn { color: var(--warn); }
