@@ -90,6 +90,15 @@ func marksOf(t *testing.T, src string) []string {
 	return m
 }
 
+// swapped is the ipset restore text that fills set under a temporary name and swaps it in.
+func swapped(set, kind string, addrs ...string) string {
+	s := "create " + set + " " + kind + " -exist\ncreate " + set + "_n " + kind + " -exist\nflush " + set + "_n\n"
+	for _, a := range addrs {
+		s += "add " + set + "_n " + a + " -exist\n"
+	}
+	return s + "swap " + set + "_n " + set + "\ndestroy " + set + "_n\n"
+}
+
 func vpn(strict bool) rules.Action { return rules.Action{Exit: "vpn", Strict: strict} }
 
 func TestRebuildFromScratch(t *testing.T) {
@@ -108,14 +117,13 @@ func TestRebuildFromScratch(t *testing.T) {
 	m := marksOf(t, twoExits)
 	equal(t, run.changed(), []string{
 		"ipset restore <<\n" +
-			"create trassa_d0 hash:ip -exist\nflush trassa_d0\n" +
-			"create trassa_d1 hash:ip -exist\nflush trassa_d1\n" +
-			"create trassa_d2 hash:ip -exist\nflush trassa_d2\n" +
-			"create trassa_d3 hash:ip -exist\nflush trassa_d3\n" +
-			"create trassa_d4 hash:ip -exist\nflush trassa_d4\n" +
-			"create trassa_s1 hash:net -exist\nflush trassa_s1\nadd trassa_s1 1.2.3.0/24 -exist\nadd trassa_s1 9.9.9.9/32 -exist\n" +
-			"create trassa_s3 hash:net -exist\nflush trassa_s3\nadd trassa_s3 10.0.0.0/8 -exist\n" +
-			"add trassa_d1 5.5.5.5 -exist\nadd trassa_d0 6.6.6.6 -exist\n",
+			swapped("trassa_d0", "hash:ip", "6.6.6.6") +
+			swapped("trassa_d1", "hash:ip", "5.5.5.5") +
+			swapped("trassa_d2", "hash:ip") +
+			swapped("trassa_d3", "hash:ip") +
+			swapped("trassa_d4", "hash:ip") +
+			swapped("trassa_s1", "hash:net", "1.2.3.0/24", "9.9.9.9/32") +
+			swapped("trassa_s3", "hash:net", "10.0.0.0/8"),
 		"iptables-restore -n <<\n" +
 			"*mangle\n:TRASSA - [0:0]\n" +
 			"-A TRASSA -m mark ! --mark 0x0 -j RETURN\n" +
@@ -162,7 +170,7 @@ func TestRebuildIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range run.changed() {
-		if strings.Contains(c, "ip rule add") || strings.Contains(c, "PREROUTING") || strings.Contains(c, "destroy") {
+		if strings.Contains(c, "ip rule add") || strings.Contains(c, "PREROUTING") || strings.HasPrefix(c, "ipset destroy") {
 			t.Errorf("unexpected command on rebuild: %s", c)
 		}
 	}
@@ -222,7 +230,7 @@ func TestRebuildAfterExitsChange(t *testing.T) {
 			t.Errorf("no command %q in\n%s", want, got)
 		}
 	}
-	for _, bad := range []string{"-A PREROUTING", "pref 1150", "_NDM_X", "destroy trassa_d1", "pref 201\n"} {
+	for _, bad := range []string{"-A PREROUTING", "pref 1150", "_NDM_X", "ipset destroy trassa_d1", "pref 201\n"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("unexpected command with %q in\n%s", bad, got)
 		}
@@ -475,5 +483,23 @@ func TestRulesOfAnotherLayoutAreReplaced(t *testing.T) {
 	}
 	if slices.Contains(c, "ip route flush table 541") {
 		t.Error("table 541 is still in use and must not be flushed")
+	}
+}
+
+func TestSetsAreSwappedInWhole(t *testing.T) {
+	l, _ := NewLayout(cfgOf(t, twoExits))
+	script := l.setsScript([]claims.Entry{{Addr: netip.MustParseAddr("5.5.5.5"), Action: vpn(false)}})
+	for _, want := range []string{
+		"create trassa_d1 hash:ip -exist\ncreate trassa_d1_n hash:ip -exist\nflush trassa_d1_n\nadd trassa_d1_n 5.5.5.5 -exist\nswap trassa_d1_n trassa_d1\ndestroy trassa_d1_n\n",
+		"create trassa_s1 hash:net -exist\ncreate trassa_s1_n hash:net -exist\nflush trassa_s1_n\nadd trassa_s1_n 1.2.3.0/24 -exist\nadd trassa_s1_n 9.9.9.9/32 -exist\nswap trassa_s1_n trassa_s1\ndestroy trassa_s1_n\n",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("missing\n%s\nin\n%s", want, script)
+		}
+	}
+	for _, line := range strings.Split(script, "\n") {
+		if strings.HasPrefix(line, "flush ") && !strings.HasSuffix(line, "_n") {
+			t.Errorf("a live set is flushed: %q", line)
+		}
 	}
 }

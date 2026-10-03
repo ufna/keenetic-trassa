@@ -135,23 +135,46 @@ func (l *Layout) hasSet(name string) bool {
 	return false
 }
 
-// setsScript is the input for "ipset restore": every set is created, flushed and filled again.
+const tmpSuffix = "_n" // a set is filled under this temporary name and then swapped in
+
+// setsScript is the input for "ipset restore". Each set is filled under a temporary name and
+// swapped in whole: a live set is never empty, even for a moment.
 func (l *Layout) setsScript(entries []claims.Entry) string {
-	var b strings.Builder
-	for _, s := range l.Slots {
-		fmt.Fprintf(&b, "create %s hash:ip -exist\nflush %s\n", s.Set(), s.Set())
+	type set struct {
+		name, kind string
+		adds       []string
 	}
-	for _, s := range l.Static {
-		fmt.Fprintf(&b, "create %s hash:net -exist\nflush %s\n", s.Name, s.Name)
-		for _, n := range s.Nets {
-			fmt.Fprintf(&b, "add %s %s -exist\n", s.Name, n)
+	var sets []*set
+	byName := map[string]*set{}
+	add := func(name, kind string) *set {
+		s := &set{name: name, kind: kind}
+		sets = append(sets, s)
+		byName[name] = s
+		return s
+	}
+	for _, s := range l.Slots {
+		add(s.Set(), "hash:ip")
+	}
+	for _, st := range l.Static {
+		s := add(st.Name, "hash:net")
+		for _, n := range st.Nets {
+			s.adds = append(s.adds, n.String())
 		}
 	}
 	for _, e := range entries {
 		// The snapshot was taken under the same rules as the layout; an entry with an unknown exit is skipped.
 		if slot, ok := l.Slot(e.Action); ok {
-			fmt.Fprintf(&b, "add %s %s -exist\n", slot.Set(), e.Addr)
+			byName[slot.Set()].adds = append(byName[slot.Set()].adds, e.Addr.String())
 		}
+	}
+	var b strings.Builder
+	for _, s := range sets {
+		tmp := s.name + tmpSuffix
+		fmt.Fprintf(&b, "create %s %s -exist\ncreate %s %s -exist\nflush %s\n", s.name, s.kind, tmp, s.kind, tmp)
+		for _, a := range s.adds {
+			fmt.Fprintf(&b, "add %s %s -exist\n", tmp, a)
+		}
+		fmt.Fprintf(&b, "swap %s %s\ndestroy %s\n", tmp, s.name, tmp)
 	}
 	return b.String()
 }
