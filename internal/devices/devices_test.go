@@ -236,3 +236,15 @@ func TestCheckAsksOnlyWhenNeeded(t *testing.T) {
 		t.Errorf("MACs only: an unreachable firmware is a warning: %v", ps)
 	}
 }
+
+func TestRCIHostsWithoutAnIPv4Address(t *testing.T) {
+	hs, err := serve(t, 200, `{"host":[{"mac":"aa:bb:cc:00:00:01","name":"a","active":true},{"mac":"aa:bb:cc:00:00:02","ip":"fd00::1","name":"b","active":true},{"mac":"aa:bb:cc:00:00:03","ip":"::ffff:192.168.1.5","name":"c","active":true}]}`).Hosts(context.Background())
+	if err != nil || len(hs) != 3 {
+		t.Fatalf("%+v, %v", hs, err)
+	}
+	for _, h := range hs {
+		if h.IP.IsValid() {
+			t.Errorf("%s: address %s, want none", h.Name, h.IP)
+		}
+	}
+}
