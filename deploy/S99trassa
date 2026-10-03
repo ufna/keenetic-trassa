@@ -114,32 +114,52 @@ trassa_supervise_web() {
 }
 
 trassa_start() {
-	if $TRASSA_BIN status >/dev/null 2>&1 || [ -n "$(trassa_all run)$(trassa_all web)" ]; then
-		echo "trassa уже запущен"
-		return 0
-	fi
 	if [ ! -x $TRASSA_BIN ]; then
 		echo "нет $TRASSA_BIN"
 		return 1
 	fi
-	if ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
-		echo "в правилах ошибки, trassa не запущен: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
-		return 1
+	trassa_daemon_up=0
+	if $TRASSA_BIN status >/dev/null 2>&1 || [ -n "$(trassa_all run)" ]; then
+		trassa_daemon_up=1
 	fi
-	rm -f $TRASSA_STOP $TRASSA_PID
-	# Потоки присмотра и сторожа отвязываются от сеанса, из которого их запустили. Иначе оболочка,
-	# сообщая о завершённом по сигналу демоне, пишет в закрытый сеанс и гибнет сама — и демон
-	# остаётся без присмотра.
-	trassa_supervise >>$TRASSA_LOG 2>&1 </dev/null &
-	echo $! >$TRASSA_SUP
-	trassa_watch >>$TRASSA_LOG 2>&1 </dev/null &
-	echo $! >>$TRASSA_SUP
+	trassa_web_up=0
+	[ -n "$(trassa_all web)" ] && trassa_web_up=1
+	# Не запущено ничего — список присмотров начинается заново: номера прежних процессов
+	# могли достаться посторонним.
+	if [ $trassa_daemon_up = 0 ] && [ $trassa_web_up = 0 ]; then
+		: >$TRASSA_SUP
+	fi
+	rm -f $TRASSA_STOP
+	trassa_rc=0
+	# Демон и страница запускаются по отдельности: страница нужна и тогда, когда в правилах
+	# ошибка, — чтобы их исправить.
+	if [ $trassa_daemon_up = 1 ]; then
+		echo "демон trassa уже запущен"
+	elif ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
+		echo "в правилах ошибки, демон trassa не запущен: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
+		trassa_rc=1
+	else
+		rm -f $TRASSA_PID
+		# Потоки присмотра и сторожа отвязываются от сеанса, из которого их запустили. Иначе оболочка,
+		# сообщая о завершённом по сигналу демоне, пишет в закрытый сеанс и гибнет сама — и демон
+		# остаётся без присмотра.
+		trassa_supervise >>$TRASSA_LOG 2>&1 </dev/null &
+		echo $! >>$TRASSA_SUP
+		trassa_watch >>$TRASSA_LOG 2>&1 </dev/null &
+		echo $! >>$TRASSA_SUP
+		echo "демон trassa запущен"
+	fi
 	# Страница — только если задан её адрес.
 	if [ -f $TRASSA_CONF/web.args ]; then
-		trassa_supervise_web >>$TRASSA_LOG 2>&1 </dev/null &
-		echo $! >>$TRASSA_SUP
+		if [ $trassa_web_up = 1 ]; then
+			echo "веб-страница уже запущена"
+		else
+			trassa_supervise_web >>$TRASSA_LOG 2>&1 </dev/null &
+			echo $! >>$TRASSA_SUP
+			echo "веб-страница запущена ($(cat $TRASSA_CONF/web.args))"
+		fi
 	fi
-	echo "trassa запущен"
+	return $trassa_rc
 }
 
 trassa_stop() {
