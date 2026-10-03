@@ -447,3 +447,17 @@ func TestLoadDecidesForViews(t *testing.T) {
 		t.Errorf("loaded %d, tv: %s", n, show(r.EffectiveFor(tv, ip1)))
 	}
 }
+
+// Review of task 4: the expiry tick runs under the engine's lock every 30 seconds. An address none
+// of whose claims expired cannot change, so it must cost nothing, whatever the number of views.
+func TestExpireSkipsAddressesWithNothingExpired(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	s.SetViews([]rules.View{tv, office, tv | office})
+	for i := 0; i < 500; i++ {
+		a := netip.AddrFrom4([4]byte{5, 5, byte(i / 250), byte(i%250 + 1)})
+		s.Observe(t0, []string{"instagram.example"}, []netip.Addr{a}, hour)
+	}
+	if allocs := testing.AllocsPerRun(5, func() { s.Expire(t0) }); allocs > 5 {
+		t.Errorf("an expiry tick with nothing expired made %.0f allocations", allocs)
+	}
+}

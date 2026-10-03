@@ -204,6 +204,11 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 func (s *Store) Expire(now time.Time) []Change {
 	var out []Change
 	for a, cs := range s.byAddr {
+		// Nothing expired, nothing changes: the tick holds the engine's lock, so it skips the
+		// addresses it would only recompute.
+		if !anyExpired(cs, now) {
+			continue
+		}
 		old := s.effectiveAll(a)
 		live := cs[:0]
 		for _, c := range cs {
@@ -217,6 +222,15 @@ func (s *Store) Expire(now time.Time) []Change {
 	}
 	sortChanges(out)
 	return out
+}
+
+func anyExpired(cs []Claim, now time.Time) bool {
+	for _, c := range cs {
+		if !c.Expires.After(now) {
+			return true
+		}
+	}
+	return false
 }
 
 // SetConfig switches the store to new rules and device views (the view of devices in no list is
