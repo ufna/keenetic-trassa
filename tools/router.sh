@@ -316,7 +316,7 @@ cmd_trassa_off() {
         ip route flush table "${rest##*lookup }" 2>/dev/null
       done
       for s in $(ipset list -n | grep "^trassa_"); do ipset destroy "$s"; done
-      rm -f /tmp/trassa.state
+      rm -f /tmp/trassa.state /tmp/trassa-web.pid
       echo "правил trassa в таблицах: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA); правил маршрутизации: $(ip rule list | grep -c "fwmark 0x5452"); списков адресов: $(ipset list -n | grep -c "^trassa_")"
       echo "процессов trassa: $(pidof trassa 2>/dev/null | wc -w)"' \
     || die "не удалось выполнить команду на роутере. Запасной путь: tools/router.sh opkg-off"

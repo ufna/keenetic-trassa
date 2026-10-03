@@ -35,7 +35,21 @@ build/trassa check rules/rules.conf
 say "доставка на роутер"
 "${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d /opt/etc/ndm/iflayerchanged.d'
 put build/trassa-arm64 /opt/sbin/trassa 755
-put rules/rules.conf /opt/etc/trassa/rules.conf 644
+# Правила на роутере правятся со страницы: файл на роутере главный, в проект забирается копия.
+# Свой файл кладётся, только если на роутере его ещё нет.
+if "${SSH[@]}" 'test -f /opt/etc/trassa/rules.conf'; then
+	"${SSH[@]}" 'cat /opt/etc/trassa/rules.conf' >rules/rules.conf.new
+	if cmp -s rules/rules.conf rules/rules.conf.new; then
+		rm rules/rules.conf.new
+	else
+		mv rules/rules.conf.new rules/rules.conf
+		say "правила на роутере изменены — копия в rules/rules.conf обновлена, её стоит закоммитить"
+	fi
+else
+	put rules/rules.conf /opt/etc/trassa/rules.conf 644
+fi
+# Адрес страницы задаётся один раз; дальше файл не трогается.
+"${SSH[@]}" "test -f /opt/etc/trassa/web.args || echo '-listen 192.168.1.1:8090' >/opt/etc/trassa/web.args"
 for f in rules/lists/*; do
 	if [ -f "$f" ]; then
 		put "$f" "/opt/etc/trassa/lists/$(basename "$f")" 644
@@ -53,5 +67,5 @@ if [ "${1:-}" = start ]; then
 	say "перезапуск демона"
 	"${SSH[@]}" 'sh /opt/etc/init.d/S99trassa restart'
 	sleep 2
-	"${SSH[@]}" '/opt/sbin/trassa status'
+	"${SSH[@]}" 'sh /opt/etc/init.d/S99trassa status'
 fi
