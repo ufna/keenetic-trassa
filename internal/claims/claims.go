@@ -22,8 +22,9 @@ type Claim struct {
 	Action  rules.Action // the decision for the view asked about
 	Expires time.Time
 
-	dec  []rules.Decision // per tracked view (Store.views); Rule == nil: no rule for that view
-	rank int              // the earliest rule for any device: eviction keeps claims of older rules
+	dec  []int32 // rule number per tracked view (Store.views); -1: no rule for that view
+	any  int32   // the rule the chain gets with "for" ignored (Config.MatchChainAny)
+	rank int32   // the earliest rule the claim gets for any view: eviction keeps claims of older rules
 }
 
 // Change is a change to the dynamic sets of one view. nil means "the address is in no set".
@@ -77,26 +78,40 @@ func (s *Store) position(v rules.View) (int, bool) {
 // decide decides a name chain for every tracked view. ok is false if no rule matches the chain for
 // any device at all; a chain matched only by a rule of an untracked view is still kept, since a
 // device of that view may join later.
-func (s *Store) decide(names []string) (dec []rules.Decision, rank int, ok bool) {
+func (s *Store) decide(names []string) (c Claim, ok bool) {
 	any := s.cfg.MatchChainAny(names)
 	if any.Rule == nil {
-		return nil, 0, false
+		return Claim{}, false
 	}
-	dec = make([]rules.Decision, len(s.views))
+	c = Claim{Names: names, any: int32(any.Index), dec: make([]int32, len(s.views))}
 	for i, v := range s.views {
-		dec[i] = s.decideFor(v, names, any)
+		c.dec[i] = s.decideFor(v, names, c.any)
 	}
-	return dec, any.Index, true
+	c.setRank()
+	return c, true
 }
 
-// decideFor decides a name chain for view v, given any, its decision with "for" ignored. The rule
-// any found is the first rule matching the first name that matches at all: when it applies to v,
-// it is v's decision too, and the rules need no second scan.
-func (s *Store) decideFor(v rules.View, names []string, any rules.Decision) rules.Decision {
-	if any.Rule != nil && any.Rule.AppliesTo(v) {
+// setRank takes the earliest rule among the claim's decisions and the rule found with "for" ignored.
+func (c *Claim) setRank() {
+	c.rank = c.any
+	for _, d := range c.dec {
+		if d >= 0 && d < c.rank {
+			c.rank = d
+		}
+	}
+}
+
+// decideFor decides a name chain for view v, given any, the rule it gets with "for" ignored: the
+// first rule matching the first name that matches at all. When that rule applies to v, it is v's
+// decision too, and the rules need no second scan.
+func (s *Store) decideFor(v rules.View, names []string, any int32) int32 {
+	if any >= 0 && s.cfg.Rules[any].AppliesTo(v) {
 		return any
 	}
-	return s.cfg.MatchChainFor(v, names)
+	if d := s.cfg.MatchChainFor(v, names); d.Rule != nil {
+		return int32(d.Index)
+	}
+	return -1
 }
 
 func (s *Store) Len() int { return len(s.byAddr) }
@@ -109,8 +124,8 @@ func (s *Store) ClaimsFor(v rules.View, addr netip.Addr) []Claim {
 	}
 	var out []Claim
 	for _, c := range s.byAddr[addr] {
-		if d := c.dec[i]; d.Rule != nil {
-			c.Index, c.Action = d.Index, d.Action
+		if d := c.dec[i]; d >= 0 {
+			c.Index, c.Action = int(d), s.cfg.Rules[d].Action
 			out = append(out, c)
 		}
 	}
@@ -151,21 +166,20 @@ func (s *Store) EffectiveFor(v rules.View, addr netip.Addr) *rules.Action {
 func (s *Store) Effective(addr netip.Addr) *rules.Action { return s.EffectiveFor(0, addr) }
 
 func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
-	cs := s.byAddr[addr]
-	var best *rules.Decision
-	for k := range cs {
-		if d := &cs[k].dec[i]; d.Rule != nil && (best == nil || d.Index < best.Index) {
+	best := int32(-1)
+	for _, c := range s.byAddr[addr] {
+		if d := c.dec[i]; d >= 0 && (best < 0 || d < best) {
 			best = d
 		}
 	}
-	if best == nil {
+	if best < 0 {
 		return nil
 	}
 	// A subnet of an earlier rule is older: its static set serves the address.
-	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && st.Index < best.Index {
+	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && st.Index < int(best) {
 		return nil
 	}
-	a := best.Action
+	a := s.cfg.Rules[best].Action
 	return &a
 }
 
@@ -188,7 +202,7 @@ func (s *Store) changes(out []Change, addr netip.Addr, old []*rules.Action) []Ch
 
 // Observe records a DNS answer: names are the queried name and its CNAME targets, addrs the answer's addresses.
 func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl time.Duration) []Change {
-	dec, rank, ok := s.decide(names)
+	c, ok := s.decide(names)
 	if !ok {
 		return nil
 	}
@@ -196,8 +210,8 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 		ttl = s.minTTL
 	}
 	// Copy: we keep the caller's slice for a long time, and it must not change under us.
-	names = append([]string(nil), names...)
-	c := Claim{Names: names, Expires: now.Add(ttl), dec: dec, rank: rank}
+	c.Names = append([]string(nil), names...)
+	c.Expires = now.Add(ttl)
 	var out []Change
 	for _, a := range addrs {
 		if !usable(a) {
@@ -260,12 +274,12 @@ func (s *Store) SetConfig(cfg *rules.Config, views []rules.View) []Change {
 	for a, cs := range s.byAddr {
 		kept := cs[:0]
 		for _, c := range cs {
-			dec, rank, ok := s.decide(c.Names)
+			d, ok := s.decide(c.Names)
 			if !ok {
 				continue
 			}
-			c.dec, c.rank = dec, rank
-			kept = append(kept, c)
+			d.Names, d.Expires = c.Names, c.Expires
+			kept = append(kept, d)
 		}
 		s.total -= len(cs) - len(kept)
 		s.put(a, kept)
@@ -296,17 +310,16 @@ func (s *Store) SetViews(views []rules.View) []Change {
 	for _, cs := range s.byAddr {
 		for ci := range cs {
 			c := &cs[ci]
-			r := &s.cfg.Rules[c.rank]
-			any := rules.Decision{Index: c.rank, Rule: r, Action: r.Action}
-			dec := make([]rules.Decision, len(next))
+			dec := make([]int32, len(next))
 			for i, v := range next {
 				if from[i] >= 0 {
 					dec[i] = c.dec[from[i]]
 				} else {
-					dec[i] = s.decideFor(v, c.Names, any)
+					dec[i] = s.decideFor(v, c.Names, c.any)
 				}
 			}
 			c.dec = dec
+			c.setRank()
 		}
 	}
 	s.views = next
@@ -480,12 +493,13 @@ func (s *Store) Load(r io.Reader, now time.Time) int {
 		if limit := now.Add(maxKeep); expires.After(limit) {
 			expires = limit
 		}
-		dec, rank, ok := s.decide(v.Names)
+		c, ok := s.decide(v.Names)
 		if !ok {
 			continue
 		}
+		c.Expires = expires
 		before := s.total
-		s.add(a, Claim{Names: v.Names, Expires: expires, dec: dec, rank: rank})
+		s.add(a, c)
 		if s.total > before {
 			n++
 		}

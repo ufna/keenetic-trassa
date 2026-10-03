@@ -487,3 +487,29 @@ func TestSetViewsDecidesOnlyAddedViews(t *testing.T) {
 		t.Error("adding and removing a view changed the sets")
 	}
 }
+
+// Review of task 4: with a cap per address, a new claim may evict only a claim of a newer rule.
+// The rank of a claim is the earliest rule it gets for any view, not the rule the first matching
+// name hits: here devices in no list take b.example's rule 0.
+func TestEvictionRankIsTheEarliestRuleForAnyView(t *testing.T) {
+	s := New(config(t, "exit vpn = W\nexit alt = W\ndevice tv = 192.168.1.40\ndefault direct\nb.example -> alt\nc.example -> vpn\na.example -> vpn for tv\n"), hour)
+	s.SetLimits(0, 1)
+	s.Observe(t0, []string{"a.example", "b.example"}, []netip.Addr{ip1}, hour)
+	s.Observe(t0, []string{"c.example"}, []netip.Addr{ip1}, hour)
+	if got := show(s.Effective(ip1)); got != "alt" {
+		t.Errorf("devices in no list: %s, want alt (rule 0 must not be evicted by rule 1)", got)
+	}
+}
+
+func TestViewsDivergeAlongTheCNAMEChain(t *testing.T) {
+	s := New(config(t, "exit vpn = W\nexit alt = W\ndevice tv = 192.168.1.40\ndefault direct\nalias.example -> vpn for tv\ncdn.example -> alt\n"), hour)
+	s.SetViews([]rules.View{tv})
+	s.Observe(t0, []string{"alias.example", "cdn.example"}, []netip.Addr{ip1}, hour)
+	if a, b := show(s.Effective(ip1)), show(s.EffectiveFor(tv, ip1)); a != "alt" || b != "vpn" {
+		t.Errorf("no list: %s, tv: %s; want alt and vpn", a, b)
+	}
+	want := "[{0 1.1.1.1 alt} {1 1.1.1.1 vpn}]"
+	if got := fmt.Sprint(s.Entries()); got != want {
+		t.Errorf("entries %s, want %s", got, want)
+	}
+}
