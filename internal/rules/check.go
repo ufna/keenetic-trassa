@@ -39,6 +39,16 @@ func Check(c *Config) []Problem {
 			ps = append(ps, Problem{r.Line, Warning,
 				"strict on a negation rule: if all of the exit's tunnels go down, almost the whole internet is lost"})
 		}
+		if r.All && r.forMask == 0 && r.notMask == 0 {
+			switch {
+			case r.Action.Strict:
+				ps = append(ps, Problem{r.Line, Warning,
+					"strict on * for every device: if all of the exit's tunnels go down, the whole internet is lost except for the rules above"})
+			case r.Action.Exit == None:
+				ps = append(ps, Problem{r.Line, Warning,
+					"* -> none for every device: everything the rules above do not let through is blocked"})
+			}
+		}
 		if r.Action.Exit == None && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
 			ps = append(ps, Problem{r.Line, Warning,
 				"none on a negation rule: almost the whole internet is blocked"})
@@ -60,6 +70,9 @@ func Check(c *Config) []Problem {
 // takes reports that the rule certainly takes every name matching condition b:
 // b is covered by one of the ordinary conditions (or there are none) and overlaps none of the negations.
 func (r *Rule) takes(b Cond) bool {
+	if r.All {
+		return true
+	}
 	if len(r.Pos) == 0 && len(r.Neg) == 0 {
 		return false
 	}
@@ -109,6 +122,10 @@ func (c *Config) shadowedBy(i int) string {
 		for j := 0; j < i && line == 0; j++ {
 			if !c.Rules[j].coversDevices(r) {
 				continue
+			}
+			if c.Rules[j].All {
+				line = c.Rules[j].Line
+				break
 			}
 			for _, en := range c.Rules[j].Nets {
 				if en.Bits() <= n.Bits() && en.Contains(n.Addr()) {

@@ -834,3 +834,25 @@ func TestStatusBeforeTheFirmwareAnswers(t *testing.T) {
 		t.Errorf("status before the first answer:\n%s", s)
 	}
 }
+
+// "*" for a device list: the devices' answers show its decision, and why names its line.
+func TestCatchAllInTheEngine(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndevice direct_devices = 192.168.1.94\ndefault direct\n* -> direct for direct_devices\nvideo.example -> vpn\n"), sink, l.printf, t0)
+	e.Resync()
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	if o := e.State().Recent[0]; o.Action != "direct" || o.Line != 4 {
+		t.Errorf("the answer to a device of direct_devices: %+v", o)
+	}
+	if !slices.Contains(sink.got, "1.1.1.1 - => vpn") {
+		t.Errorf("other devices still get the rule: %v", sink.got)
+	}
+	if text, _ := e.Why("video.example", t0); !strings.Contains(text, "for direct_devices: direct (line 4)") {
+		t.Errorf("why:\n%s", text)
+	}
+	e.HandlePacket(t0, answer("other.example", "2.2.2.2"))
+	if e.store.Known(netip.MustParseAddr("2.2.2.2")) {
+		t.Error("an answer only * matches must not be kept")
+	}
+}

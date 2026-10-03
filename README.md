@@ -130,6 +130,7 @@ example.org -> vpn strict             # strict: blocked while all tunnels of the
 @lists/streaming.txt -> vpn           # conditions from a file in /opt/etc/trassa, one per line
 twitch.tv -> vpn for tv, phones       # only for the devices of lists tv and phones
 reddit.com -> vpn for !office         # for every device except those of list office
+* -> vpn for tv                       # all the rest of the TV's traffic; the rules below skip it
 ads.example.net -> none               # blocked: new connections are refused
 !*.ru -> vpn                          # negation: everything except .ru (a broad rule: keep it last)
 
@@ -146,6 +147,12 @@ test yandex.ru = direct
   addresses; give listed devices a permanent address in the router's DHCP settings. A device's
   rules use every DNS answer on the network, not only the device's own.
 - At most 16 device lists and 64 devices in all of them.
+- `*` stands for all traffic: every name and every address. The rules above it still apply to
+  the devices it is for; the rules below it do not, and the rest of their traffic goes to its
+  exit, a default of their own at that place. `* -> direct for office` takes the office devices
+  out of the VPN rules below it; `* -> vpn for tv` sends the whole TV through the tunnel; with the
+  allowed sites above it, `* -> none for kids` blocks everything else. Without `for`, `*` is the
+  same as `default`. It stands alone in its rule.
 - `none` blocks: new connections to the addresses of matching names and subnets are refused (the
   device gets an ICMP "prohibited": Linux and Android give up at once, Windows and Apple systems
   retry for a few seconds). Blocking works on addresses, as routing does: a site without a rule

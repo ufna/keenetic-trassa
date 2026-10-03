@@ -82,6 +82,7 @@ type Rule struct {
 	Neg    []Cond // none matches
 	Nets   []netip.Prefix
 	Action Action
+	All    bool     // the condition "*": every name and every address, a default at its place
 	For    []string // device lists the rule applies to; empty means every device
 	NotFor []string // device lists the rule does not apply to
 
@@ -342,6 +343,10 @@ func (p *parser) rule(n int, s string) {
 			good = false
 		}
 	}
+	if good && r.All && len(toks) > 1 {
+		p.errf(n, "the condition * stands alone: it means all traffic; for everything except some names use !*.ru and the like")
+		good = false
+	}
 	if good {
 		p.cfg.Rules = append(p.cfg.Rules, r)
 	}
@@ -403,6 +408,13 @@ func (r *Rule) add(tok string) error {
 	}
 	if tok == "" {
 		return errors.New("empty condition")
+	}
+	if tok == "*" {
+		if neg {
+			return errors.New("condition !* would match nothing")
+		}
+		r.All = true
+		return nil
 	}
 	if strings.Contains(tok, "://") && !strings.HasPrefix(tok, "~") {
 		return linkError(tok)

@@ -68,26 +68,59 @@ func (c *Config) Explain(subject string) (string, error) {
 
 // firstName finds the first rule matching the name among the rules applying to view v, or among
 // all rules if all is set.
+// A "*" rule is not matched like the others: it is where the rules end for the devices it applies
+// to, and what they get when nothing above it matches. firstName and MatchAddrFor stop at it and
+// report "no rule"; the callers then take DefaultFor.
 func (c *Config) firstName(v View, all bool, name string) Decision {
-	for i := range c.Rules {
+	limit := len(c.Rules)
+	if !all {
+		limit = c.CatchAll(v)
+	}
+	for i := 0; i < limit; i++ {
 		r := &c.Rules[i]
-		if (all || r.AppliesTo(v)) && r.matchName(name) {
+		if !r.All && (all || r.AppliesTo(v)) && r.matchName(name) {
 			return Decision{Index: i, Rule: r, Action: r.Action}
 		}
+	}
+	return Decision{Index: len(c.Rules)}
+}
+
+// CatchAll returns the position of the first "*" rule applying to view v, or the number of rules
+// if there is none. Rules below it never apply to v.
+func (c *Config) CatchAll(v View) int {
+	for i := range c.Rules {
+		if c.Rules[i].All && c.Rules[i].AppliesTo(v) {
+			return i
+		}
+	}
+	return len(c.Rules)
+}
+
+// DefaultFor is where traffic of view v that matches no rule goes: the first "*" rule applying to
+// v, or default.
+func (c *Config) DefaultFor(v View) Decision {
+	if i := c.CatchAll(v); i < len(c.Rules) {
+		return Decision{Index: i, Rule: &c.Rules[i], Action: c.Rules[i].Action}
 	}
 	return c.defaultDecision()
 }
 
 // MatchNameFor finds the first rule matching the name for a device whose lists are v.
 // The name must be normalized with NormalizeName.
-func (c *Config) MatchNameFor(v View, name string) Decision { return c.firstName(v, false, name) }
+func (c *Config) MatchNameFor(v View, name string) Decision {
+	if d := c.firstName(v, false, name); d.Rule != nil {
+		return d
+	}
+	return c.DefaultFor(v)
+}
 
 // MatchName is MatchNameFor for a device in no list.
 func (c *Config) MatchName(name string) Decision { return c.MatchNameFor(0, name) }
 
 // MatchAddrFor finds the first rule applying to view v whose addresses and subnets contain a.
 func (c *Config) MatchAddrFor(v View, a netip.Addr) Decision {
-	for i := range c.Rules {
+	limit := c.CatchAll(v)
+	for i := 0; i < limit; i++ {
 		r := &c.Rules[i]
 		if !r.AppliesTo(v) {
 			continue
@@ -98,7 +131,7 @@ func (c *Config) MatchAddrFor(v View, a netip.Addr) Decision {
 			}
 		}
 	}
-	return c.defaultDecision()
+	return c.DefaultFor(v)
 }
 
 // MatchAddr is MatchAddrFor for a device in no list.
@@ -153,7 +186,10 @@ func (c *Config) matchChain(v View, all bool, names []string) Decision {
 			return d
 		}
 	}
-	return c.defaultDecision()
+	if all {
+		return c.defaultDecision()
+	}
+	return c.DefaultFor(v)
 }
 
 // MatchChainFor decides what happens to a DNS response for a device whose lists are v: names are

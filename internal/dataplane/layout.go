@@ -69,10 +69,11 @@ func (s Slot) Pref() string  { return strconv.Itoa(prefBase + s.Index) }
 func (s Slot) Set() string   { return setPrefix + "d" + strconv.Itoa(s.Index) }
 
 type staticSet struct {
-	Name string
-	Nets []netip.Prefix
-	Slot Slot
-	rule rules.Rule // the rule the set serves: which devices it applies to
+	Name  string
+	Nets  []netip.Prefix
+	Slot  Slot
+	rule  rules.Rule // the rule the set serves: which devices it applies to
+	index int        // the rule's position: a "*" rule above it ends the rules for its devices
 }
 
 // Layout is what must exist in the kernel for the given rules and device views.
@@ -86,6 +87,16 @@ type Layout struct {
 	gen   uint32
 	exits map[string]int
 	none  int // position of the blocking slot in Slots; 0 means the rules block nothing
+	// ends holds, for every view, where its rules end (its "*" rule, or the number of rules) and
+	// what it gets when nothing above matches.
+	ends map[rules.View]viewEnd
+}
+
+// viewEnd is where a view's rules end and what its traffic gets when nothing above matches: the
+// view's "*" rule, or default.
+type viewEnd struct {
+	limit int
+	slot  Slot
 }
 
 func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
@@ -110,14 +121,19 @@ func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
 			if !ok {
 				return nil, fmt.Errorf("line %d: exit %q is not declared", r.Line, r.Action.Exit)
 			}
-			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot, rule: r})
+			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot, rule: r, index: i})
 		}
 	}
-	def, ok := l.Slot(cfg.Default)
-	if !ok {
-		return nil, fmt.Errorf("default: exit %q is not declared", cfg.Default.Exit)
+	l.ends = map[rules.View]viewEnd{}
+	for _, v := range append([]rules.View{0}, l.Views...) {
+		d := cfg.DefaultFor(v)
+		slot, ok := l.Slot(d.Action)
+		if !ok {
+			return nil, fmt.Errorf("default: exit %q is not declared", d.Action.Exit)
+		}
+		l.ends[v] = viewEnd{limit: cfg.CatchAll(v), slot: slot}
 	}
-	l.Default = def
+	l.Default = l.ends[0].slot
 	return l, nil
 }
 
@@ -313,16 +329,19 @@ func (l *Layout) marks(rule func(chain, format string, args ...any), chain strin
 	for _, s := range l.Slots {
 		rule(chain, fresh+" -m set --match-set %s dst -j MARK --set-mark %s", dynSet(v, s), s.Mark())
 	}
+	end := l.ends[v]
 	for _, s := range l.Static {
-		if s.rule.AppliesTo(v) {
+		if s.rule.AppliesTo(v) && s.index < end.limit {
 			rule(chain, fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Name, s.Slot.Mark())
 		}
 	}
-	if l.Default.Index != 0 {
+	// What the view's traffic gets when nothing above matched: its "*" rule or default. Direct
+	// needs no mark: the router routes the connection as without trassa.
+	if end.slot.Index != 0 {
 		for _, n := range localNets {
 			rule(chain, "-m mark --mark 0x0 -d %s -j RETURN", n)
 		}
-		rule(chain, fresh+" -j MARK --set-mark %s", l.Default.Mark())
+		rule(chain, fresh+" -j MARK --set-mark %s", end.slot.Mark())
 	}
 	rule(chain, "-m mark --mark 0x%x/%s -j CONNMARK --save-mark", markBase, markMask)
 }

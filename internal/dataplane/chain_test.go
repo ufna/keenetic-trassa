@@ -439,3 +439,71 @@ func TestDefaultNoneForADeviceView(t *testing.T) {
 		}
 	}
 }
+
+// "*" for a device list: its devices get the rules above it and then its exit, nothing below it;
+// the home network stays reachable.
+func TestCatchAllForDeviceLists(t *testing.T) {
+	const src = `exit vpn = W
+device direct_devices = 192.168.1.50
+device tv = 192.168.1.40
+device kids = 192.168.1.70
+default direct
+*.ru -> direct for tv
+* -> direct for direct_devices
+allowed.example -> direct for kids
+* -> none for kids
+* -> vpn for tv
+youtube.com -> vpn
+91.108.4.0/22 -> vpn
+`
+	const dd, tv, kids rules.View = 1, 2, 4
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	r.SetExits(map[string]string{"vpn": "nwg2"})
+	v, direct := rules.Action{Exit: "vpn"}, rules.Action{Exit: "direct"}
+	entries := []claims.Entry{
+		{Addr: ip("5.5.5.5"), Action: v},                  // youtube for everyone else
+		{View: dd, Addr: ip("5.5.5.5"), Action: direct},   // youtube for direct_devices: their *
+		{View: tv, Addr: ip("5.5.5.5"), Action: v},        // youtube for the TV: its *
+		{View: tv, Addr: ip("7.7.7.7"), Action: direct},   // a .ru site for the TV
+		{View: kids, Addr: ip("6.6.6.6"), Action: direct}, // allowed.example for kids
+	}
+	sources := map[rules.View][]netip.Addr{dd: {ip("192.168.1.50")}, tv: {ip("192.168.1.40")}, kids: {ip("192.168.1.70")}}
+	if err := r.Rebuild(cfgOf(t, src), sources, entries); err != nil {
+		t.Fatal(err)
+	}
+	marks := marksOf(t, src) // direct, vpn, vpn strict, none
+	vm, nm := markOf(t, marks[1]), markOf(t, marks[3])
+	m := newModel(t, run.calls)
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"192.168.1.50", "5.5.5.5", markBase}, {"192.168.1.50", "91.108.4.9", 0}, {"192.168.1.50", "8.8.8.8", 0},
+		{"192.168.1.40", "5.5.5.5", vm}, {"192.168.1.40", "8.8.8.8", vm}, {"192.168.1.40", "91.108.4.9", vm},
+		{"192.168.1.40", "7.7.7.7", markBase}, {"192.168.1.40", "192.168.1.1", 0},
+		{"192.168.1.70", "6.6.6.6", markBase}, {"192.168.1.70", "8.8.8.8", nm}, {"192.168.1.70", "192.168.1.1", 0},
+		{"192.168.1.30", "5.5.5.5", vm}, {"192.168.1.30", "91.108.4.9", vm}, {"192.168.1.30", "8.8.8.8", 0},
+	}
+	for _, c := range cases {
+		if got := m.mark(c.from, c.to); got != c.want {
+			t.Errorf("%s → %s: mark %#x, want %#x", c.from, c.to, got, c.want)
+		}
+	}
+}
+
+// "*" for every device is a default at its place: the main chain marks everything left with its exit.
+func TestCatchAllForEveryDevice(t *testing.T) {
+	const src = "exit vpn = W\ndefault direct\nbank.example -> direct\n* -> vpn\n"
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, src), nil, []claims.Entry{{Addr: netip.MustParseAddr("7.7.7.7"), Action: rules.Action{Exit: "direct"}}}); err != nil {
+		t.Fatal(err)
+	}
+	vm := markOf(t, marksOf(t, src)[1])
+	m := newModel(t, run.calls)
+	if a, b, c := m.mark("192.168.1.30", "7.7.7.7"), m.mark("192.168.1.30", "8.8.8.8"), m.mark("192.168.1.30", "10.0.0.1"); a != markBase || b != vm || c != 0 {
+		t.Errorf("bank %#x, other %#x, local %#x", a, b, c)
+	}
+}

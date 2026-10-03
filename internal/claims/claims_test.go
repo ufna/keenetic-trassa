@@ -529,3 +529,19 @@ func TestNoneSkipsPrivateAddresses(t *testing.T) {
 		t.Errorf("another rule for a private address: %s", got)
 	}
 }
+
+// A "*" rule for a device list ends the rules for its devices: a rule below it, even one that
+// applies to every device, is not their decision.
+func TestCatchAllEndsTheRulesForItsDevices(t *testing.T) {
+	s := New(config(t, "exit vpn = W\ndevice dd = 192.168.1.50\ndefault direct\n* -> direct for dd\nyoutube.example -> vpn\n"), hour)
+	s.SetViews([]rules.View{1})
+	s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour)
+	if a, b := show(s.Effective(ip1)), show(s.EffectiveFor(1, ip1)); a != "vpn" || b != "direct" {
+		t.Errorf("no list: %s, dd: %s; want vpn and direct", a, b)
+	}
+	// A name no real rule matches is not kept: * is not a reason to remember every answer.
+	s.Observe(t0, []string{"other.example"}, []netip.Addr{ip2}, hour)
+	if s.Known(ip2) {
+		t.Error("an answer matched only by * was kept")
+	}
+}

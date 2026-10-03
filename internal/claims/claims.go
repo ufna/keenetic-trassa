@@ -102,10 +102,10 @@ func (c *Claim) setRank() {
 }
 
 // decideFor decides a name chain for view v, given any, the rule it gets with "for" ignored: the
-// first rule matching the first name that matches at all. When that rule applies to v, it is v's
-// decision too, and the rules need no second scan.
+// first rule matching the first name that matches at all. When that rule applies to v and is above
+// v's "*" rule, it is v's decision too, and the rules need no second scan.
 func (s *Store) decideFor(v rules.View, names []string, any int32) int32 {
-	if any >= 0 && s.cfg.Rules[any].AppliesTo(v) {
+	if any >= 0 && s.cfg.Rules[any].AppliesTo(v) && int(any) < s.cfg.CatchAll(v) {
 		return any
 	}
 	if d := s.cfg.MatchChainFor(v, names); d.Rule != nil {
@@ -196,7 +196,7 @@ func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
 		return nil
 	}
 	// A subnet of an earlier rule is older: its static set serves the address.
-	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && st.Index < int(best) {
+	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && !st.Rule.All && st.Index < int(best) {
 		return nil
 	}
 	a := s.cfg.Rules[best].Action
