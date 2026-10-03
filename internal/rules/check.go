@@ -2,6 +2,7 @@ package rules
 
 import (
 	"fmt"
+	"math/bits"
 	"sort"
 	"strings"
 )
@@ -86,7 +87,7 @@ func (c *Config) shadowedBy(i int) string {
 	for _, cond := range r.Pos {
 		line := 0
 		for j := 0; j < i && line == 0; j++ {
-			if c.Rules[j].takes(cond) {
+			if c.Rules[j].coversDevices(r) && c.Rules[j].takes(cond) {
 				line = c.Rules[j].Line
 			}
 		}
@@ -98,6 +99,9 @@ func (c *Config) shadowedBy(i int) string {
 	for _, n := range r.Nets {
 		line := 0
 		for j := 0; j < i && line == 0; j++ {
+			if !c.Rules[j].coversDevices(r) {
+				continue
+			}
 			for _, en := range c.Rules[j].Nets {
 				if en.Bits() <= n.Bits() && en.Contains(n.Addr()) {
 					line = c.Rules[j].Line
@@ -136,4 +140,25 @@ func (c *Config) runTest(t Test) (Problem, bool) {
 	}
 	return Problem{t.Line, Error, fmt.Sprintf("expectation failed: %s goes to %s (%s), expected %s",
 		t.Subject, d.Action.Exit, where, t.Want)}, true
+}
+
+// coversDevices reports that rule r applies to every device that rule o applies to. Only the lists
+// the two rules name matter, and every combination of them is tried; when there are too many to
+// try, the answer is a cautious false.
+func (r *Rule) coversDevices(o *Rule) bool {
+	if r.forMask == 0 && r.notMask == 0 {
+		return true
+	}
+	named := r.forMask | r.notMask | o.forMask | o.notMask
+	if bits.OnesCount16(uint16(named)) > 12 {
+		return false
+	}
+	for v := named; ; v = (v - 1) & named {
+		if o.AppliesTo(v) && !r.AppliesTo(v) {
+			return false
+		}
+		if v == 0 {
+			return true
+		}
+	}
 }

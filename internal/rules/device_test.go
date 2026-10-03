@@ -146,3 +146,83 @@ func TestDeviceLimits(t *testing.T) {
 		t.Errorf("65 devices: %v", ps)
 	}
 }
+func TestMatchForViews(t *testing.T) {
+	c := devConfig(t, withDevices)
+	cases := []struct {
+		v          View
+		subj, want string
+	}{
+		{0, "www.youtube.com", "direct"}, {tv, "www.youtube.com", "vpn"}, {phones, "youtube.com", "vpn"},
+		{office, "youtube.com", "direct"}, {tv | office, "youtube.com", "vpn"},
+		{0, "instagram.com", "vpn strict"}, {office, "instagram.com", "direct"}, {tv | office, "instagram.com", "direct"},
+		{phones, "twitch.tv", "vpn"}, {phones | office, "twitch.tv", "direct"}, {0, "twitch.tv", "direct"},
+		{tv, "91.108.4.7", "vpn"}, {0, "91.108.4.7", "direct"},
+		{office, "telegram.org", "vpn"},
+	}
+	for _, k := range cases {
+		_, d, err := c.MatchSubjectFor(k.v, k.subj)
+		if err != nil || d.Action.String() != k.want {
+			t.Errorf("view %d, %s: %v (%v), want %s", k.v, k.subj, d.Action, err, k.want)
+		}
+	}
+	if d := c.MatchChainFor(tv, []string{"r1.googlevideo.example", "youtube.com"}); d.Action.Exit != "vpn" || d.Rule.Line != 6 {
+		t.Errorf("chain for tv: %+v", d)
+	}
+	if d := c.MatchChain([]string{"youtube.com"}); d.Rule != nil {
+		t.Errorf("chain for a device in no list matched %q", d.Rule.Text)
+	}
+	if d := c.MatchChainAny([]string{"youtube.com"}); d.Rule == nil || d.Rule.Line != 6 {
+		t.Errorf("chain for any device: %+v", d)
+	}
+}
+
+func TestShadowingRespectsDevices(t *testing.T) {
+	const head = "exit vpn = W\ndevice tv = 1.1.1.1\ndevice phones = 2.2.2.2\ndevice office = 3.3.3.3\ndefault direct\n"
+	cases := []struct {
+		rules string
+		warn  bool
+	}{
+		{"x.example -> vpn for tv\nx.example -> direct\n", false},
+		{"x.example -> vpn\nx.example -> direct for tv\n", true},
+		{"x.example -> vpn for tv, phones\nx.example -> direct for tv\n", true},
+		{"x.example -> vpn for !office\nx.example -> direct for tv\n", false},
+		{"x.example -> vpn for !office\nx.example -> direct for tv, !office\n", true},
+		{"1.2.3.0/24 -> vpn for tv\n1.2.3.4 -> direct\n", false},
+		{"1.2.3.0/24 -> vpn\n1.2.3.4 -> direct for tv\n", true},
+	}
+	for _, k := range cases {
+		_, ps := Load(head+k.rules, nil)
+		if got := strings.Contains(fmt.Sprint(ps), "can never match"); got != k.warn {
+			t.Errorf("%q: warning %v, want %v (%v)", k.rules, got, k.warn, ps)
+		}
+	}
+}
+
+func TestExplainShowsDeviceLists(t *testing.T) {
+	c := devConfig(t, withDevices)
+	text, err := c.Explain("youtube.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"youtube.com → direct", "for tv: vpn (line 6)", "for phones: vpn (line 6)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("no %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "for office") {
+		t.Errorf("office has the same decision as everyone else:\n%s", text)
+	}
+	if got := c.DeviceLines("instagram.com", []View{tv, office, tv | office}); got != "for office: direct (default)\nfor tv, office: direct (default)\n" {
+		t.Errorf("DeviceLines = %q", got)
+	}
+	if got := c.ListViews(); fmt.Sprint(got) != "[1 2 4]" {
+		t.Errorf("ListViews = %v", got)
+	}
+}
+
+func TestExpectationsUseDevicesInNoList(t *testing.T) {
+	_, ps := Load(withDevices+"test youtube.com = direct\ntest instagram.com = vpn\n", nil)
+	if HasErrors(ps) {
+		t.Errorf("expectations are about devices in no list: %v", ps)
+	}
+}
