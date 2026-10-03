@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,7 +129,7 @@ func TestWhyBadInput(t *testing.T) {
 }
 
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"nonsense"}} {
+	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"web", "x"}, {"web", "-nonsense"}, {"nonsense"}} {
 		if code, _, errOut := exec(args...); code != 2 || !strings.Contains(errOut, "Использование") {
 			t.Errorf("%v: код %d, stderr %q", args, code, errOut)
 		}
@@ -141,5 +142,17 @@ func TestLiveCommandsWithoutDaemon(t *testing.T) {
 		if code, _, errOut := exec(args...); code != 1 || !strings.Contains(errOut, "демон trassa не запущен") {
 			t.Errorf("%v: код %d, stderr %q", args, code, errOut)
 		}
+	}
+}
+
+func TestWebFailsOnBusyAddress(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	code, _, errOut := exec("web", "-listen", l.Addr().String(), "-dir", t.TempDir())
+	if code != 1 || !strings.Contains(errOut, "веб-страница") {
+		t.Errorf("код %d, stderr %q", code, errOut)
 	}
 }

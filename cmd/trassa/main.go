@@ -23,6 +23,7 @@ const usage = `trassa — гибкая маршрутизация для дом�
   trassa rollback [-y] [-dir каталог]           вернуть предыдущую версию правил из истории
   trassa run [-rules файл] [-only адрес]        запустить демон в режиме наблюдения
   trassa run -route [-source адрес]             запустить демон в режиме маршрутизации
+  trassa web [-listen адрес] [-dir каталог]     веб-страница для правки правил (192.168.1.1:8090)
   trassa cleanup                                снять правила перехвата DNS и маршрутизации
 `
 
@@ -44,6 +45,9 @@ func run(args []string, out, errw io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "rollback" {
 		return cmdRollback(args[1:], out, errw)
+	}
+	if len(args) > 0 && args[0] == "web" {
+		return cmdWeb(args[1:], errw)
 	}
 	switch {
 	case len(args) == 2 && args[0] == "check":
