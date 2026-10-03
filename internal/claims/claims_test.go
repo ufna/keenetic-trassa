@@ -461,3 +461,29 @@ func TestExpireSkipsAddressesWithNothingExpired(t *testing.T) {
 		t.Errorf("an expiry tick with nothing expired made %.0f allocations", allocs)
 	}
 }
+
+// Final review: a listed device joining or leaving changes the tracked views, under the engine's
+// lock. Only the added view is decided, and an answer whose rule applies to every device needs no
+// rule scan at all; the views already tracked are not decided again.
+func TestSetViewsDecidesOnlyAddedViews(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	s.SetViews([]rules.View{tv})
+	const n = 2000
+	for i := 0; i < n; i++ {
+		a := netip.AddrFrom4([4]byte{5, 5, byte(i / 250), byte(i%250 + 1)})
+		s.Observe(t0, []string{"instagram.example"}, []netip.Addr{a}, hour)
+	}
+	before := fmt.Sprint(s.Entries())
+	allocs := testing.AllocsPerRun(1, func() {
+		s.SetViews([]rules.View{tv, office})
+		s.SetViews([]rules.View{tv})
+	})
+	// One new decision slice per answer and view change, and one action per answer in the added
+	// view's set: about 3 per answer for the round trip. Deciding every view again costs far more.
+	if allocs > 3.5*n {
+		t.Errorf("adding and removing a view made %.0f allocations for %d answers", allocs, n)
+	}
+	if after := fmt.Sprint(s.Entries()); after != before {
+		t.Error("adding and removing a view changed the sets")
+	}
+}

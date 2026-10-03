@@ -84,9 +84,19 @@ func (s *Store) decide(names []string) (dec []rules.Decision, rank int, ok bool)
 	}
 	dec = make([]rules.Decision, len(s.views))
 	for i, v := range s.views {
-		dec[i] = s.cfg.MatchChainFor(v, names)
+		dec[i] = s.decideFor(v, names, any)
 	}
 	return dec, any.Index, true
+}
+
+// decideFor decides a name chain for view v, given any, its decision with "for" ignored. The rule
+// any found is the first rule matching the first name that matches at all: when it applies to v,
+// it is v's decision too, and the rules need no second scan.
+func (s *Store) decideFor(v rules.View, names []string, any rules.Decision) rules.Decision {
+	if any.Rule != nil && any.Rule.AppliesTo(v) {
+		return any
+	}
+	return s.cfg.MatchChainFor(v, names)
 }
 
 func (s *Store) Len() int { return len(s.byAddr) }
@@ -267,8 +277,50 @@ func (s *Store) SetConfig(cfg *rules.Config, views []rules.View) []Change {
 	return out
 }
 
-// SetViews switches the tracked device views under the same rules.
-func (s *Store) SetViews(views []rules.View) []Change { return s.SetConfig(s.cfg, views) }
+// SetViews switches the tracked device views under the same rules. It runs whenever a listed
+// device joins or leaves, under the engine's lock, so only the added views are decided: the views
+// tracked before keep their decisions. Changes are reported for the added views; a removed view
+// has no sets any more, as in SetConfig.
+func (s *Store) SetViews(views []rules.View) []Change {
+	next := trackedViews(views)
+	if slices.Equal(next, s.views) {
+		return nil
+	}
+	from := make([]int, len(next)) // position of each next view among the current ones; -1 if added
+	for i, v := range next {
+		from[i] = -1
+		if k, ok := s.position(v); ok {
+			from[i] = k
+		}
+	}
+	for _, cs := range s.byAddr {
+		for ci := range cs {
+			c := &cs[ci]
+			r := &s.cfg.Rules[c.rank]
+			any := rules.Decision{Index: c.rank, Rule: r, Action: r.Action}
+			dec := make([]rules.Decision, len(next))
+			for i, v := range next {
+				if from[i] >= 0 {
+					dec[i] = c.dec[from[i]]
+				} else {
+					dec[i] = s.decideFor(v, c.Names, any)
+				}
+			}
+			c.dec = dec
+		}
+	}
+	s.views = next
+	var out []Change
+	for i, v := range next {
+		if from[i] < 0 {
+			for a := range s.byAddr {
+				out = appendChange(out, v, a, nil, s.effective(i, a))
+			}
+		}
+	}
+	sortChanges(out)
+	return out
+}
 
 // trackedViews puts the view of devices in no list first, then the distinct device views ascending.
 func trackedViews(views []rules.View) []rules.View {
