@@ -241,7 +241,7 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	note(err)
 	for _, s := range l.Slots[1:] {
 		if s.Exit == rules.None {
-			// The kernel refuses the connection at once, with an ICMP "prohibited" to the device,
+			// The kernel refuses the connection quickly, with an ICMP "prohibited" to the device,
 			// instead of leaving it to wait for a timeout. Tunnels do not matter here.
 			_, err := r.run.Run(ctx, "ip", "route", "replace", "prohibit", "default", "table", s.Table())
 			note(err)

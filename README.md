@@ -102,7 +102,8 @@ sh /opt/etc/init.d/S99trassa restart
 
 If the firmware's own domain routing is configured (DNS-based routes for a domain list), it
 marks packets before trassa does and wins. Disable those routes in the firmware for trassa to
-take over.
+take over. The same goes for a device assigned to a firmware connection policy: its packets are
+already marked, so trassa neither routes nor blocks them.
 
 ## Rules
 
@@ -145,10 +146,17 @@ test yandex.ru = direct
   addresses; give listed devices a permanent address in the router's DHCP settings. A device's
   rules use every DNS answer on the network, not only the device's own.
 - At most 16 device lists and 64 devices in all of them.
-- `none` blocks: new connections to the addresses of matching names and subnets are refused at
-  once. Blocking works on addresses, as routing does: a site without a rule that shares an address
-  with a blocked one (a CDN) is blocked too while that address is in memory. DNS answers are not
-  changed. `default none` blocks everything except the rules' sites and the home network.
+- `none` blocks: new connections to the addresses of matching names and subnets are refused (the
+  device gets an ICMP "prohibited": Linux and Android give up at once, Windows and Apple systems
+  retry for a few seconds). Blocking works on addresses, as routing does: a site without a rule
+  that shares an address with a blocked one (a CDN) is blocked too while that address is in
+  memory, and a blocked site that shares an address with an earlier rule's site is not, so put
+  `none` rules above the rules whose sites may share their addresses. A name never blocks a
+  private address (the home network, a NAS, a network behind a tunnel); a subnet written in the
+  rules does. DNS answers are not changed. `default none` blocks everything except the rules'
+  sites and the home network.
+- Blocking and routing work only while trassa routes: not in observe mode, not while it is turned
+  off or restarting.
 - A file with errors is never applied: the previous rules stay. Warnings (for example, a rule
   that can never match because an earlier one covers it) need an explicit confirmation.
 
@@ -208,9 +216,9 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 
 ## If something goes wrong
 
-- If the daemon stops or crashes, DNS keeps working (the kernel passes DNS answers by itself)
-  and traffic goes as without trassa; `strict` rules block their traffic until the daemon is
-  back. The supervisor restarts it within seconds.
+- If the daemon stops or crashes, DNS keeps working (the kernel passes DNS answers by itself).
+  The supervisor removes trassa's rules and restarts the daemon within seconds; until then
+  traffic goes as without trassa, `strict` and `none` rules included.
 - The quickest way back to the router's own routing is the switch on the page or
   `trassa disable` on the router: the daemon removes everything it built and stays off.
 - `tools/router.sh trassa-off` stops trassa, disables the start at boot and removes everything
