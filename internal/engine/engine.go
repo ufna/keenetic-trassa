@@ -70,6 +70,7 @@ type Engine struct {
 	dirty   bool              // kernel sets may have drifted from memory: a rebuild is needed
 	hosts   []devices.Host    // the firmware's device list, as last read
 	devs    devices.Map       // where the device lists' devices are
+	built   bool              // the kernel was built at least once: until then devices only update memory
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
@@ -195,6 +196,7 @@ func (e *Engine) rebuild() error {
 	}
 	err := e.sink.Rebuild(e.cfg, e.devs.Sources(), e.store.Entries())
 	e.dirty = err != nil
+	e.built = e.built || err == nil
 	if err != nil {
 		e.stats.ApplyErrors++
 		e.logf("could not build address sets and routes: %v", err)
@@ -242,10 +244,15 @@ func (e *Engine) SetDevices(hosts []devices.Host) error {
 	e.logDevices(old)
 	if views := e.devs.ViewList(); !slices.Equal(views, e.store.Views()) {
 		e.note(e.store.SetViews(views), "device lists changed")
+		if !e.built {
+			// At start the devices come before the exits and the saved state: the first build
+			// (Resync) takes them along.
+			return nil
+		}
 		return e.rebuild()
 	}
 	sources := e.devs.Sources()
-	if e.sink == nil || maps.EqualFunc(old.Sources(), sources, slices.Equal[[]netip.Addr]) {
+	if e.sink == nil || !e.built || maps.EqualFunc(old.Sources(), sources, slices.Equal[[]netip.Addr]) {
 		return nil
 	}
 	if err := e.sink.SetSources(sources); err != nil {

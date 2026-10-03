@@ -595,6 +595,10 @@ func TestDeviceRules(t *testing.T) {
 	sink := &fakeSink{}
 	l := &logs{}
 	e := New(config(t, devSrc), sink, l.printf, t0)
+	// As in the daemon: the kernel is built at start, before any packet.
+	if err := e.Resync(); err != nil {
+		t.Fatal(err)
+	}
 	// The answer goes to 192.168.1.94, a device of list pc: its decision, its view's set.
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	if got := strings.Join(sink.got, "\n"); got != "[1] 1.1.1.1 - => vpn" {
@@ -704,4 +708,27 @@ func TestNoneInWhy(t *testing.T) {
 	if text, _ := e.Why("ads.example", t0); !strings.Contains(text, "ads.example → none") || !strings.Contains(text, "blocked: new connections are refused") {
 		t.Errorf("why:\n%s", text)
 	}
+}
+
+// Review of task 6: at start the daemon learns the devices before the exits and the saved state.
+// Until the first build the kernel is not touched: the first Resync builds with the devices.
+func TestDevicesBeforeFirstBuild(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, devSrc), sink, l.printf, t0)
+	if err := e.SetDevices(devHosts()); err != nil {
+		t.Fatal(err)
+	}
+	hosts := devHosts()
+	hosts[0].IP = netip.MustParseAddr("192.168.1.41")
+	if err := e.SetDevices(hosts); err != nil {
+		t.Fatal(err)
+	}
+	if sink.builds != 0 || sink.sourced != 0 || e.Stats().ApplyErrors != 0 {
+		t.Errorf("before the first build: %d builds, %d source updates, %d errors", sink.builds, sink.sourced, e.Stats().ApplyErrors)
+	}
+	if err := e.Resync(); err != nil {
+		t.Fatal(err)
+	}
+	wantSources(t, sink.sources, "map[1:[192.168.1.94] 2:[192.168.1.41]]")
 }
