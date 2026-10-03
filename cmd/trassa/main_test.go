@@ -156,3 +156,29 @@ func TestWebFailsOnBusyAddress(t *testing.T) {
 		t.Errorf("code %d, stderr %q", code, errOut)
 	}
 }
+
+// The default config ships with the repository. As it is, it must pass the check and change
+// nothing: no exits, no rules. With its examples enabled (lines "#   ..."), they must pass the
+// check too, without warnings, so the examples never drift from what trassa accepts.
+func TestDefaultRules(t *testing.T) {
+	src, err := os.ReadFile("../../rules/rules.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := exec("check", write(t, map[string]string{"rules.conf": string(src)}))
+	if code != 0 || !strings.Contains(out, "rules: 0, exits: 0") {
+		t.Errorf("as shipped: code %d, output %q, stderr %q", code, out, errOut)
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(string(src), "\n") {
+		// An example taking conditions from a file needs that file: it stays a comment.
+		if rest, ok := strings.CutPrefix(line, "#   "); ok && !strings.HasPrefix(rest, "@") {
+			line = rest
+		}
+		b.WriteString(line + "\n")
+	}
+	code, out, errOut = exec("check", write(t, map[string]string{"rules.conf": b.String()}))
+	if code != 0 || !strings.Contains(out, "exits: 1") || !strings.Contains(out, "expectations: 2, warnings: 0") {
+		t.Errorf("with the examples enabled: code %d, output %q, stderr %q\n%s", code, out, errOut, b.String())
+	}
+}
