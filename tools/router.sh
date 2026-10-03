@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Check, backup and rollback of the Netcraze Giga router.
-# Works over the local network, no internet needed. Details in ОТКАТ.md (rollback guide).
+# Works over the local network, no internet needed. Details in docs/ОТКАТ.md (rollback guide).
 set -euo pipefail
 
 ROUTER=${ROUTER:-http://192.168.1.1}
@@ -59,7 +59,7 @@ reachable() { curl -sS -m 5 -o /dev/null "$ROUTER/auth" 2>/dev/null; }
 login() {
   local head realm challenge pass md5 sha code
   head=$(curl -sS -m 10 -c "$JAR" -o /dev/null -D - "$ROUTER/auth") \
-    || die "router $ROUTER is not responding. See ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
+    || die "router $ROUTER is not responding. See docs/ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
   realm=$(printf '%s' "$head" | grep -i '^X-NDM-Realm:' | cut -d' ' -f2- | tr -d '\r')
   challenge=$(printf '%s' "$head" | grep -i '^X-NDM-Challenge:' | cut -d' ' -f2- | tr -d '\r')
   [ -n "$challenge" ] || die "the router sent no login challenge: is $ROUTER really the router?"
@@ -126,7 +126,7 @@ wait_up() {
     if reachable; then say "the router is responding"; return 0; fi
     sleep 2
   done
-  die "the router did not come back within 10 minutes. See ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
+  die "the router did not come back within 10 minutes. See docs/ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
 }
 
 wait_internet() {
