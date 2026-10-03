@@ -4,8 +4,18 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
-SSH=(ssh -i backup/ssh/router_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=backup/ssh/known_hosts
-	-o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1)
+# The router and how to reach it over SSH (the defaults suit the original setup):
+#   TRASSA_ROUTER       the router's address on the home network, 192.168.1.1
+#   TRASSA_SSH_KEY      the private key for root on the router, backup/ssh/router_ed25519 if present;
+#                       otherwise ssh uses its own defaults (agent, ~/.ssh)
+#   TRASSA_KNOWN_HOSTS  the known_hosts file for the router, backup/ssh/known_hosts if present
+ROUTER_HOST=${TRASSA_ROUTER:-192.168.1.1}
+SSH_KEY=${TRASSA_SSH_KEY:-backup/ssh/router_ed25519}
+KNOWN_HOSTS=${TRASSA_KNOWN_HOSTS:-backup/ssh/known_hosts}
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+if [ -r "$SSH_KEY" ]; then SSH+=(-i "$SSH_KEY" -o IdentitiesOnly=yes); fi
+if [ -r "$KNOWN_HOSTS" ]; then SSH+=(-o UserKnownHostsFile="$KNOWN_HOSTS"); fi
+SSH+=("root@$ROUTER_HOST")
 
 say() { echo ">>> $*"; }
 
@@ -52,7 +62,7 @@ if [ "$rules_present" = 0 ]; then
 	put rules/rules.conf /opt/etc/trassa/rules.conf 644
 fi
 # The page address is set once; after that the file is left alone.
-"${SSH[@]}" "test -f /opt/etc/trassa/web.args || echo '-listen 192.168.1.1:8090' >/opt/etc/trassa/web.args"
+"${SSH[@]}" "test -f /opt/etc/trassa/web.args || echo '-listen $ROUTER_HOST:8090' >/opt/etc/trassa/web.args"
 for f in rules/lists/*; do
 	if [ -f "$f" ]; then
 		put "$f" "/opt/etc/trassa/lists/$(basename "$f")" 644

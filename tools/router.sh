@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
-# Check, backup and rollback of the Netcraze Giga router.
-# Works over the local network, no internet needed. Details in docs/ОТКАТ.md (rollback guide).
+# Check, backup and rollback of a Keenetic/Netcraze router (developed on a Netcraze Giga).
+# Works over the local network, no internet needed.
 set -euo pipefail
 
 ROUTER=${ROUTER:-http://192.168.1.1}
 LOGIN=${ROUTER_LOGIN:-admin}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-BACKUP=${BACKUP:-$ROOT/backup/2026-10-01}
+# The backup restore-* returns to: the first backup taken becomes the baseline.
+BACKUP=${BACKUP:-$ROOT/backup/baseline}
 PASSFILE=$ROOT/backup/.router-pass
+SSH_KEY=${TRASSA_SSH_KEY:-$ROOT/backup/ssh/router_ed25519}
+KNOWN_HOSTS=${TRASSA_KNOWN_HOSTS:-$ROOT/backup/ssh/known_hosts}
+# The owner's own rollback notes, if kept (docs/ is not in git); otherwise the README.
+GUIDE=${ROLLBACK_GUIDE:-docs/ОТКАТ.md}
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
 
 die() { echo "ERROR: $*" >&2; exit 1; }
+guide() { if [ -f "$ROOT/$GUIDE" ]; then echo "See $GUIDE."; else echo "See README.md, \"If something goes wrong\"."; fi; }
 say() { echo ">>> $*"; }
 
 for t in curl jq md5sum sha256sum; do
@@ -39,8 +45,10 @@ Rollback (every command asks for confirmation):
   restore-firmware   restore the firmware from the backup and reboot
   restore-all        firmware, then settings, then check
 
-Backup: $BACKUP
+Router: $ROUTER (the ROUTER variable)
+Baseline backup: $BACKUP (the BACKUP variable)
 Password: the ROUTER_PASS variable, the file backup/.router-pass, or typed at the keyboard.
+SSH for trassa-off: TRASSA_SSH_KEY and TRASSA_KNOWN_HOSTS, else ssh defaults.
 EOF
 }
 
@@ -59,7 +67,7 @@ reachable() { curl -sS -m 5 -o /dev/null "$ROUTER/auth" 2>/dev/null; }
 login() {
   local head realm challenge pass md5 sha code
   head=$(curl -sS -m 10 -c "$JAR" -o /dev/null -D - "$ROUTER/auth") \
-    || die "router $ROUTER is not responding. See docs/ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
+    || die "router $ROUTER is not responding. $(guide)"
   realm=$(printf '%s' "$head" | grep -i '^X-NDM-Realm:' | cut -d' ' -f2- | tr -d '\r')
   challenge=$(printf '%s' "$head" | grep -i '^X-NDM-Challenge:' | cut -d' ' -f2- | tr -d '\r')
   [ -n "$challenge" ] || die "the router sent no login challenge: is $ROUTER really the router?"
@@ -126,7 +134,7 @@ wait_up() {
     if reachable; then say "the router is responding"; return 0; fi
     sleep 2
   done
-  die "the router did not come back within 10 minutes. See docs/ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
+  die "the router did not come back within 10 minutes. $(guide)"
 }
 
 wait_internet() {
@@ -198,6 +206,10 @@ cmd_backup() {
   say "downloading the firmware image"
   curl -sS -m 600 -b "$JAR" -o "$dir/firmware.bin" "$ROUTER/ci/firmware"
   chmod 600 "$dir"/*
+  if [ ! -e "$ROOT/backup/baseline" ]; then
+    ln -s "$(basename "$dir")" "$ROOT/backup/baseline"
+    say "this backup is the baseline from now on: backup/baseline"
+  fi
   say "backup: $dir"
   ls -la "$dir"
 }
@@ -296,10 +308,11 @@ cmd_restore_all() {
 # The rules are also removed directly, without trassa itself: the rollback must not depend
 # on the program being rolled back working correctly.
 cmd_trassa_off() {
-  local key=$ROOT/backup/ssh/router_ed25519
-  [ -r "$key" ] || die "key not found: $key"
-  ssh -i "$key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$ROOT/backup/ssh/known_hosts" \
-    -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 '
+  local host=${ROUTER#*://}; host=${host%%[:/]*}
+  local ssh=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+  if [ -r "$SSH_KEY" ]; then ssh+=(-i "$SSH_KEY" -o IdentitiesOnly=yes); fi
+  if [ -r "$KNOWN_HOSTS" ]; then ssh+=(-o UserKnownHostsFile="$KNOWN_HOSTS"); fi
+  "${ssh[@]}" "root@$host" '
       sh /opt/etc/init.d/S99trassa stop
       chmod 644 /opt/etc/init.d/S99trassa
       for p in $(pidof trassa 2>/dev/null); do kill -9 "$p" 2>/dev/null; done
