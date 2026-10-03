@@ -378,23 +378,8 @@ func cmdRun(args []string, errw io.Writer) int {
 		current = active
 	}
 
-	// refreshDevices asks the firmware which devices are on the network. If it does not answer,
-	// the last known addresses stay; one log line per series of failures.
-	devicesFailed := false
-	refreshDevices := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		hosts, err := devSrc.Hosts(ctx)
-		if err != nil {
-			if !devicesFailed {
-				logger.Printf("device list unknown, the last known device addresses stay: %v", err)
-			}
-			devicesFailed = true
-			return
-		}
-		devicesFailed = false
-		eng.SetDevices(hosts) // the engine logs its own failures
-	}
+	devPoller := &devicePoller{src: devSrc, eng: eng, logf: logger.Printf}
+	refreshDevices := devPoller.poll
 
 	// The socket goes first: it also checks that no other instance is running.
 	// After a reload over the socket the tunnels are rechecked at once: otherwise a new exit would
@@ -601,6 +586,7 @@ func cmdRun(args []string, errw io.Writer) int {
 				} else {
 					logger.Print(strings.TrimSpace(text))
 					refreshExits()
+					refreshDevices()
 				}
 			default:
 				shutdown()
@@ -609,4 +595,34 @@ func cmdRun(args []string, errw io.Writer) int {
 			}
 		}
 	}
+}
+
+// devicePoller asks the firmware which devices are on the network and hands the list to the
+// engine. If the firmware does not answer, the last known addresses stay; one log line per series
+// of failures.
+type devicePoller struct {
+	src    devices.Source
+	eng    *engine.Engine
+	logf   func(format string, args ...any)
+	failed bool // the last poll failed
+	known  bool // a list has arrived at least once
+}
+
+func (p *devicePoller) poll() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	hosts, err := p.src.Hosts(ctx)
+	if err != nil {
+		switch {
+		case p.failed:
+		case p.known:
+			p.logf("device list unknown, the last known device addresses stay: %v", err)
+		default:
+			p.logf("device list unknown: devices named in the rules are not found until the router answers: %v", err)
+		}
+		p.failed = true
+		return
+	}
+	p.failed, p.known = false, true
+	p.eng.SetDevices(hosts) // the engine logs its own failures
 }
