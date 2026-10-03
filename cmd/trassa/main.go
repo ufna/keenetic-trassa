@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"trassa/internal/ctl"
 	"trassa/internal/rules"
+	"trassa/internal/store"
 )
 
 const usage = `trassa — гибкая маршрутизация для домашнего роутера
@@ -17,9 +17,10 @@ const usage = `trassa — гибкая маршрутизация для дом�
 Использование:
   trassa check <файл правил>                   проверить файл правил
   trassa why -f <файл правил> <имя или адрес>   решение по файлу правил, без демона
-  trassa why <имя или адрес>                    решение и сведения из DNS у работающего демона
+  trassa why <имя, адрес или ссылка>            решение и сведения из DNS у работающего демона
   trassa status                                 состояние демона
   trassa reload                                 перечитать правила без остановки
+  trassa rollback [-y] [-dir каталог]           вернуть предыдущую версию правил из истории
   trassa run [-rules файл] [-only адрес]        запустить демон в режиме наблюдения
   trassa run -route [-source адрес]             запустить демон в режиме маршрутизации
   trassa cleanup                                снять правила перехвата DNS и маршрутизации
@@ -40,6 +41,9 @@ func sockPath() string {
 func run(args []string, out, errw io.Writer) int {
 	if len(args) > 0 && args[0] == "run" {
 		return cmdRun(args[1:], errw)
+	}
+	if len(args) > 0 && args[0] == "rollback" {
+		return cmdRollback(args[1:], out, errw)
 	}
 	switch {
 	case len(args) == 2 && args[0] == "check":
@@ -69,22 +73,13 @@ func cmdLive(cmd, arg string, out, errw io.Writer) int {
 	return 0
 }
 
-// load читает файл правил; пути в условиях @файл считаются от его каталога.
+// load читает файл правил; файлы условий @путь — только из его каталога.
 func load(path string, errw io.Writer) (*rules.Config, []rules.Problem, bool) {
-	src, err := os.ReadFile(path)
+	cfg, ps, err := store.LoadFile(path)
 	if err != nil {
 		fmt.Fprintf(errw, "не могу прочитать %s: %v\n", path, err)
 		return nil, nil, false
 	}
-	dir := filepath.Dir(path)
-	read := func(p string) (string, error) {
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(dir, p)
-		}
-		b, err := os.ReadFile(p)
-		return string(b), err
-	}
-	cfg, ps := rules.Load(string(src), read)
 	return cfg, ps, true
 }
 

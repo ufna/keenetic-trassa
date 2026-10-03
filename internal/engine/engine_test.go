@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"trassa/internal/claims"
+	"trassa/internal/ctl"
 	"trassa/internal/rules"
 )
 
@@ -506,5 +507,32 @@ func TestFailuresAskForResync(t *testing.T) {
 	sink.fail = true
 	if err := e.Reload(config(t, "exit vpn = W\ndefault direct\nvideo.example -> vpn\n")); err == nil || !e.NeedsResync() {
 		t.Errorf("Reload должен сообщить о сбое построения: ошибка %v, флаг %v", err, e.NeedsResync())
+	}
+}
+
+func TestState(t *testing.T) {
+	e, _ := newEngine(t, nil)
+	if st := e.State(); st.Mode != "observe" || st.Rules != 3 || len(st.Exits) != 1 || st.Exits[0].Known || st.Recent == nil {
+		t.Errorf("пустое состояние: %+v", st)
+	}
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	e.HandlePacket(t0.Add(time.Second), answer("unknown.example", "9.9.9.9"))
+	e.SetExits(map[string]string{"vpn": "Wireguard2"})
+	st := e.State()
+	if !st.Started.Equal(t0) || st.Addrs != 1 || st.Claims != 1 || st.Stats.Answers != 2 || st.Stats.Claimed != 1 {
+		t.Errorf("счётчики: %+v", st)
+	}
+	if st.Exits[0] != (ctl.ExitState{Name: "vpn", Via: "Wireguard2", Known: true}) {
+		t.Errorf("выходы: %+v", st.Exits)
+	}
+	want := []ctl.Observation{
+		{At: t0.Add(time.Second), Client: "192.168.1.94", Name: "unknown.example", Action: "direct"},
+		{At: t0, Client: "192.168.1.94", Name: "video.example", Action: "vpn strict", Line: 3},
+	}
+	if len(st.Recent) != 2 || st.Recent[0] != want[0] || st.Recent[1] != want[1] {
+		t.Errorf("наблюдения (новые первыми): %+v", st.Recent)
+	}
+	if routed, _ := newEngine(t, &fakeSink{}); routed.State().Mode != "route" {
+		t.Error("с приёмником изменений режим — route")
 	}
 }

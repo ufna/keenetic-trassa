@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -46,8 +47,9 @@ func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []ru
 			return b.String(), errors.New("в файле правил ошибки; оставлены прежние правила")
 		}
 		if err := eng.Reload(cfg); err != nil {
-			// Правила приняты, но в ядре пока прежнее состояние: об успехе сообщать нельзя.
-			return b.String(), fmt.Errorf("правила приняты, но списки и маршруты построить не удалось: %v; попытка повторится в течение 30 секунд", err)
+			// Правила приняты, но в ядре пока прежнее состояние: об успехе сообщать нельзя,
+			// а о провале — тоже: прежние правила уже не действуют.
+			return b.String(), fmt.Errorf("%w: правила приняты, но списки и маршруты построить не удалось: %v; попытка повторится в течение 30 секунд", ctl.ErrPartial, err)
 		}
 		fmt.Fprintf(&b, "правила перечитаны: правил %d, выходов %d\n", len(cfg.Rules), len(cfg.Exits))
 		return b.String(), nil
@@ -94,6 +96,9 @@ func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
 			return eng.Why(arg, time.Now())
 		case "status":
 			return eng.Status(time.Now()), nil
+		case "state":
+			b, err := json.Marshal(eng.State())
+			return string(b), err
 		case "reload":
 			return reload()
 		}

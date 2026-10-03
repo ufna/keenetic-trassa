@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"trassa/internal/claims"
+	"trassa/internal/ctl"
 	"trassa/internal/dnsmsg"
 	"trassa/internal/ippkt"
 	"trassa/internal/rules"
@@ -27,6 +28,7 @@ const (
 	logChanges     = 8     // изменений в одной строке журнала
 	recentSize     = 200
 	statusRows     = 10
+	stateRows      = 30
 )
 
 // Sink исполняет решения в ядре. nil — режим наблюдения: изменения только журналируются.
@@ -37,18 +39,8 @@ type Sink interface {
 	Rebuild(cfg *rules.Config, entries []claims.Entry) error
 }
 
-type Stats struct {
-	Packets     uint64 // пакетов из очереди
-	Answers     uint64 // DNS-ответов с адресами
-	Claimed     uint64 // из них подошло под правило
-	Changes     uint64 // изменений списков
-	NotDNS      uint64 // не UDP с порта 53
-	Malformed   uint64 // DNS не разобрался
-	Skipped     uint64 // запрос, ошибка, усечённый ответ, ответ без адресов
-	BadName     uint64 // запрошенное имя не похоже на доменное
-	Dropped     uint64 // не учтено: память заполнена
-	ApplyErrors uint64
-}
+// Stats — счётчики демона; описание полей — в ctl.Stats.
+type Stats = ctl.Stats
 
 type observation struct {
 	at     time.Time
@@ -393,6 +385,26 @@ func (e *Engine) Status(now time.Time) string {
 		fmt.Fprintf(&b, "  %s %s %s → %s (%s)\n", o.at.Format("15:04:05"), o.client, o.name, o.action, where)
 	}
 	return b.String()
+}
+
+// State — состояние для веб-страницы: новые наблюдения первыми.
+func (e *Engine) State() ctl.State {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	st := ctl.State{Mode: "observe", Started: e.started, Rules: len(e.cfg.Rules), Addrs: e.store.Len(),
+		Claims: e.store.Total(), Stats: e.snapshot(), Exits: []ctl.ExitState{}, Recent: []ctl.Observation{}}
+	if e.sink != nil {
+		st.Mode = "route"
+	}
+	for _, x := range e.cfg.Exits {
+		st.Exits = append(st.Exits, ctl.ExitState{Name: x.Name, Via: e.exits[x.Name], Known: e.exits != nil})
+	}
+	for i := len(e.recent) - 1; i >= 0 && len(st.Recent) < stateRows; i-- {
+		o := e.recent[i]
+		st.Recent = append(st.Recent, ctl.Observation{At: o.at, Client: o.client.String(), Name: o.name,
+			Action: o.action.String(), Line: o.line})
+	}
+	return st
 }
 
 // ago пишет промежуток коротко: «45 с», «10 мин», «3 ч».

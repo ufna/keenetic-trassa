@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -294,6 +295,9 @@ func TestReloadRejectsUnknownInterface(t *testing.T) {
 	if err == nil || !strings.Contains(text, "строка 4: ошибка: интерфейс Nope не существует") || !strings.Contains(err.Error(), "оставлены прежние правила") {
 		t.Errorf("текст %q, ошибка %v", text, err)
 	}
+	if errors.Is(err, ctl.ErrPartial) {
+		t.Error("отвергнутые правила выданы за частично применённые")
+	}
 	if len(eng.Config().Exits) != 1 {
 		t.Error("правила с несуществующим интерфейсом применены")
 	}
@@ -376,11 +380,22 @@ func TestReloadReportsBuildFailure(t *testing.T) {
 	eng := engine.New(cfg, brokenSink{}, func(string, ...any) {}, time.Now())
 	os.WriteFile(path, []byte(live+"vimeo.com -> vpn\n"), 0o644)
 	text, err := reloader(path, eng, nil)()
-	if err == nil || !strings.Contains(err.Error(), "построить не удалось") || strings.Contains(text, "правила перечитаны") {
+	if err == nil || !strings.Contains(err.Error(), "построить не удалось") || strings.Contains(text, "правила перечитаны") || !errors.Is(err, ctl.ErrPartial) {
 		t.Errorf("сбой построения выдан за успех: текст %q, ошибка %v", text, err)
 	}
 	// Правила при этом приняты, а построение будет повторено.
 	if len(eng.Config().Rules) != 2 || !eng.NeedsResync() {
 		t.Errorf("правил %d, нужно перестроение: %v", len(eng.Config().Rules), eng.NeedsResync())
+	}
+}
+
+func TestHandlerState(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	text, err := handler(eng, nil)("state", "")
+	var st ctl.State
+	if err != nil || json.Unmarshal([]byte(text), &st) != nil || st.Mode != "observe" || st.Rules != 1 {
+		t.Errorf("ответ %q, ошибка %v", text, err)
 	}
 }

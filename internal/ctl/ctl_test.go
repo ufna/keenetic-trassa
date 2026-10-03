@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,11 +54,14 @@ func TestCallReturnsHandlerErrorWithText(t *testing.T) {
 	if err == nil || err.Error() != "не получилось" || text != "подробности\n" {
 		t.Errorf("ответ %q, ошибка %v", text, err)
 	}
+	if errors.Is(err, ErrPartial) {
+		t.Error("обычная ошибка демона выдана за частичное выполнение")
+	}
 }
 
 func TestCallWithoutDaemon(t *testing.T) {
 	_, err := Call(sock(t), "status", "", 200*time.Millisecond)
-	if err == nil || !strings.Contains(err.Error(), "демон trassa не отвечает") {
+	if !errors.Is(err, ErrNoDaemon) || !strings.Contains(err.Error(), "демон trassa не запущен") {
 		t.Errorf("ошибка %v", err)
 	}
 }
@@ -102,5 +106,55 @@ func TestCloseRemovesSocket(t *testing.T) {
 	srv.Close()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("файл сокета остался: %v", err)
+	}
+}
+
+func TestCallPartial(t *testing.T) {
+	path := sock(t)
+	srv, err := Serve(path, func(cmd, arg string) (string, error) {
+		return "правила приняты\n", fmt.Errorf("%w: списки не построены", ErrPartial)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	text, err := Call(path, "reload", "", time.Second)
+	if !errors.Is(err, ErrPartial) || err.Error() != "выполнено не полностью: списки не построены" || text != "правила приняты\n" {
+		t.Errorf("ответ %q, ошибка %v", text, err)
+	}
+}
+
+func TestCallNoReply(t *testing.T) {
+	path := sock(t)
+	srv, err := Serve(path, func(cmd, arg string) (string, error) {
+		time.Sleep(300 * time.Millisecond)
+		return "поздно\n", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if _, err := Call(path, "reload", "", 100*time.Millisecond); !errors.Is(err, ErrNoReply) {
+		t.Errorf("ошибка %v", err)
+	}
+}
+
+// Долгая команда (перечитывание правил с перестроением списков) успевает ответить, если клиент
+// готов ждать: срок на ответ отсчитывается после выполнения команды.
+func TestSlowCommandStillAnswers(t *testing.T) {
+	old := replyTimeout
+	replyTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { replyTimeout = old })
+	path := sock(t)
+	srv, err := Serve(path, func(cmd, arg string) (string, error) {
+		time.Sleep(300 * time.Millisecond)
+		return "готово\n", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	if text, err := Call(path, "reload", "", 2*time.Second); err != nil || text != "готово\n" {
+		t.Errorf("ответ %q, ошибка %v", text, err)
 	}
 }
