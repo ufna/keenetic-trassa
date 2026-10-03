@@ -50,7 +50,7 @@ func (s *scripted) Run(ctx context.Context, name string, args ...string) (string
 func (s *scripted) changed() []string {
 	var out []string
 	for _, c := range s.calls {
-		if strings.HasPrefix(c, "ip rule list") || strings.HasPrefix(c, "ipset list") || strings.Contains(c, " -S ") || strings.Contains(c, " -C ") {
+		if strings.HasPrefix(c, "ip rule list") || strings.HasPrefix(c, "ipset list") || strings.Contains(c, " -S ") || strings.Contains(c, " -C ") || strings.HasPrefix(c, "iptables-save") {
 			continue
 		}
 		out = append(out, c)
@@ -81,7 +81,7 @@ const oneExit = "exit vpn = W\ndefault direct\nx.com -> vpn\n"
 // marksOf returns the slot marks of a layout: expectations must not depend on the generation.
 func marksOf(t *testing.T, src string) []string {
 	t.Helper()
-	l, err := NewLayout(cfgOf(t, src))
+	l, err := NewLayout(cfgOf(t, src), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func swapped(set, kind string, addrs ...string) string {
 // fallMark is the condition of the "this layout, no route: go direct" rule.
 func fallMark(t *testing.T, src string) string {
 	t.Helper()
-	l, err := NewLayout(cfgOf(t, src))
+	l, err := NewLayout(cfgOf(t, src), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestRebuildFromScratch(t *testing.T) {
 		{Addr: netip.MustParseAddr("5.5.5.5"), Action: vpn(false)},
 		{Addr: netip.MustParseAddr("6.6.6.6"), Action: rules.Action{Exit: "direct"}},
 	}
-	if err := r.Rebuild(cfgOf(t, twoExits), entries); err != nil {
+	if err := r.Rebuild(cfgOf(t, twoExits), nil, entries); err != nil {
 		t.Fatal(err)
 	}
 	m := marksOf(t, twoExits)
@@ -181,7 +181,7 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	}}
 	r := NewRouter(run, "br0", netip.Addr{})
 	r.SetExits(map[string]string{"vpn": "nwg2"})
-	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range run.changed() {
@@ -194,7 +194,7 @@ func TestRebuildIsIdempotent(t *testing.T) {
 func TestDefaultThroughTunnelSkipsLocalNetworks(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
-	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault vpn\nru -> direct\n"), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault vpn\nru -> direct\n"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	script := ""
@@ -229,7 +229,7 @@ func TestRebuildAfterExitsChange(t *testing.T) {
 	}}
 	r := NewRouter(run, "br0", netip.Addr{})
 	r.SetExits(map[string]string{"vpn": "nwg2"})
-	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	got := strings.Join(run.changed(), "\n")
@@ -262,7 +262,7 @@ func TestApply(t *testing.T) {
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1")}}); err == nil {
 		t.Error("a change before the sets are built must be an error")
 	}
-	r.Rebuild(cfgOf(t, twoExits), nil)
+	r.Rebuild(cfgOf(t, twoExits), nil, nil)
 	run.calls = nil
 	direct, strict, alt := rules.Action{Exit: "direct"}, vpn(true), rules.Action{Exit: "alt"}
 	err := r.Apply([]claims.Change{
@@ -282,7 +282,7 @@ func TestApply(t *testing.T) {
 func TestApplyFailureIsReported(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
-	r.Rebuild(cfgOf(t, twoExits), nil)
+	r.Rebuild(cfgOf(t, twoExits), nil, nil)
 	run.fail = []string{"ipset restore"}
 	a := vpn(false)
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &a}}); err == nil {
@@ -294,7 +294,7 @@ func TestRoutesFollowExits(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
 	r.SetExits(map[string]string{"vpn": "nwg2"})
-	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
+	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil)
 
 	run.calls = nil
 	r.SetExits(map[string]string{"vpn": ""}) // all tunnels are down
@@ -322,7 +322,7 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 		t.Errorf("nothing to reconcile before the build: %v", err)
 	}
 	r.SetExits(map[string]string{"vpn": "nwg2"})
-	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
+	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil)
 	run.calls = nil
 	if err := r.Reconcile(context.Background()); err != nil {
 		t.Errorf("the jump is in place, but Reconcile returned %v", err)
@@ -375,12 +375,12 @@ func TestTeardown(t *testing.T) {
 func TestFailedRebuildLeavesNoStaleLayout(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
-	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	// New rules with a different set of exits; replacing the chain failed.
 	run.fail = []string{"iptables-restore"}
-	if err := r.Rebuild(cfgOf(t, twoExits), nil); err == nil {
+	if err := r.Rebuild(cfgOf(t, twoExits), nil, nil); err == nil {
 		t.Fatal("an iptables-restore failure must be returned as an error")
 	}
 	// The previous layout is no longer valid: with it an address would land in another exit's set.
@@ -389,7 +389,7 @@ func TestFailedRebuildLeavesNoStaleLayout(t *testing.T) {
 		t.Error("after a failed build, changes must be rejected until the build is retried")
 	}
 	run.fail = nil
-	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, twoExits), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &alt}}); err != nil {
@@ -400,7 +400,7 @@ func TestFailedRebuildLeavesNoStaleLayout(t *testing.T) {
 func TestApplyRejectsUnknownExit(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
-	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
+	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil, nil)
 	run.calls = nil
 	ghost := rules.Action{Exit: "ghost"}
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &ghost}}); err == nil {
@@ -444,9 +444,9 @@ func markOf(t *testing.T, s string) uint32 {
 }
 
 func TestMarksCarryLayoutGeneration(t *testing.T) {
-	a, _ := NewLayout(cfgOf(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
-	b, _ := NewLayout(cfgOf(t, "exit alt = W\nexit vpn = W\ndefault direct\n"))
-	same, _ := NewLayout(cfgOf(t, "exit vpn = W2, W3\nexit alt = W\ndefault direct\nx.com -> vpn\n"))
+	a, _ := NewLayout(cfgOf(t, "exit vpn = W\nexit alt = W\ndefault direct\n"), nil)
+	b, _ := NewLayout(cfgOf(t, "exit alt = W\nexit vpn = W\ndefault direct\n"), nil)
+	same, _ := NewLayout(cfgOf(t, "exit vpn = W2, W3\nexit alt = W\ndefault direct\nx.com -> vpn\n"), nil)
 	if a.Slots[0].Mark() != "0x54520000" || b.Slots[0].Mark() != "0x54520000" {
 		t.Errorf("the direct mark must not depend on the layout: %s, %s", a.Slots[0].Mark(), b.Slots[0].Mark())
 	}
@@ -469,7 +469,7 @@ func TestMarksCarryLayoutGeneration(t *testing.T) {
 func TestMarksOfAnotherLayoutGoNowhere(t *testing.T) {
 	run := &scripted{fail: []string{" -C "}}
 	r := NewRouter(run, "br0", netip.Addr{})
-	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, twoExits), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
@@ -484,7 +484,7 @@ func TestMarksOfAnotherLayoutGoNowhere(t *testing.T) {
 }
 
 func TestRulesOfAnotherLayoutAreReplaced(t *testing.T) {
-	l, _ := NewLayout(cfgOf(t, twoExits))
+	l, _ := NewLayout(cfgOf(t, twoExits), nil)
 	run := &scripted{fail: []string{" -C "}, out: map[string]string{
 		"ip rule list": "201:\tfrom all fwmark 0x54520001 lookup 541 \n",
 	}}
@@ -493,7 +493,7 @@ func TestRulesOfAnotherLayoutAreReplaced(t *testing.T) {
 	if err := r.SetExits(map[string]string{"vpn": "nwg2", "alt": "nwg3"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, twoExits), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	add := "ip rule add fwmark " + l.Slots[1].Mark() + "/0xffffffff lookup 541 pref 201"
@@ -509,8 +509,8 @@ func TestRulesOfAnotherLayoutAreReplaced(t *testing.T) {
 }
 
 func TestSetsAreSwappedInWhole(t *testing.T) {
-	l, _ := NewLayout(cfgOf(t, twoExits))
-	script := l.setsScript([]claims.Entry{{Addr: netip.MustParseAddr("5.5.5.5"), Action: vpn(false)}})
+	l, _ := NewLayout(cfgOf(t, twoExits), nil)
+	script := l.setsScript(nil, []claims.Entry{{Addr: netip.MustParseAddr("5.5.5.5"), Action: vpn(false)}})
 	for _, want := range []string{
 		"create trassa_d1 hash:ip -exist\ncreate trassa_d1_n hash:ip -exist\nflush trassa_d1_n\nadd trassa_d1_n 5.5.5.5 -exist\nswap trassa_d1_n trassa_d1\ndestroy trassa_d1_n\n",
 		"create trassa_s1 hash:net -exist\ncreate trassa_s1_n hash:net -exist\nflush trassa_s1_n\nadd trassa_s1_n 1.2.3.0/24 -exist\nadd trassa_s1_n 9.9.9.9/32 -exist\nswap trassa_s1_n trassa_s1\ndestroy trassa_s1_n\n",
@@ -616,7 +616,7 @@ func TestRoutingMeaning(t *testing.T) {
 	run := &scripted{fail: []string{" -C "}}
 	r := NewRouter(run, "br0", netip.Addr{})
 	r.SetExits(map[string]string{"vpn": "nwg2"})
-	if err := r.Rebuild(cfgOf(t, src), nil); err != nil {
+	if err := r.Rebuild(cfgOf(t, src), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	m := marksOf(t, src)
@@ -648,4 +648,83 @@ func TestRoutingMeaning(t *testing.T) {
 		0x54520001: "table 599: blackhole",
 	}
 	check("tunnel down", fibAfter(run.calls), down)
+}
+
+func TestRebuildWithViews(t *testing.T) {
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}, out: map[string]string{
+		"iptables-save -t mangle": ":PREROUTING ACCEPT [0:0]\n:TRASSA - [0:0]\n:TRASSA_V1 - [0:0]\n:TRASSA_V9 - [0:0]\n",
+		"ipset list -n":           "trassa_d0\ntrassa_v1\ntrassa_v1d1\ntrassa_v9\ntrassa_v9d1\n",
+	}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, devicesSrc), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(run.changed(), "\n")
+	for _, want := range []string{
+		swapped("trassa_v1", "hash:ip", "192.168.1.40"),
+		swapped("trassa_v1d0", "hash:ip"),
+		":TRASSA_V1 - [0:0]\n",
+		"-A TRASSA -m set --match-set trassa_v1 src -g TRASSA_V1\n",
+		"-A TRASSA_V1 -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_v1d1 dst -j MARK",
+		"iptables -w -t mangle -F TRASSA_V9\niptables -w -t mangle -X TRASSA_V9",
+		"ipset destroy trassa_v9\nipset destroy trassa_v9d1",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q in\n%s", want, all)
+		}
+	}
+	for _, bad := range []string{"-F TRASSA_V1\n", "-X TRASSA_V1\n", "ipset destroy trassa_v1\n", "ipset destroy trassa_v1d1"} {
+		if strings.Contains(all+"\n", bad) {
+			t.Errorf("a set or chain in use was removed: %q", bad)
+		}
+	}
+}
+
+func TestSetSources(t *testing.T) {
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.SetSources(nil); err == nil {
+		t.Error("before the sets are built it must be an error")
+	}
+	r.Rebuild(cfgOf(t, devicesSrc), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, nil)
+	run.calls = nil
+	if err := r.SetSources(map[rules.View][]netip.Addr{1: {ip("192.168.1.41")}}); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, run.calls, []string{"ipset restore <<\n" + swapped("trassa_v1", "hash:ip", "192.168.1.41")})
+	if err := r.SetSources(map[rules.View][]netip.Addr{2: {ip("192.168.1.50")}}); !errors.Is(err, ErrViews) {
+		t.Errorf("other views: %v", err)
+	}
+}
+
+func TestApplyWithViews(t *testing.T) {
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	r.Rebuild(cfgOf(t, devicesSrc), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, nil)
+	run.calls = nil
+	v := vpn(false)
+	if err := r.Apply([]claims.Change{{View: 1, Addr: ip("5.5.5.5"), New: &v}, {Addr: ip("6.6.6.6"), New: &v}}); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, run.calls, []string{"ipset restore <<\nadd trassa_v1d1 5.5.5.5 -exist\nadd trassa_d1 6.6.6.6 -exist\n"})
+	if err := r.Apply([]claims.Change{{View: 4, Addr: ip("5.5.5.5"), New: &v}}); err == nil {
+		t.Error("a view that is not built must be an error")
+	}
+}
+
+func TestTeardownRemovesViewChains(t *testing.T) {
+	run := &scripted{out: map[string]string{
+		"iptables-save -t mangle": ":TRASSA - [0:0]\n:TRASSA_V3 - [0:0]\n:TRASSA_DNS - [0:0]\n",
+	}}
+	Teardown(context.Background(), run)
+	all := strings.Join(run.changed(), "\n")
+	if !strings.Contains(all, "iptables -w -t mangle -F TRASSA\niptables -w -t mangle -F TRASSA_V3\niptables -w -t mangle -X TRASSA_V3\niptables -w -t mangle -X TRASSA") {
+		t.Errorf("view chains must go after the main chain is flushed and before it is deleted:\n%s", all)
+	}
+	if strings.Contains(all, "TRASSA_DNS") {
+		t.Errorf("the DNS tap chain is not a view chain:\n%s", all)
+	}
 }

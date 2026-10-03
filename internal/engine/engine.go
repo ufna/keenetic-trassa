@@ -35,8 +35,11 @@ const (
 type Sink interface {
 	// Apply edits the dynamic address sets.
 	Apply(changes []claims.Change) error
-	// Rebuild builds everything from scratch from the rules and an address snapshot.
-	Rebuild(cfg *rules.Config, entries []claims.Entry) error
+	// Rebuild builds everything from scratch from the rules, the device views' source addresses
+	// and an address snapshot.
+	Rebuild(cfg *rules.Config, sources map[rules.View][]netip.Addr, entries []claims.Entry) error
+	// SetSources refills the source sets after a device changed its address.
+	SetSources(sources map[rules.View][]netip.Addr) error
 }
 
 // Stats are the daemon counters; the fields are described in ctl.Stats.
@@ -180,7 +183,7 @@ func (e *Engine) rebuild() error {
 	if e.sink == nil {
 		return nil
 	}
-	err := e.sink.Rebuild(e.cfg, e.store.Entries())
+	err := e.sink.Rebuild(e.cfg, nil, e.store.Entries())
 	e.dirty = err != nil
 	if err != nil {
 		e.stats.ApplyErrors++

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -380,7 +381,10 @@ func TestRunRejectsBadRouteArguments(t *testing.T) {
 type brokenSink struct{}
 
 func (brokenSink) Apply([]claims.Change) error { return errors.New("ipset unavailable") }
-func (brokenSink) Rebuild(*rules.Config, []claims.Entry) error {
+func (brokenSink) Rebuild(*rules.Config, map[rules.View][]netip.Addr, []claims.Entry) error {
+	return errors.New("ipset unavailable")
+}
+func (brokenSink) SetSources(map[rules.View][]netip.Addr) error {
 	return errors.New("ipset unavailable")
 }
 

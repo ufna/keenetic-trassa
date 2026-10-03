@@ -37,7 +37,17 @@ type fakeSink struct {
 	got     []string
 	rebuilt []string // snapshot passed to the last Rebuild
 	builds  int
+	sources map[rules.View][]netip.Addr // passed to the last Rebuild or SetSources
+	sourced int                         // SetSources calls
 	fail    bool
+}
+
+// viewPrefix marks a device view's change; the view of devices in no list has no prefix.
+func viewPrefix(v rules.View) string {
+	if v == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%d] ", v)
 }
 
 func (f *fakeSink) Apply(changes []claims.Change) error {
@@ -45,17 +55,27 @@ func (f *fakeSink) Apply(changes []claims.Change) error {
 		return errors.New("sets unavailable")
 	}
 	for _, c := range changes {
-		f.got = append(f.got, c.Addr.String()+" "+show(c.Old)+" => "+show(c.New))
+		f.got = append(f.got, viewPrefix(c.View)+c.Addr.String()+" "+show(c.Old)+" => "+show(c.New))
 	}
 	return nil
 }
 
-func (f *fakeSink) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
+func (f *fakeSink) Rebuild(cfg *rules.Config, sources map[rules.View][]netip.Addr, entries []claims.Entry) error {
 	f.builds++
+	f.sources = sources
 	f.rebuilt = nil
 	for _, e := range entries {
-		f.rebuilt = append(f.rebuilt, e.Addr.String()+" "+e.Action.String())
+		f.rebuilt = append(f.rebuilt, viewPrefix(e.View)+e.Addr.String()+" "+e.Action.String())
 	}
+	if f.fail {
+		return errors.New("sets unavailable")
+	}
+	return nil
+}
+
+func (f *fakeSink) SetSources(sources map[rules.View][]netip.Addr) error {
+	f.sourced++
+	f.sources = sources
 	if f.fail {
 		return errors.New("sets unavailable")
 	}

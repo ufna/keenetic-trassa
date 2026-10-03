@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,6 +25,8 @@ const (
 	staleTable = "599"
 	routeChain = "TRASSA"
 	setPrefix  = "trassa_"
+
+	viewChainPrefix = routeChain + "_V"
 )
 
 // localNets are destinations that do not go into the tunnel via default: private and special networks.
@@ -69,23 +72,27 @@ type staticSet struct {
 	Name string
 	Nets []netip.Prefix
 	Slot Slot
+	rule rules.Rule // the rule the set serves: which devices it applies to
 }
 
-// Layout is what must exist in the kernel for the given rules.
+// Layout is what must exist in the kernel for the given rules and device views.
 type Layout struct {
 	Slots   []Slot      // Slots[0] is direct; then two per exit: normal and strict
 	Static  []staticSet // one per rule with addresses, in rule order
 	Default Slot
-	gen     uint32
-	exits   map[string]int
+	// Views are the device views with their own source set, dynamic sets and chain, ascending.
+	// The view of devices in no list (0) uses the main chain and is not listed.
+	Views []rules.View
+	gen   uint32
+	exits map[string]int
 }
 
-func NewLayout(cfg *rules.Config) (*Layout, error) {
+func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
 	if len(cfg.Exits) > rules.MaxExits {
 		return nil, fmt.Errorf("%d exits, at most %d are supported", len(cfg.Exits), rules.MaxExits)
 	}
 	gen := generation(cfg)
-	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, gen: gen, exits: map[string]int{}}
+	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, Views: deviceViews(views), gen: gen, exits: map[string]int{}}
 	for i, e := range cfg.Exits {
 		l.exits[e.Name] = i
 		l.Slots = append(l.Slots, Slot{Index: 1 + 2*i, Exit: e.Name, gen: gen}, Slot{Index: 2 + 2*i, Exit: e.Name, Strict: true, gen: gen})
@@ -96,7 +103,7 @@ func NewLayout(cfg *rules.Config) (*Layout, error) {
 			if !ok {
 				return nil, fmt.Errorf("line %d: exit %q is not declared", r.Line, r.Action.Exit)
 			}
-			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot})
+			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot, rule: r})
 		}
 	}
 	def, ok := l.Slot(cfg.Default)
@@ -123,10 +130,52 @@ func (l *Layout) Slot(a rules.Action) (Slot, bool) {
 	return l.Slots[i], true
 }
 
-func (l *Layout) hasSet(name string) bool {
-	for _, s := range l.Slots {
-		if s.Set() == name {
+// deviceViews returns the distinct device views ascending, without 0.
+func deviceViews(views []rules.View) []rules.View {
+	var out []rules.View
+	for _, v := range views {
+		if v != 0 && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// viewSet is the set of the source addresses of view v's devices.
+func viewSet(v rules.View) string { return setPrefix + "v" + strconv.Itoa(int(v)) }
+
+// viewChain is the chain that marks view v's connections.
+func viewChain(v rules.View) string { return viewChainPrefix + strconv.Itoa(int(v)) }
+
+// dynSet is the set of addresses from DNS that view v sends to slot s.
+func dynSet(v rules.View, s Slot) string {
+	if v == 0 {
+		return s.Set()
+	}
+	return viewSet(v) + "d" + strconv.Itoa(s.Index)
+}
+
+func (l *Layout) hasView(v rules.View) bool { return v == 0 || slices.Contains(l.Views, v) }
+
+func (l *Layout) hasChain(name string) bool {
+	for _, v := range l.Views {
+		if viewChain(v) == name {
 			return true
+		}
+	}
+	return false
+}
+
+func (l *Layout) hasSet(name string) bool {
+	for _, v := range append([]rules.View{0}, l.Views...) {
+		if v != 0 && viewSet(v) == name {
+			return true
+		}
+		for _, s := range l.Slots {
+			if dynSet(v, s) == name {
+				return true
+			}
 		}
 	}
 	for _, s := range l.Static {
@@ -139,77 +188,126 @@ func (l *Layout) hasSet(name string) bool {
 
 const tmpSuffix = "_n" // a set is filled under this temporary name and then swapped in
 
-// setsScript is the input for "ipset restore". Each set is filled under a temporary name and
-// swapped in whole: a live set is never empty, even for a moment.
-func (l *Layout) setsScript(entries []claims.Entry) string {
+// writeSwap fills a set under a temporary name and swaps it in whole: a live set is never empty,
+// even for a moment.
+func writeSwap(b *strings.Builder, name, kind string, adds []string) {
+	tmp := name + tmpSuffix
+	fmt.Fprintf(b, "create %s %s -exist\ncreate %s %s -exist\nflush %s\n", name, kind, tmp, kind, tmp)
+	for _, a := range adds {
+		fmt.Fprintf(b, "add %s %s -exist\n", tmp, a)
+	}
+	fmt.Fprintf(b, "swap %s %s\ndestroy %s\n", tmp, name, tmp)
+}
+
+func addrStrings(addrs []netip.Addr) []string {
+	out := make([]string, len(addrs))
+	for i, a := range addrs {
+		out[i] = a.String()
+	}
+	return out
+}
+
+// setsScript is the input for "ipset restore": every set of the layout, each swapped in whole.
+func (l *Layout) setsScript(sources map[rules.View][]netip.Addr, entries []claims.Entry) string {
 	type set struct {
 		name, kind string
 		adds       []string
 	}
 	var sets []*set
 	byName := map[string]*set{}
-	add := func(name, kind string) *set {
-		s := &set{name: name, kind: kind}
+	add := func(name, kind string, adds []string) {
+		s := &set{name: name, kind: kind, adds: adds}
 		sets = append(sets, s)
 		byName[name] = s
-		return s
 	}
 	for _, s := range l.Slots {
-		add(s.Set(), "hash:ip")
+		add(s.Set(), "hash:ip", nil)
 	}
 	for _, st := range l.Static {
-		s := add(st.Name, "hash:net")
+		var nets []string
 		for _, n := range st.Nets {
-			s.adds = append(s.adds, n.String())
+			nets = append(nets, n.String())
+		}
+		add(st.Name, "hash:net", nets)
+	}
+	for _, v := range l.Views {
+		add(viewSet(v), "hash:ip", addrStrings(sources[v]))
+		for _, s := range l.Slots {
+			add(dynSet(v, s), "hash:ip", nil)
 		}
 	}
 	for _, e := range entries {
-		// The snapshot was taken under the same rules as the layout; an entry with an unknown exit is skipped.
-		if slot, ok := l.Slot(e.Action); ok {
-			byName[slot.Set()].adds = append(byName[slot.Set()].adds, e.Addr.String())
+		// The snapshot was taken under the same rules as the layout; an entry with an unknown exit
+		// or view is skipped.
+		if slot, ok := l.Slot(e.Action); ok && l.hasView(e.View) {
+			s := byName[dynSet(e.View, slot)]
+			s.adds = append(s.adds, e.Addr.String())
 		}
 	}
 	var b strings.Builder
 	for _, s := range sets {
-		tmp := s.name + tmpSuffix
-		fmt.Fprintf(&b, "create %s %s -exist\ncreate %s %s -exist\nflush %s\n", s.name, s.kind, tmp, s.kind, tmp)
-		for _, a := range s.adds {
-			fmt.Fprintf(&b, "add %s %s -exist\n", tmp, a)
-		}
-		fmt.Fprintf(&b, "swap %s %s\ndestroy %s\n", tmp, s.name, tmp)
+		writeSwap(&b, s.name, s.kind, s.adds)
 	}
 	return b.String()
 }
 
-// chainScript is the input for "iptables-restore -n": declaring the chain flushes it, then the rules follow.
+// sourcesScript refills the views' source sets, each swapped in whole.
+func (l *Layout) sourcesScript(sources map[rules.View][]netip.Addr) string {
+	var b strings.Builder
+	for _, v := range l.Views {
+		writeSwap(&b, viewSet(v), "hash:ip", addrStrings(sources[v]))
+	}
+	return b.String()
+}
+
+// chainScript is the input for "iptables-restore -n": declaring a chain flushes it, then the rules
+// follow. A device of a device list goes from the main chain to its view's chain by a goto, so the
+// main chain's rules for devices in no list are never reached for it.
 func (l *Layout) chainScript() string {
 	var b strings.Builder
 	b.WriteString("*mangle\n:" + routeChain + " - [0:0]\n")
-	rule := func(format string, args ...any) {
-		fmt.Fprintf(&b, "-A "+routeChain+" "+format+"\n", args...)
+	for _, v := range l.Views {
+		b.WriteString(":" + viewChain(v) + " - [0:0]\n")
+	}
+	rule := func(chain, format string, args ...any) {
+		fmt.Fprintf(&b, "-A "+chain+" "+format+"\n", args...)
 	}
 	// The packet is already marked by the firmware, so it is not ours.
-	rule("-m mark ! --mark 0x0 -j RETURN")
+	rule(routeChain, "-m mark ! --mark 0x0 -j RETURN")
 	// An established connection keeps its path.
-	rule("-m connmark --mark 0x%x/%s -j CONNMARK --restore-mark", markBase, markMask)
-	rule("-m mark ! --mark 0x0 -j RETURN")
+	rule(routeChain, "-m connmark --mark 0x%x/%s -j CONNMARK --restore-mark", markBase, markMask)
+	rule(routeChain, "-m mark ! --mark 0x0 -j RETURN")
+	for _, v := range l.Views {
+		rule(routeChain, "-m set --match-set %s src -g %s", viewSet(v), viewChain(v))
+	}
+	l.marks(rule, routeChain, 0)
+	for _, v := range l.Views {
+		l.marks(rule, viewChain(v), v)
+	}
+	b.WriteString("COMMIT\n")
+	return b.String()
+}
+
+// marks adds to chain the rules that mark view v's new connections, and saving the mark into the
+// connection.
+func (l *Layout) marks(rule func(chain, format string, args ...any), chain string, v rules.View) {
 	// Only the first packet of a connection gets a mark. An unmarked connection already in
 	// progress is not moved to another path mid-transfer, and replies to inbound connections
 	// are not mistaken for outbound ones.
 	const fresh = "-m mark --mark 0x0 -m conntrack --ctstate NEW"
 	for _, s := range l.Slots {
-		rule(fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Set(), s.Mark())
+		rule(chain, fresh+" -m set --match-set %s dst -j MARK --set-mark %s", dynSet(v, s), s.Mark())
 	}
 	for _, s := range l.Static {
-		rule(fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Name, s.Slot.Mark())
+		if s.rule.AppliesTo(v) {
+			rule(chain, fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Name, s.Slot.Mark())
+		}
 	}
 	if l.Default.Index != 0 {
 		for _, n := range localNets {
-			rule("-m mark --mark 0x0 -d %s -j RETURN", n)
+			rule(chain, "-m mark --mark 0x0 -d %s -j RETURN", n)
 		}
-		rule(fresh+" -j MARK --set-mark %s", l.Default.Mark())
+		rule(chain, fresh+" -j MARK --set-mark %s", l.Default.Mark())
 	}
-	rule("-m mark --mark 0x%x/%s -j CONNMARK --save-mark", markBase, markMask)
-	b.WriteString("COMMIT\n")
-	return b.String()
+	rule(chain, "-m mark --mark 0x%x/%s -j CONNMARK --save-mark", markBase, markMask)
 }

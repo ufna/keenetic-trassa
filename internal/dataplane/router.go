@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,9 @@ const (
 
 // ErrMissing means the routing rules are gone: the firmware rewrote the table.
 var ErrMissing = errors.New("trassa routing rules are missing")
+
+// ErrViews means the device views changed: the source sets cannot just be refilled, a rebuild is needed.
+var ErrViews = errors.New("device views changed: the address sets must be rebuilt")
 
 // Router maintains the address sets, mark chain, rules and routing tables in the kernel.
 type Router struct {
@@ -50,7 +54,7 @@ func (r *Router) jump() (args []string, printed string) {
 }
 
 // Rebuild builds everything from scratch from the cfg rules and the entries snapshot, and removes leftovers of the previous layout.
-func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
+func (r *Router) Rebuild(cfg *rules.Config, sources map[rules.View][]netip.Addr, entries []claims.Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
@@ -58,11 +62,11 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	// Until the build succeeds there is no layout: Apply with the previous layout
 	// would put an address into another exit's set.
 	r.layout = nil
-	l, err := NewLayout(cfg)
+	l, err := NewLayout(cfg, viewsOf(sources))
 	if err != nil {
 		return err
 	}
-	if _, err := r.run.RunInput(ctx, l.setsScript(entries), "ipset", "restore"); err != nil {
+	if _, err := r.run.RunInput(ctx, l.setsScript(sources, entries), "ipset", "restore"); err != nil {
 		return err
 	}
 	// A path exists before anything points at it: routes, then the rules leading to them, then
@@ -79,6 +83,8 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 		return err
 	}
 	r.pruneRules(ctx, l, seen)
+	// Chains of views that are gone: the new main chain no longer leads to them.
+	r.dropViewChains(ctx, l)
 	if err := r.syncJump(ctx); err != nil {
 		return err
 	}
@@ -264,22 +270,25 @@ func (r *Router) Apply(changes []claims.Change) error {
 		return errors.New("address sets are not built yet")
 	}
 	var b strings.Builder
-	line := func(op string, a rules.Action, addr netip.Addr) error {
+	line := func(op string, v rules.View, a rules.Action, addr netip.Addr) error {
+		if !r.layout.hasView(v) {
+			return fmt.Errorf("device view %d is not in the built layout", v)
+		}
 		slot, ok := r.layout.Slot(a)
 		if !ok {
 			return fmt.Errorf("exit %q is not in the built layout", a.Exit)
 		}
-		fmt.Fprintf(&b, "%s %s %s -exist\n", op, slot.Set(), addr)
+		fmt.Fprintf(&b, "%s %s %s -exist\n", op, dynSet(v, slot), addr)
 		return nil
 	}
 	for _, c := range changes {
 		if c.Old != nil {
-			if err := line("del", *c.Old, c.Addr); err != nil {
+			if err := line("del", c.View, *c.Old, c.Addr); err != nil {
 				return err
 			}
 		}
 		if c.New != nil {
-			if err := line("add", *c.New, c.Addr); err != nil {
+			if err := line("add", c.View, *c.New, c.Addr); err != nil {
 				return err
 			}
 		}
@@ -334,6 +343,11 @@ func Teardown(ctx context.Context, run Runner) {
 		}
 	}
 	run.Run(ctx, "iptables", mangle("-F", routeChain)...)
+	// View chains go after the main chain stopped leading to them and before it is deleted.
+	for _, name := range viewChains(ctx, run) {
+		run.Run(ctx, "iptables", mangle("-F", name)...)
+		run.Run(ctx, "iptables", mangle("-X", name)...)
+	}
 	run.Run(ctx, "iptables", mangle("-X", routeChain)...)
 	list, _ := run.Run(ctx, "ip", "rule", "list")
 	for _, own := range ownRules(list) {
@@ -345,4 +359,60 @@ func Teardown(ctx context.Context, run Runner) {
 			run.Run(ctx, "ipset", "destroy", name)
 		}
 	}
+}
+
+// viewsOf returns the views that have source addresses.
+func viewsOf(sources map[rules.View][]netip.Addr) []rules.View {
+	var out []rules.View
+	for v, addrs := range sources {
+		if len(addrs) > 0 {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// viewChains lists trassa's view chains in the mangle table.
+func viewChains(ctx context.Context, run Runner) []string {
+	out, _ := run.Run(ctx, "iptables-save", "-t", "mangle")
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, ":"+viewChainPrefix) {
+			continue
+		}
+		if f := strings.Fields(line[1:]); len(f) > 0 {
+			names = append(names, f[0])
+		}
+	}
+	return names
+}
+
+// dropViewChains removes the view chains the layout does not have.
+func (r *Router) dropViewChains(ctx context.Context, l *Layout) {
+	for _, name := range viewChains(ctx, r.run) {
+		if !l.hasChain(name) {
+			r.run.Run(ctx, "iptables", mangle("-F", name)...)
+			r.run.Run(ctx, "iptables", mangle("-X", name)...)
+		}
+	}
+}
+
+// SetSources refills the views' source sets after a device changed its address. If the views
+// themselves changed, it changes nothing and returns ErrViews: the caller rebuilds.
+func (r *Router) SetSources(sources map[rules.View][]netip.Addr) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.layout == nil {
+		return errors.New("address sets are not built yet")
+	}
+	if !slices.Equal(deviceViews(viewsOf(sources)), r.layout.Views) {
+		return ErrViews
+	}
+	if len(r.layout.Views) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), applyTimeout)
+	defer cancel()
+	_, err := r.run.RunInput(ctx, r.layout.sourcesScript(sources), "ipset", "restore")
+	return err
 }
