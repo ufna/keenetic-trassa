@@ -119,7 +119,7 @@
       setStatus("Нужно подтверждение", "warn");
       return;
     }
-    if (r.unchanged) { setStatus("Изменений нет: этот текст уже действует", ""); return; }
+    if (r.unchanged) { setStatus("Изменений нет: этот текст уже сохранён на роутере", ""); return; }
     if (!r.saved) { setStatus("Демон не принял правила, действуют прежние: " + r.message, "bad"); return; }
     var msg = {
       "running": ["Сохранено и применено: " + counts(r), "ok"],
@@ -147,11 +147,15 @@
     }
   }
 
-  async function loadRules() {
+  // loadRules берёт действующий текст с роутера. force — заменить и несохранённую правку: после
+  // возврата версии, когда человек уже согласился её потерять.
+  async function loadRules(force) {
     var r = await api("GET", "/api/rules");
-    saved = r.text;
-    rulesEl.value = r.text;
+    var a = force ? { editor: r.text, saved: r.text, note: "" } : TrassaLogic.adopt(rulesEl.value, saved, r.text);
+    saved = a.saved;
+    rulesEl.value = a.editor;
     clearProblems();
+    if (a.note) setStatus(a.note, "warn");
   }
 
   /* ---- История ---- */
@@ -181,7 +185,13 @@
         var back = el("button", "linkbtn", "Вернуть");
         back.type = "button";
         back.addEventListener("click", function () {
-          if (!back.dataset.armed) { back.dataset.armed = "1"; back.textContent = "Точно вернуть?"; return; }
+          if (!back.dataset.armed) {
+            back.dataset.armed = "1";
+            back.textContent = "Точно вернуть?";
+            // Подтверждение действует несколько секунд: случайный щелчок позже ничего не вернёт.
+            setTimeout(function () { delete back.dataset.armed; back.textContent = "Вернуть"; }, 5000);
+            return;
+          }
           rollback(v, false);
         });
         acts.appendChild(back);
@@ -215,7 +225,7 @@
     try {
       var r = await api("POST", "/api/rollback", { id: v.id, confirm: confirm });
       // Пометки строк относятся к тексту версии — он и должен быть в редакторе.
-      if (r.saved) await loadRules();
+      if (r.saved) await loadRules(true);
       else if (!r.unchanged) await putVersion(v);
       showResult(r, function () { rollback(v, true); });
       loadHistory();
@@ -399,7 +409,7 @@
 
   async function start() {
     try {
-      await loadRules();
+      await loadRules(false);
     } catch (e) {
       if (e.status !== 401) setStatus(e.message, "bad");
       return;
@@ -432,7 +442,7 @@
   $("login-form").addEventListener("submit", login);
   $("logout").addEventListener("click", logout);
   window.addEventListener("beforeunload", function (ev) {
-    if (signedIn && dirty()) { ev.preventDefault(); ev.returnValue = ""; }
+    if (dirty()) { ev.preventDefault(); ev.returnValue = ""; }
   });
   drawGutter();
   start();

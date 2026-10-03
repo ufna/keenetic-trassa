@@ -58,7 +58,7 @@ process.stdout.write(JSON.stringify(out));`
 
 func TestPageScriptsParse(t *testing.T) {
 	n := node(t)
-	for _, name := range []string{"app.js", "hash.js"} {
+	for _, name := range []string{"app.js", "hash.js", "logic.js"} {
 		src, err := staticFiles.ReadFile("static/" + name)
 		if err != nil {
 			t.Fatal(err)
@@ -96,6 +96,40 @@ func TestPageIsSelfContained(t *testing.T) {
 			if strings.Contains(string(b), bad) {
 				t.Errorf("%s: %s", name, bad)
 			}
+		}
+	}
+}
+
+// Повторный вход (истёк сеанс, перезапустилась страница) не должен стирать несохранённую правку.
+func TestLogicAdoptKeepsUnsavedEdit(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/logic.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type tc struct{ Editor, Saved, Server, WantEditor, WantSaved, Note string }
+	cases := []tc{
+		{"", "", "A", "A", "A", ""},   // первая загрузка
+		{"A", "A", "B", "B", "B", ""}, // правки нет — берём текст с роутера
+		{"A+правка", "A", "A", "A+правка", "A", "осталась"},   // правка цела
+		{"A+правка", "A", "B", "A+правка", "B", "изменились"}, // правка цела, роутер сменил текст
+		{"B", "A", "B", "B", "B", ""}, // набранное совпало с текстом роутера
+	}
+	in, _ := json.Marshal(cases)
+	script := string(src) + `
+const cases = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(cases.map(c => TrassaLogic.adopt(c.Editor, c.Saved, c.Server))));`
+	b, err := exec.Command(node(t), "-e", script, string(in)).Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got []struct{ Editor, Saved, Note string }
+	if err := json.Unmarshal(b, &got); err != nil || len(got) != len(cases) {
+		t.Fatalf("%s: %v", b, err)
+	}
+	for i, c := range cases {
+		g := got[i]
+		if g.Editor != c.WantEditor || g.Saved != c.WantSaved || (c.Note == "") != (g.Note == "") || !strings.Contains(g.Note, c.Note) {
+			t.Errorf("%+v: получено %+v", c, g)
 		}
 	}
 }
