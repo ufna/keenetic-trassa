@@ -340,3 +340,21 @@ func TestStaleTempFilesAreRemoved(t *testing.T) {
 		t.Error("a fresh temporary file was removed")
 	}
 }
+
+// Changing the list or the order of exits renumbers the slots: tunnel connections in progress
+// are cut. That needs the same explicit confirmation as any other warning.
+func TestChangingExitsNeedsConfirmation(t *testing.T) {
+	s := newStore(t, textA)
+	twoExits := "exit vpn = W\nexit alt = W\ndefault direct\nyoutube.com -> vpn\n"
+	res, err := s.Save(twoExits, false)
+	if err != nil || res.Saved || !res.NeedConfirm || len(res.Problems) != 1 || !strings.Contains(res.Problems[0].Msg, "connections") {
+		t.Fatalf("adding an exit: %+v, %v", res, err)
+	}
+	if res, _ = s.Save(twoExits, true); !res.Saved {
+		t.Errorf("confirmed: %+v", res)
+	}
+	// Other interfaces of the same exits do not renumber anything.
+	if res, _ = s.Save("exit vpn = W2, W3\nexit alt = W\ndefault direct\nyoutube.com -> vpn\n", false); !res.Saved || len(res.Problems) != 0 {
+		t.Errorf("changing interfaces only: %+v", res)
+	}
+}

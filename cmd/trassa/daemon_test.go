@@ -429,3 +429,16 @@ func TestStateIsNotReadThroughSymlink(t *testing.T) {
 		f.Close()
 	}
 }
+
+// A router without a clock battery may boot with its clock behind: the state file's own time
+// is a lower bound for the real time.
+func TestLoadTime(t *testing.T) {
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	written := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	if got := loadTime(now, written); !got.Equal(written) {
+		t.Errorf("clock behind the file: %v", got)
+	}
+	if got := loadTime(written.Add(time.Hour), written); !got.Equal(written.Add(time.Hour)) {
+		t.Errorf("clock ahead of the file: %v", got)
+	}
+}

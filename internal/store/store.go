@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -141,11 +142,36 @@ func (s *Store) Check(text string) (*rules.Config, []rules.Problem) {
 		return nil, []rules.Problem{{Severity: rules.Error, Msg: fmt.Sprintf("rules text is larger than %d KB", MaxSize>>10)}}
 	}
 	cfg, ps := Load(s.Dir, text)
+	if !rules.HasErrors(ps) {
+		ps = append(ps, s.exitsChanged(cfg)...)
+	}
 	if s.Validate != nil && !rules.HasErrors(ps) {
 		ps = append(ps, s.Validate(cfg)...)
-		sort.SliceStable(ps, func(i, j int) bool { return ps[i].Line < ps[j].Line })
 	}
+	sort.SliceStable(ps, func(i, j int) bool { return ps[i].Line < ps[j].Line })
 	return cfg, ps
+}
+
+// exitsChanged warns when the list or the order of exits differs from the rules in effect:
+// slot numbers follow that order, so tunnel connections in progress are cut and reconnect.
+func (s *Store) exitsChanged(cfg *rules.Config) []rules.Problem {
+	cur, err := s.Current()
+	if err != nil {
+		return nil
+	}
+	old, ps := Load(s.Dir, cur)
+	if rules.HasErrors(ps) {
+		return nil
+	}
+	if slices.EqualFunc(old.Exits, cfg.Exits, func(a, b rules.Exit) bool { return a.Name == b.Name }) {
+		return nil
+	}
+	line := 0
+	if len(cfg.Exits) > 0 {
+		line = cfg.Exits[0].Line
+	}
+	return []rules.Problem{{Line: line, Severity: rules.Warning,
+		Msg: "the list or order of exits changed: tunnel connections in progress will be cut and reconnect"}}
 }
 
 // Current returns the current rules text.

@@ -56,6 +56,16 @@ func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []ru
 	}
 }
 
+// loadTime is the "now" for claims read from the state file. A router without a clock battery
+// may boot with its clock behind; claims capped against that time would all expire at once when
+// NTP corrects it. The file's own time is a lower bound for the real time.
+func loadTime(now, written time.Time) time.Time {
+	if written.After(now) {
+		return written
+	}
+	return now
+}
+
 // openState opens the state file without following a symlink planted in its place.
 func openState(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
@@ -383,7 +393,11 @@ func cmdRun(args []string, errw io.Writer) int {
 	if router != nil {
 		refreshExits()
 		if f, err := openState(*statePath); err == nil {
-			n := eng.LoadState(f, time.Now())
+			now := time.Now()
+			if fi, err := f.Stat(); err == nil {
+				now = loadTime(now, fi.ModTime())
+			}
+			n := eng.LoadState(f, now)
 			f.Close()
 			logger.Printf("claims restored from the saved state: %d", n)
 		}
