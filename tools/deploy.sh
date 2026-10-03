@@ -34,24 +34,15 @@ build/trassa check rules/rules.conf
 
 say "delivering to the router"
 "${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d /opt/etc/ndm/iflayerchanged.d'
-# Rules on the router are edited from the web page: the router's file is the master, the project gets a copy.
-# The local file is uploaded only if the router has none yet. The check runs before anything is written
-# to the router: an uncommitted local edit must never be silently overwritten.
+# The rules on the router are the owner's own and are edited on the web page. The repository holds
+# only the default for a new installation: it is uploaded when the router has no rules yet.
+# A copy of the router's rules goes to backup/, which is not in git.
 if "${SSH[@]}" 'test -f /opt/etc/trassa/rules.conf'; then
-	"${SSH[@]}" 'cat /opt/etc/trassa/rules.conf' >rules/rules.conf.new
-	if cmp -s rules/rules.conf rules/rules.conf.new; then
-		rm rules/rules.conf.new
-	elif ! git diff --quiet -- rules/rules.conf; then
-		mv rules/rules.conf.new rules/rules.conf.router
-		echo "ERROR: the rules on the router differ from the uncommitted edit in rules/rules.conf." >&2
-		echo "The router's copy is in rules/rules.conf.router. The master file is on the router: move your edit" >&2
-		echo "to the page http://192.168.1.1:8090, restore rules/rules.conf (git checkout) and run again." >&2
-		echo "Nothing was changed on the router." >&2
-		exit 1
-	else
-		mv rules/rules.conf.new rules/rules.conf
-		say "the rules on the router have changed: rules/rules.conf now has the router's copy, consider committing it"
-	fi
+	mkdir -p backup/rules
+	"${SSH[@]}" 'cat /opt/etc/trassa/rules.conf' >backup/rules/rules.conf.new
+	chmod 600 backup/rules/rules.conf.new
+	mv backup/rules/rules.conf.new backup/rules/rules.conf
+	say "a copy of the router's rules: backup/rules/rules.conf"
 	rules_present=1
 else
 	rules_present=0
