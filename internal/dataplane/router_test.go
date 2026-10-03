@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +74,22 @@ y.com -> alt
 10.0.0.0/8 -> direct
 `
 
+const oneExit = "exit vpn = W\ndefault direct\nx.com -> vpn\n"
+
+// marksOf returns the slot marks of a layout: expectations must not depend on the generation.
+func marksOf(t *testing.T, src string) []string {
+	t.Helper()
+	l, err := NewLayout(cfgOf(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m []string
+	for _, s := range l.Slots {
+		m = append(m, s.Mark())
+	}
+	return m
+}
+
 func vpn(strict bool) rules.Action { return rules.Action{Exit: "vpn", Strict: strict} }
 
 func TestRebuildFromScratch(t *testing.T) {
@@ -87,6 +105,7 @@ func TestRebuildFromScratch(t *testing.T) {
 	if err := r.Rebuild(cfgOf(t, twoExits), entries); err != nil {
 		t.Fatal(err)
 	}
+	m := marksOf(t, twoExits)
 	equal(t, run.changed(), []string{
 		"ipset restore <<\n" +
 			"create trassa_d0 hash:ip -exist\nflush trassa_d0\n" +
@@ -103,18 +122,21 @@ func TestRebuildFromScratch(t *testing.T) {
 			"-A TRASSA -m connmark --mark 0x54520000/0xffff0000 -j CONNMARK --restore-mark\n" +
 			"-A TRASSA -m mark ! --mark 0x0 -j RETURN\n" +
 			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d0 dst -j MARK --set-mark 0x54520000\n" +
-			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d1 dst -j MARK --set-mark 0x54520001\n" +
-			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d2 dst -j MARK --set-mark 0x54520002\n" +
-			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d3 dst -j MARK --set-mark 0x54520003\n" +
-			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d4 dst -j MARK --set-mark 0x54520004\n" +
-			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s1 dst -j MARK --set-mark 0x54520002\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d1 dst -j MARK --set-mark " + m[1] + "\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d2 dst -j MARK --set-mark " + m[2] + "\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d3 dst -j MARK --set-mark " + m[3] + "\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_d4 dst -j MARK --set-mark " + m[4] + "\n" +
+			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s1 dst -j MARK --set-mark " + m[2] + "\n" +
 			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s3 dst -j MARK --set-mark 0x54520000\n" +
 			"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\n" +
 			"COMMIT\n",
-		"ip rule add fwmark 0x54520001/0xffffffff lookup 541 pref 201",
-		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
-		"ip rule add fwmark 0x54520003/0xffffffff lookup 543 pref 203",
-		"ip rule add fwmark 0x54520004/0xffffffff lookup 544 pref 204",
+		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
+		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
+		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark " + m[3] + "/0xffffffff lookup 543 pref 203",
+		"ip rule add fwmark " + m[4] + "/0xffffffff lookup 544 pref 204",
+		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
+		"ip route replace blackhole default table 599",
 		"ip route replace default dev nwg2 table 541",
 		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace default dev nwg2 table 542",
@@ -127,8 +149,10 @@ func TestRebuildFromScratch(t *testing.T) {
 }
 
 func TestRebuildIsIdempotent(t *testing.T) {
+	m := marksOf(t, oneExit)
 	run := &scripted{out: map[string]string{
-		"ip rule list":                        "0:\tfrom all lookup local \n201:\tfrom all fwmark 0x54520001 lookup 541 \n202:\tfrom all fwmark 0x54520002 lookup 542 \n32766:\tfrom all lookup main \n",
+		"ip rule list": "0:\tfrom all lookup local \n199:\tfrom all fwmark 0x54520000 lookup main \n201:\tfrom all fwmark " + m[1] +
+			" lookup 541 \n202:\tfrom all fwmark " + m[2] + " lookup 542 \n299:\tfrom all fwmark 0x54520000/0xffff0000 lookup 599 \n32766:\tfrom all lookup main \n",
 		"iptables -w -t mangle -S PREROUTING": "-P PREROUTING ACCEPT\n-A PREROUTING -j _NDM_VPN_PREROUTING\n-A PREROUTING -i br0 -j TRASSA\n",
 		"ipset list -n":                       "_NDM_OGDN_4@default:do-1\ntrassa_d0\ntrassa_d1\ntrassa_d2\n",
 	}}
@@ -165,7 +189,7 @@ func TestDefaultThroughTunnelSkipsLocalNetworks(t *testing.T) {
 		"-A TRASSA -m mark --mark 0x0 -d 172.16.0.0/12 -j RETURN\n" +
 		"-A TRASSA -m mark --mark 0x0 -d 192.168.0.0/16 -j RETURN\n" +
 		"-A TRASSA -m mark --mark 0x0 -d 224.0.0.0/3 -j RETURN\n" +
-		"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -j MARK --set-mark 0x54520001\n" +
+		"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -j MARK --set-mark " + marksOf(t, "exit vpn = W\ndefault vpn\n")[1] + "\n" +
 		"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\nCOMMIT\n"
 	if !strings.HasSuffix(tail, want) {
 		t.Errorf("chain tail:\n%s\nwant ending:\n%s", tail, want)
@@ -174,8 +198,9 @@ func TestDefaultThroughTunnelSkipsLocalNetworks(t *testing.T) {
 
 func TestRebuildAfterExitsChange(t *testing.T) {
 	// The previous layout left sets, a rule and a jump with a different source.
+	m := marksOf(t, oneExit)
 	run := &scripted{out: map[string]string{
-		"ip rule list":                        "201:\tfrom all fwmark 0x54520001 lookup 541 \n205:\tfrom all fwmark 0x54520005 lookup 545 \n1150:\tfrom all fwmark 0xffffaaa lookup 4096 \n",
+		"ip rule list":                        "201:\tfrom all fwmark " + m[1] + " lookup 541 \n205:\tfrom all fwmark 0x54520005 lookup 545 \n1150:\tfrom all fwmark 0xffffaaa lookup 4096 \n",
 		"iptables -w -t mangle -S PREROUTING": "-A PREROUTING -s 192.168.1.50/32 -i br0 -j TRASSA\n-A PREROUTING -i br0 -j TRASSA\n",
 		"ipset list -n":                       "trassa_d0\ntrassa_d1\ntrassa_d2\ntrassa_d5\ntrassa_s7\n_NDM_X\n",
 	}}
@@ -191,7 +216,7 @@ func TestRebuildAfterExitsChange(t *testing.T) {
 		"ip route flush table 545",
 		"ipset destroy trassa_d5",
 		"ipset destroy trassa_s7",
-		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("no command %q in\n%s", want, got)
@@ -251,6 +276,7 @@ func TestRoutesFollowExits(t *testing.T) {
 	run.calls = nil
 	r.SetExits(map[string]string{"vpn": ""}) // all tunnels are down
 	equal(t, run.calls, []string{
+		"ip route replace blackhole default table 599",
 		"ip route flush table 541",
 		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace blackhole default table 542",
@@ -259,6 +285,7 @@ func TestRoutesFollowExits(t *testing.T) {
 	run.calls = nil
 	r.SetExits(map[string]string{"vpn": "nwg0"}) // the backup came up
 	equal(t, run.calls, []string{
+		"ip route replace blackhole default table 599",
 		"ip route replace default dev nwg0 table 541",
 		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace default dev nwg0 table 542",
@@ -278,9 +305,13 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 		t.Errorf("the jump is in place, but Reconcile returned %v", err)
 	}
 	// Reconcile reapplies rules and routes: the kernel removes a route when its interface goes down.
+	m := marksOf(t, oneExit)
 	equal(t, run.changed(), []string{
-		"ip rule add fwmark 0x54520001/0xffffffff lookup 541 pref 201",
-		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
+		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
+		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
+		"ip route replace blackhole default table 599",
 		"ip route replace default dev nwg2 table 541",
 		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace default dev nwg2 table 542",
@@ -302,9 +333,9 @@ func TestTeardown(t *testing.T) {
 		"iptables -w -t mangle -D PREROUTING -s 192.168.1.94/32 -i br0 -j TRASSA",
 		"iptables -w -t mangle -F TRASSA",
 		"iptables -w -t mangle -X TRASSA",
-		"ip rule del pref 201",
+		"ip rule del pref 201 fwmark 0x54520001 lookup 541",
 		"ip route flush table 541",
-		"ip rule del pref 202",
+		"ip rule del pref 202 fwmark 0x54520002 lookup 542",
 		"ip route flush table 542",
 		"ipset destroy trassa_d0",
 		"ipset destroy trassa_s3",
@@ -370,5 +401,79 @@ func TestExecHonoursTimeoutWithLingeringChild(t *testing.T) {
 	_, err := Exec{}.Run(ctx, "sh", "-c", "sleep 5 & sleep 5")
 	if err == nil || time.Since(start) > 2*time.Second {
 		t.Errorf("error %v, took %s; want a failure within two seconds", err, time.Since(start).Round(time.Millisecond))
+	}
+}
+
+func markOf(t *testing.T, s string) uint32 {
+	t.Helper()
+	v, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return uint32(v)
+}
+
+func TestMarksCarryLayoutGeneration(t *testing.T) {
+	a, _ := NewLayout(cfgOf(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
+	b, _ := NewLayout(cfgOf(t, "exit alt = W\nexit vpn = W\ndefault direct\n"))
+	same, _ := NewLayout(cfgOf(t, "exit vpn = W2, W3\nexit alt = W\ndefault direct\nx.com -> vpn\n"))
+	if a.Slots[0].Mark() != "0x54520000" || b.Slots[0].Mark() != "0x54520000" {
+		t.Errorf("the direct mark must not depend on the layout: %s, %s", a.Slots[0].Mark(), b.Slots[0].Mark())
+	}
+	if a.Slots[1].Mark() == b.Slots[1].Mark() {
+		t.Error("reordered exits must give different marks")
+	}
+	for i := range a.Slots {
+		if a.Slots[i].Mark() != same.Slots[i].Mark() {
+			t.Errorf("slot %d: the same exits in the same order must keep their marks across rule changes", i)
+		}
+	}
+	for _, s := range a.Slots[1:] {
+		m := markOf(t, s.Mark())
+		if m&0xffff0000 != markBase || m&0x3f != uint32(s.Index) || m == markBase {
+			t.Errorf("slot %d: mark %s", s.Index, s.Mark())
+		}
+	}
+}
+
+func TestMarksOfAnotherLayoutGoNowhere(t *testing.T) {
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
+		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
+		"ip route replace blackhole default table 599",
+	} {
+		if !slices.Contains(run.changed(), want) {
+			t.Errorf("missing %q in %q", want, run.changed())
+		}
+	}
+}
+
+func TestRulesOfAnotherLayoutAreReplaced(t *testing.T) {
+	l, _ := NewLayout(cfgOf(t, twoExits))
+	run := &scripted{fail: []string{" -C "}, out: map[string]string{
+		"ip rule list": "201:\tfrom all fwmark 0x54520001 lookup 541 \n",
+	}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	// Live tunnels: otherwise syncRoutes empties table 541 legitimately (no tunnel for the exit).
+	if err := r.SetExits(map[string]string{"vpn": "nwg2", "alt": "nwg3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
+		t.Fatal(err)
+	}
+	add := "ip rule add fwmark " + l.Slots[1].Mark() + "/0xffffffff lookup 541 pref 201"
+	del := "ip rule del pref 201 fwmark 0x54520001 lookup 541"
+	c := run.changed()
+	ia, id := slices.Index(c, add), slices.Index(c, del)
+	if ia < 0 || id < 0 || id < ia {
+		t.Errorf("the new rule must be added before the old one is removed: %q", c)
+	}
+	if slices.Contains(c, "ip route flush table 541") {
+		t.Error("table 541 is still in use and must not be flushed")
 	}
 }

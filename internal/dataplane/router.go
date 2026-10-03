@@ -117,53 +117,82 @@ func (r *Router) syncJump(ctx context.Context) error {
 	return err
 }
 
-// syncRules adds missing routing rules and removes our own stale ones.
+// syncRules adds the routing rules the layout needs, then removes our own rules it does not
+// need: rules of another layout go only after the new ones are in place.
 func (r *Router) syncRules(ctx context.Context, l *Layout) error {
 	out, err := r.run.Run(ctx, "ip", "rule", "list")
 	if err != nil {
 		return err
 	}
-	want := map[string]bool{}
-	for _, s := range l.Slots[1:] {
-		want[s.Pref()] = true
-		if strings.Contains(out, "fwmark "+s.Mark()+" lookup "+s.Table()) {
+	have := map[string]bool{}
+	for _, o := range ownRules(out) {
+		have[o.key()] = true
+	}
+	want, keep := map[string]bool{}, map[string]bool{}
+	for _, w := range l.wantedRules() {
+		want[w.key()], keep[w.table] = true, true
+		if have[w.key()] {
 			continue
 		}
-		if _, err := r.run.Run(ctx, "ip", "rule", "add", "fwmark", s.Mark()+"/0xffffffff", "lookup", s.Table(), "pref", s.Pref()); err != nil {
+		mark := w.mark
+		if !strings.Contains(mark, "/") {
+			mark += "/0xffffffff"
+		}
+		if _, err := r.run.Run(ctx, "ip", "rule", "add", "fwmark", mark, "lookup", w.table, "pref", w.pref); err != nil {
 			return err
 		}
 	}
-	for _, own := range ownRules(out) {
-		if !want[own.pref] {
-			dropRule(ctx, r.run, own)
+	for _, o := range ownRules(out) {
+		if !want[o.key()] {
+			dropRule(ctx, r.run, o, keep)
 		}
 	}
 	return nil
 }
 
-// dropRule deletes one of our routing rules and flushes its table, but only if the table
-// is in the trassa range: someone else's table is never touched, whatever the rule says.
-func dropRule(ctx context.Context, run Runner, own ownRule) {
-	run.Run(ctx, "ip", "rule", "del", "pref", own.pref)
-	if t, err := strconv.Atoi(own.table); err == nil && t > tableBase && t < tableBase+2*rules.MaxExits+2 {
-		run.Run(ctx, "ip", "route", "flush", "table", own.table)
+// dropRule removes one of our routing rules by its full condition, and clears its table unless
+// a wanted rule still uses it.
+func dropRule(ctx context.Context, run Runner, o ownRule, keep map[string]bool) {
+	run.Run(ctx, "ip", "rule", "del", "pref", o.pref, "fwmark", o.mark, "lookup", o.table)
+	if t, err := strconv.Atoi(o.table); err == nil && t > tableBase && t < tableBase+60 && !keep[o.table] {
+		run.Run(ctx, "ip", "route", "flush", "table", o.table)
 	}
 }
 
-type ownRule struct{ pref, table string }
+// ownRule is a routing rule with a trassa mark, as "ip rule list" prints it.
+type ownRule struct{ pref, mark, table string }
+
+func (o ownRule) key() string { return o.pref + " " + o.mark + " " + o.table }
+
+// wantedRules are the routing rules a layout needs: direct back to the main table, one rule per
+// tunnel slot, and a dead end for marks of any other layout.
+func (l *Layout) wantedRules() []ownRule {
+	out := []ownRule{{directPref, fmt.Sprintf("0x%x", markBase), "main"}}
+	for _, s := range l.Slots[1:] {
+		out = append(out, ownRule{s.Pref(), s.Mark(), s.Table()})
+	}
+	return append(out, ownRule{stalePref, fmt.Sprintf("0x%x/%s", markBase, markMask), staleTable})
+}
 
 // ownRules finds rules with trassa marks in "ip rule list" output.
 func ownRules(list string) []ownRule {
 	var out []ownRule
 	for _, line := range strings.Split(list, "\n") {
-		if !strings.Contains(line, markPrefix) {
-			continue
-		}
 		f := strings.Fields(line)
-		if len(f) < 2 {
+		var o ownRule
+		for i := 0; i+1 < len(f); i++ {
+			switch f[i] {
+			case "fwmark":
+				o.mark = f[i+1]
+			case "lookup":
+				o.table = f[i+1]
+			}
+		}
+		if len(f) == 0 || !strings.HasPrefix(o.mark, "0x5452") {
 			continue
 		}
-		out = append(out, ownRule{pref: strings.TrimSuffix(f[0], ":"), table: f[len(f)-1]})
+		o.pref = strings.TrimSuffix(f[0], ":")
+		out = append(out, o)
 	}
 	return out
 }
@@ -176,6 +205,9 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 			first = err
 		}
 	}
+	// Marks of another layout go nowhere.
+	_, err := r.run.Run(ctx, "ip", "route", "replace", "blackhole", "default", "table", staleTable)
+	note(err)
 	for _, s := range l.Slots[1:] {
 		if s.Strict {
 			// A permanent low-priority blackhole: when the tunnel interface goes down, the kernel
@@ -281,7 +313,7 @@ func Teardown(ctx context.Context, run Runner) {
 	run.Run(ctx, "iptables", mangle("-X", routeChain)...)
 	list, _ := run.Run(ctx, "ip", "rule", "list")
 	for _, own := range ownRules(list) {
-		dropRule(ctx, run, own)
+		dropRule(ctx, run, own, nil)
 	}
 	names, _ := run.Run(ctx, "ipset", "list", "-n")
 	for _, name := range strings.Fields(names) {

@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -11,11 +12,15 @@ import (
 )
 
 const (
-	markBase   = 0x54520000 // trassa marks: markBase + slot number
+	markBase   = 0x54520000 // every trassa mark has 0x5452 in the upper 16 bits
 	markMask   = "0xffff0000"
-	markPrefix = "fwmark 0x5452" // how trassa marks look in ip rule output
+	genShift   = 6  // slot numbers take the lower 6 bits: at most 1 + 2*29 = 59 slots
+	genBits    = 10 // layout generation
 	tableBase  = 540
 	prefBase   = 200
+	directPref = "199" // the direct slot goes back to the main table
+	stalePref  = "299" // a mark of any other layout goes nowhere
+	staleTable = "599"
 	routeChain = "TRASSA"
 	setPrefix  = "trassa_"
 )
@@ -31,9 +36,30 @@ type Slot struct {
 	Index  int
 	Exit   string
 	Strict bool
+	gen    uint32
 }
 
-func (s Slot) Mark() string  { return fmt.Sprintf("0x%x", markBase+s.Index) }
+// generation is a 10-bit fingerprint of the exit names in order. Slot numbers mean exits in this
+// order; when the list changes, the generation changes, and connections marked under the old
+// layout do not follow the new meaning of their slot number. The same list gives the same
+// generation after a daemon restart, so connections in progress keep their path.
+func generation(cfg *rules.Config) uint32 {
+	h := fnv.New32a()
+	for _, e := range cfg.Exits {
+		h.Write([]byte(e.Name))
+		h.Write([]byte{0})
+	}
+	return h.Sum32() & (1<<genBits - 1)
+}
+
+// Mark is the slot's packet mark: direct is always markBase, tunnel slots carry the generation.
+func (s Slot) Mark() string {
+	if s.Index == 0 {
+		return fmt.Sprintf("0x%x", markBase)
+	}
+	return fmt.Sprintf("0x%x", markBase|s.gen<<genShift|uint32(s.Index))
+}
+
 func (s Slot) Table() string { return strconv.Itoa(tableBase + s.Index) }
 func (s Slot) Pref() string  { return strconv.Itoa(prefBase + s.Index) }
 func (s Slot) Set() string   { return setPrefix + "d" + strconv.Itoa(s.Index) }
@@ -56,10 +82,11 @@ func NewLayout(cfg *rules.Config) (*Layout, error) {
 	if len(cfg.Exits) > rules.MaxExits {
 		return nil, fmt.Errorf("%d exits, at most %d are supported", len(cfg.Exits), rules.MaxExits)
 	}
+	gen := generation(cfg)
 	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, exits: map[string]int{}}
 	for i, e := range cfg.Exits {
 		l.exits[e.Name] = i
-		l.Slots = append(l.Slots, Slot{Index: 1 + 2*i, Exit: e.Name}, Slot{Index: 2 + 2*i, Exit: e.Name, Strict: true})
+		l.Slots = append(l.Slots, Slot{Index: 1 + 2*i, Exit: e.Name, gen: gen}, Slot{Index: 2 + 2*i, Exit: e.Name, Strict: true, gen: gen})
 	}
 	for i, r := range cfg.Rules {
 		if len(r.Nets) > 0 {
