@@ -255,7 +255,7 @@
         var act = head.slice(arrow + 3);
         v.appendChild(el("span", "", head.slice(0, arrow)));
         v.appendChild(el("span", "", "→"));
-        v.appendChild(el("span", "badge " + (act === "direct" ? "direct" : "tunnel"), act));
+        v.appendChild(el("span", "badge " + badgeKind(act), act));
       } else {
         v.textContent = head;
       }
@@ -268,6 +268,12 @@
   }
 
   /* ---- Status ---- */
+  // badgeKind is the badge colour of an action: blocked, direct or through a tunnel.
+  function badgeKind(action) {
+    if (action === "none") return "blocked";
+    return action === "direct" ? "direct" : "tunnel";
+  }
+
   function chip(text, dot) {
     var c = el("span", "chip");
     if (dot) c.appendChild(el("span", "dot " + dot));
@@ -390,7 +396,7 @@
       name.appendChild(el("span", "dev", o.device ? o.device + " · " + o.client : o.client));
       tr.appendChild(name);
       var td = el("td", "path");
-      td.appendChild(el("span", "badge " + (o.action === "direct" ? "direct" : "tunnel"), o.action));
+      td.appendChild(el("span", "badge " + badgeKind(o.action), o.action));
       td.appendChild(el("span", "dev", o.line ? "line " + o.line : "default"));
       tr.appendChild(td);
       tb.appendChild(tr);

@@ -144,11 +144,11 @@ func TestTooManyExits(t *testing.T) {
 	}
 	b.WriteString("default direct\n")
 	ps := problemsOf(t, b.String())
-	if !hasProblem(ps, Error, MaxExits+1, "at most 29") {
+	if !hasProblem(ps, Error, MaxExits+1, "at most 28") {
 		t.Errorf("the thirtieth exit was not rejected: %v", ps)
 	}
 	ok := strings.Replace(b.String(), fmt.Sprintf("exit e%d = W\n", MaxExits), "", 1)
 	if ps := problemsOf(t, ok); len(ps) != 0 {
-		t.Errorf("29 exits produced problems: %v", ps)
+		t.Errorf("28 exits produced problems: %v", ps)
 	}
 }

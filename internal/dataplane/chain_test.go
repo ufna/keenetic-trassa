@@ -252,3 +252,68 @@ func TestDeviceViewsWithTunnelDefault(t *testing.T) {
 		}
 	}
 }
+func TestNoneBlocks(t *testing.T) {
+	const src = "exit vpn = W\ndevice kids = 192.168.1.70\ndefault direct\nads.example -> none\n9.9.9.0/24 -> none\ngame.example -> none for kids\n"
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	r.SetExits(map[string]string{"vpn": "nwg2"})
+	none := rules.Action{Exit: rules.None}
+	entries := []claims.Entry{{Addr: ip("6.6.6.6"), Action: none}, {View: 1, Addr: ip("6.6.6.6"), Action: none}, {View: 1, Addr: ip("7.7.7.7"), Action: none}}
+	if err := r.Rebuild(cfgOf(t, src), map[rules.View][]netip.Addr{1: {ip("192.168.1.70")}}, entries); err != nil {
+		t.Fatal(err)
+	}
+	marks := marksOf(t, src) // direct, vpn, vpn strict, none
+	if len(marks) != 4 {
+		t.Fatalf("slots: %v", marks)
+	}
+	nm := markOf(t, marks[3])
+	m := newModel(t, run.calls)
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"192.168.1.30", "6.6.6.6", nm}, {"192.168.1.30", "9.9.9.9", nm}, {"192.168.1.30", "7.7.7.7", 0},
+		{"192.168.1.70", "7.7.7.7", nm}, {"192.168.1.70", "9.9.9.9", nm}, {"192.168.1.70", "8.8.8.8", 0},
+	}
+	for _, c := range cases {
+		if got := m.mark(c.from, c.to); got != c.want {
+			t.Errorf("%s → %s: mark %#x, want %#x", c.from, c.to, got, c.want)
+		}
+	}
+	if got := fibAfter(run.calls).route(nm); got != "table 543: prohibit" {
+		t.Errorf("a blocked mark goes to %q", got)
+	}
+	// Tunnels going down do not unblock anything.
+	r.SetExits(map[string]string{"vpn": ""})
+	if got := fibAfter(run.calls).route(nm); got != "table 543: prohibit" {
+		t.Errorf("with the tunnel down a blocked mark goes to %q", got)
+	}
+}
+
+func TestDefaultNoneKeepsLocalNetworks(t *testing.T) {
+	const src = "exit vpn = W\ndefault none\nallowed.example -> direct\n"
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, src), nil, []claims.Entry{{Addr: ip("5.5.5.5"), Action: rules.Action{Exit: "direct"}}}); err != nil {
+		t.Fatal(err)
+	}
+	nm := markOf(t, marksOf(t, src)[3])
+	m := newModel(t, run.calls)
+	cases := []struct {
+		to   string
+		want uint32
+	}{{"8.8.8.8", nm}, {"5.5.5.5", markBase}, {"192.168.1.1", 0}, {"10.0.0.5", 0}}
+	for _, c := range cases {
+		if got := m.mark("192.168.1.30", c.to); got != c.want {
+			t.Errorf("→ %s: mark %#x, want %#x", c.to, got, c.want)
+		}
+	}
+}
+
+func TestNoNoneSlotWithoutNone(t *testing.T) {
+	if got := len(marksOf(t, oneExit)); got != 3 {
+		t.Errorf("rules without none: %d slots, want 3", got)
+	}
+}

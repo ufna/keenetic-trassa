@@ -27,6 +27,10 @@ func Check(c *Config) []Problem {
 		ps = append(ps, Problem{c.DefaultLine, Warning,
 			"strict in default: if all of the exit's tunnels go down, the whole internet is lost except for direct rules"})
 	}
+	if c.Default.Exit == None {
+		ps = append(ps, Problem{c.DefaultLine, Warning,
+			"default none: everything that matches no rule is blocked; only the rules' sites and the home network stay reachable"})
+	}
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		// Negation only: almost the whole internet falls under the rule. A negation next to ordinary
@@ -34,6 +38,10 @@ func Check(c *Config) []Problem {
 		if r.Action.Strict && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
 			ps = append(ps, Problem{r.Line, Warning,
 				"strict on a negation rule: if all of the exit's tunnels go down, almost the whole internet is lost"})
+		}
+		if r.Action.Exit == None && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
+			ps = append(ps, Problem{r.Line, Warning,
+				"none on a negation rule: almost the whole internet is blocked"})
 		}
 		if by := c.shadowedBy(i); by != "" {
 			ps = append(ps, Problem{r.Line, Warning,

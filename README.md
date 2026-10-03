@@ -129,6 +129,7 @@ example.org -> vpn strict             # strict: blocked while all tunnels of the
 @lists/streaming.txt -> vpn           # conditions from a file in /opt/etc/trassa, one per line
 twitch.tv -> vpn for tv, phones       # only for the devices of lists tv and phones
 reddit.com -> vpn for !office         # for every device except those of list office
+ads.example.net -> none               # blocked: new connections are refused
 !*.ru -> vpn                          # negation: everything except .ru (a broad rule: keep it last)
 
 test t.me = vpn                       # expectations, checked every time the file is checked
@@ -144,6 +145,10 @@ test yandex.ru = direct
   addresses; give listed devices a permanent address in the router's DHCP settings. A device's
   rules use every DNS answer on the network, not only the device's own.
 - At most 16 device lists and 64 devices in all of them.
+- `none` blocks: new connections to the addresses of matching names and subnets are refused at
+  once. Blocking works on addresses, as routing does: a site without a rule that shares an address
+  with a blocked one (a CDN) is blocked too while that address is in memory. DNS answers are not
+  changed. `default none` blocks everything except the rules' sites and the home network.
 - A file with errors is never applied: the previous rules stay. Warnings (for example, a rule
   that can never match because an earlier one covers it) need an explicit confirmation.
 
@@ -241,7 +246,8 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 
 ## Limitations
 
-- IPv4 only: IPv6 traffic is not routed (DNS answers that arrive over IPv6 are still read).
+- IPv4 only: IPv6 traffic is not routed (DNS answers that arrive over IPv6 are still read), so a
+  network with IPv6 internet access can reach blocked sites over IPv6.
 - DNS over UDP through the router: DNS over TCP and encrypted DNS on the devices are not seen.
 - Exits are WireGuard tunnels configured in the firmware; trassa does not bring tunnels up or
   down itself.

@@ -111,6 +111,7 @@ form.why input { flex: 1 1 200px; min-width: 0; font: 14px var(--font-code); pad
 .badge { font: 600 12px var(--font-ui); padding: 2px 9px; border-radius: 999px; letter-spacing: .02em; white-space: nowrap; }
 .badge.tunnel { background: var(--tunnel-soft); color: var(--tunnel); }
 .badge.direct { background: var(--direct-soft); color: var(--direct); }
+.badge.blocked { background: var(--bad-soft); color: var(--bad); }
 .rule-text { margin: 0; font: 12.5px/1.5 var(--font-code); background: var(--code-bg); padding: 6px 9px; border-radius: var(--radius); white-space: pre-wrap; word-break: break-word; }
 .note { color: var(--ink-soft); font-size: 13px; margin: 0; }
 .note.bad { color: var(--bad); }

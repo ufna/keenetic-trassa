@@ -239,6 +239,13 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	_, err := r.run.Run(ctx, "ip", "route", "replace", "blackhole", "default", "table", staleTable)
 	note(err)
 	for _, s := range l.Slots[1:] {
+		if s.Exit == rules.None {
+			// The kernel refuses the connection at once, with an ICMP "prohibited" to the device,
+			// instead of leaving it to wait for a timeout. Tunnels do not matter here.
+			_, err := r.run.Run(ctx, "ip", "route", "replace", "prohibit", "default", "table", s.Table())
+			note(err)
+			continue
+		}
 		if s.Strict {
 			// A permanent low-priority blackhole: when the tunnel interface goes down, the kernel
 			// removes the route through it, and without the blackhole the table would be empty

@@ -14,9 +14,12 @@ import (
 // Direct is the name of the exit that goes straight through the ISP.
 const Direct = "direct"
 
-// MaxExits is how many exits can be declared: each one needs two routing tables,
-// and trassa's table numbers are 540–599.
-const MaxExits = 29
+// None is the name of the "exit" that blocks: new connections to the address are refused.
+const None = "none"
+
+// MaxExits is how many exits can be declared: each one needs two routing tables, blocking needs
+// one more, and trassa's table numbers are 540–598 (599 catches the marks of other layouts).
+const MaxExits = 28
 
 type Severity int
 
@@ -222,6 +225,10 @@ func (p *parser) exit(n int, rest string) {
 		p.errf(n, "name %q is reserved: it is the direct path through the ISP", Direct)
 		return
 	}
+	if name == None {
+		p.errf(n, "name %q is reserved: it blocks traffic", None)
+		return
+	}
 	if _, dup := p.cfg.Exit(name); dup {
 		p.errf(n, "exit %q is already declared", name)
 		return
@@ -250,6 +257,10 @@ func (p *parser) action(n int, f []string) (Action, bool) {
 	a := Action{Exit: f[0], Strict: len(f) == 2}
 	if a.Exit == Direct && a.Strict {
 		p.errf(n, "strict makes no sense for direct")
+		return Action{}, false
+	}
+	if a.Exit == None && a.Strict {
+		p.errf(n, "strict makes no sense for none: blocked traffic goes nowhere anyway")
 		return Action{}, false
 	}
 	p.refs = append(p.refs, exitRef{n, a.Exit})
@@ -388,7 +399,7 @@ func (r *Rule) add(tok string) error {
 	if strings.Contains(tok, "://") && !strings.HasPrefix(tok, "~") {
 		return linkError(tok)
 	}
-	if tok == "strict" || tok == Direct {
+	if tok == "strict" || tok == Direct || tok == None {
 		return fmt.Errorf("the word %q is among the conditions, but it belongs after ->", tok)
 	}
 	if !strings.HasPrefix(tok, "~") {
@@ -449,7 +460,7 @@ func (p *parser) finish() {
 		p.errf(0, "no default line: specify where everything that matches no rule should go")
 	}
 	for _, ref := range p.refs {
-		if ref.name == Direct {
+		if ref.name == Direct || ref.name == None {
 			continue
 		}
 		if _, ok := p.cfg.Exit(ref.name); !ok {

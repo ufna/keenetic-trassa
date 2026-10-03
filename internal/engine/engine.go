@@ -317,6 +317,9 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 
 // exitLine describes the current state of the action's exit; empty if there is nothing to say.
 func (e *Engine) exitLine(a rules.Action) string {
+	if a.Exit == rules.None {
+		return "blocked: new connections are refused\n"
+	}
 	if a.Exit == rules.Direct || e.exits == nil {
 		return ""
 	}

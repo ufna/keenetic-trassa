@@ -85,6 +85,7 @@ type Layout struct {
 	Views []rules.View
 	gen   uint32
 	exits map[string]int
+	none  int // position of the blocking slot in Slots; 0 means the rules block nothing
 }
 
 func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
@@ -96,6 +97,12 @@ func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
 	for i, e := range cfg.Exits {
 		l.exits[e.Name] = i
 		l.Slots = append(l.Slots, Slot{Index: 1 + 2*i, Exit: e.Name, gen: gen}, Slot{Index: 2 + 2*i, Exit: e.Name, Strict: true, gen: gen})
+	}
+	if cfg.UsesNone() {
+		// Blocking gets its own slot after the exits, and only when the rules use it: rules
+		// without none get exactly the kernel state they got before.
+		l.Slots = append(l.Slots, Slot{Index: len(l.Slots), Exit: rules.None, gen: gen})
+		l.none = len(l.Slots) - 1
 	}
 	for i, r := range cfg.Rules {
 		if len(r.Nets) > 0 {
@@ -116,6 +123,12 @@ func NewLayout(cfg *rules.Config, views []rules.View) (*Layout, error) {
 
 // Slot returns the slot for an action; false means the layout has no such exit.
 func (l *Layout) Slot(a rules.Action) (Slot, bool) {
+	if a.Exit == rules.None {
+		if l.none == 0 {
+			return Slot{}, false
+		}
+		return l.Slots[l.none], true
+	}
 	if a.Exit == rules.Direct {
 		return l.Slots[0], true
 	}

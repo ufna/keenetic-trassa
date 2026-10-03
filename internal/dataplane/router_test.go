@@ -566,8 +566,8 @@ func (f *fib) exec(cmd string) {
 		if f.tables[t] == nil {
 			f.tables[t] = map[string]string{}
 		}
-		if w[3] == "blackhole" {
-			f.tables[t][metric] = "blackhole"
+		if w[3] == "blackhole" || w[3] == "prohibit" {
+			f.tables[t][metric] = w[3]
 		} else {
 			f.tables[t][metric] = "dev " + w[5]
 		}

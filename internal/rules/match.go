@@ -54,9 +54,12 @@ func (c *Config) Explain(subject string) (string, error) {
 	} else {
 		fmt.Fprintf(&b, "no rule matched; default applies (line %d)\n", c.DefaultLine)
 	}
-	if e, found := c.Exit(d.Action.Exit); found {
+	switch e, found := c.Exit(d.Action.Exit); {
+	case found:
 		fmt.Fprintf(&b, "exit %s: %s\n", e.Name, strings.Join(e.Interfaces, ", "))
-	} else {
+	case d.Action.Exit == None:
+		b.WriteString("blocked: new connections are refused\n")
+	default:
 		b.WriteString("exit direct: straight through the ISP\n")
 	}
 	b.WriteString(c.DeviceLines(subject, c.ListViews()))
@@ -200,4 +203,17 @@ func (c *Config) ListViews() []View {
 		}
 	}
 	return out
+}
+
+// UsesNone reports whether the rules block anything: the kernel then needs the blocking slot.
+func (c *Config) UsesNone() bool {
+	if c.Default.Exit == None {
+		return true
+	}
+	for _, r := range c.Rules {
+		if r.Action.Exit == None {
+			return true
+		}
+	}
+	return false
 }

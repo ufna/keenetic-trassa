@@ -698,3 +698,10 @@ func TestReloadFollowsDeviceLists(t *testing.T) {
 	}
 	wantSources(t, sink.sources, "map[1:[192.168.1.94]]")
 }
+func TestNoneInWhy(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndefault direct\nads.example -> none\n"), nil, l.printf, t0)
+	if text, _ := e.Why("ads.example", t0); !strings.Contains(text, "ads.example → none") || !strings.Contains(text, "blocked: new connections are refused") {
+		t.Errorf("why:\n%s", text)
+	}
+}
