@@ -26,7 +26,11 @@ func NormalizeName(s string) (string, error) {
 		}
 		labels[i] = a
 	}
-	return strings.Join(labels, "."), nil
+	name := strings.Join(labels, ".")
+	if len(name) > 253 {
+		return "", errors.New("имя длиннее 253 символов")
+	}
+	return name, nil
 }
 
 // looksNumeric сообщает, что запись состоит только из цифр и точек, то есть похожа на адрес.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -336,6 +337,14 @@ func (p *parser) include(n int, path string, r *Rule) bool {
 	return good
 }
 
+// linkError объясняет, что вместо домена вставлена ссылка, и подсказывает домен из неё.
+func linkError(tok string) error {
+	if u, err := url.Parse(tok); err == nil && u.Hostname() != "" {
+		return fmt.Errorf("условие %q — это ссылка, а нужен домен: %s", tok, u.Hostname())
+	}
+	return fmt.Errorf("условие %q — это ссылка, а нужен домен", tok)
+}
+
 // add добавляет в правило одно условие: по имени (с отрицанием или без) либо адрес или подсеть.
 func (r *Rule) add(tok string) error {
 	neg := strings.HasPrefix(tok, "!")
@@ -344,6 +353,9 @@ func (r *Rule) add(tok string) error {
 	}
 	if tok == "" {
 		return errors.New("пустое условие")
+	}
+	if strings.Contains(tok, "://") && !strings.HasPrefix(tok, "~") {
+		return linkError(tok)
 	}
 	if tok == "strict" || tok == Direct {
 		return fmt.Errorf("слово %q стоит среди условий, а пишется оно после ->", tok)

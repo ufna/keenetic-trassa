@@ -3,6 +3,7 @@ package rules
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"strings"
 )
 
@@ -67,6 +68,13 @@ func (c *Config) MatchAddr(a netip.Addr) Decision {
 // правдоподобным, но неверным.
 func (c *Config) MatchSubject(s string) (string, Decision, error) {
 	s = strings.TrimSpace(s)
+	if strings.Contains(s, "://") {
+		u, err := url.Parse(s)
+		if err != nil || u.Hostname() == "" {
+			return "", Decision{}, fmt.Errorf("%q: не удалось взять домен из ссылки", s)
+		}
+		s = u.Hostname()
+	}
 	if a, err := netip.ParseAddr(s); err == nil {
 		if !a.Is4() {
 			return "", Decision{}, fmt.Errorf("адрес %s: IPv6 пока не поддерживается", s)
@@ -81,6 +89,27 @@ func (c *Config) MatchSubject(s string) (string, Decision, error) {
 		return "", Decision{}, err
 	}
 	return name, c.MatchName(name), nil
+}
+
+// Explain объясняет по одним правилам, без сведений из DNS, куда пойдёт имя, адрес или ссылка.
+func (c *Config) Explain(subject string) (string, error) {
+	subj, d, err := c.MatchSubject(subject)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s → %s\n", subj, d.Action)
+	if d.Rule != nil {
+		fmt.Fprintf(&b, "правило, строка %d: %s\n", d.Rule.Line, d.Rule.Text)
+	} else {
+		fmt.Fprintf(&b, "ни одно правило не подошло, действует default (строка %d)\n", c.DefaultLine)
+	}
+	if e, found := c.Exit(d.Action.Exit); found {
+		fmt.Fprintf(&b, "выход %s: %s\n", e.Name, strings.Join(e.Interfaces, ", "))
+	} else {
+		b.WriteString("выход direct: напрямую через провайдера\n")
+	}
+	return b.String(), nil
 }
 
 // MatchChain решает судьбу DNS-ответа: names — запрошенное имя и его CNAME-цели по порядку.

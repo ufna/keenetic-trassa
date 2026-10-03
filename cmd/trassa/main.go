@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"trassa/internal/ctl"
@@ -123,21 +122,11 @@ func cmdWhy(path, subject string, out, errw io.Writer) int {
 		printProblems(out, ps)
 		return 1
 	}
-	subject, d, err := cfg.MatchSubject(subject)
+	text, err := cfg.Explain(subject)
 	if err != nil {
 		fmt.Fprintln(errw, err)
 		return 1
 	}
-	fmt.Fprintf(out, "%s → %s\n", subject, d.Action)
-	if d.Rule != nil {
-		fmt.Fprintf(out, "правило, строка %d: %s\n", d.Rule.Line, d.Rule.Text)
-	} else {
-		fmt.Fprintf(out, "ни одно правило не подошло, действует default (строка %d)\n", cfg.DefaultLine)
-	}
-	if e, found := cfg.Exit(d.Action.Exit); found {
-		fmt.Fprintf(out, "выход %s: %s\n", e.Name, strings.Join(e.Interfaces, ", "))
-	} else {
-		fmt.Fprintln(out, "выход direct: напрямую через провайдера")
-	}
+	fmt.Fprint(out, text)
 	return 0
 }

@@ -64,3 +64,23 @@ func TestNormalizeNameAcceptsLetters(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeNameLength(t *testing.T) {
+	l63 := strings.Repeat("a", 63)
+	ok := l63 + "." + l63 + "." + l63 + "." + strings.Repeat("b", 61) // 253 символа
+	if got, err := NormalizeName(ok); err != nil || len(got) != 253 {
+		t.Errorf("имя из 253 символов: %q, %v", got, err)
+	}
+	if _, err := NormalizeName(ok + "b"); err == nil || !strings.Contains(err.Error(), "253") {
+		t.Errorf("имя из 254 символов должно быть ошибкой, получено %v", err)
+	}
+}
+
+// Имена из DNS выводятся на страницу и в журнал: управляющие символы и разметка до них не доходят.
+func TestNormalizeNameRejectsControlChars(t *testing.T) {
+	for _, in := range []string{"a\x1bb.com", "ex\nample.com", "a\x00.com", "a\x7f.com", "<b>.com"} {
+		if got, err := NormalizeName(in); err == nil {
+			t.Errorf("NormalizeName(%q) = %q, ожидалась ошибка", in, got)
+		}
+	}
+}

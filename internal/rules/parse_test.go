@@ -223,3 +223,19 @@ func TestParseInterfaceNames(t *testing.T) {
 		t.Errorf("обычные имена интерфейсов отклонены: %v", ps)
 	}
 }
+
+func TestParseLinks(t *testing.T) {
+	_, ps := Parse("exit vpn = W\ndefault direct\nhttps://www.youtube.com/watch?v=1 -> vpn\n!http://mail.ru -> vpn\n", nil)
+	want := []string{
+		`строка 3: ошибка: условие "https://www.youtube.com/watch?v=1" — это ссылка, а нужен домен: www.youtube.com`,
+		`строка 4: ошибка: условие "http://mail.ru" — это ссылка, а нужен домен: mail.ru`,
+	}
+	if len(ps) != len(want) {
+		t.Fatalf("проблемы: %v", ps)
+	}
+	for i, w := range want {
+		if ps[i].String() != w {
+			t.Errorf("получено %q, ожидалось %q", ps[i].String(), w)
+		}
+	}
+}

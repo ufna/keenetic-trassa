@@ -2,6 +2,7 @@ package rules
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -141,5 +142,37 @@ func TestMatchCyrillic(t *testing.T) {
 	}
 	if got := cfg.MatchName("example.com").Action.Exit; got != "vpn" {
 		t.Errorf("example.com → %s, ожидалось vpn", got)
+	}
+}
+
+func TestMatchSubjectAcceptsLinks(t *testing.T) {
+	c := mustParse(t, exampleSrc)
+	subj, d, err := c.MatchSubject("https://WWW.YouTube.com/watch?v=1")
+	if err != nil || subj != "www.youtube.com" || d.Action.Exit != "vpn" {
+		t.Errorf("ссылка на имя: %q, %+v, %v", subj, d.Action, err)
+	}
+	subj, d, err = c.MatchSubject("https://149.154.167.50:443/")
+	if err != nil || subj != "149.154.167.50" || d.Rule == nil || d.Rule.Line != 7 {
+		t.Errorf("ссылка на адрес: %q, %+v, %v", subj, d, err)
+	}
+	if _, _, err := c.MatchSubject("https:///path"); err == nil {
+		t.Error("ссылка без домена должна быть ошибкой")
+	}
+}
+
+func TestExplain(t *testing.T) {
+	c := mustParse(t, exampleSrc)
+	cases := map[string]string{
+		"www.youtube.com": "www.youtube.com → vpn strict\nправило, строка 5: youtube.com googlevideo.com ytimg.com -> vpn strict\nвыход vpn: Wireguard2, Wireguard0, Wireguard3\n",
+		"ya.ru":           "ya.ru → direct\nправило, строка 8: *.ru *.рф *.su -> direct\nвыход direct: напрямую через провайдера\n",
+		"8.8.8.8":         "8.8.8.8 → direct\nни одно правило не подошло, действует default (строка 3)\nвыход direct: напрямую через провайдера\n",
+	}
+	for subj, want := range cases {
+		if got, err := c.Explain(subj); err != nil || got != want {
+			t.Errorf("Explain(%q) = %q, %v\nожидалось %q", subj, got, err, want)
+		}
+	}
+	if _, err := c.Explain("149.154"); err == nil || !strings.Contains(err.Error(), "похоже на адрес") {
+		t.Errorf("недописанный адрес: %v", err)
 	}
 }

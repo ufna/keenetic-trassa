@@ -28,7 +28,9 @@ func Check(c *Config) []Problem {
 	}
 	for i := range c.Rules {
 		r := &c.Rules[i]
-		if r.Action.Strict && len(r.Neg) > 0 {
+		// Только отрицание: под правило попадает почти весь интернет. Отрицание рядом с обычными
+		// условиями лишь сужает правило, и предупреждать о нём — приучать подтверждать не глядя.
+		if r.Action.Strict && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
 			ps = append(ps, Problem{r.Line, Warning,
 				"strict на правиле с отрицанием: при падении всех туннелей выхода пропадёт почти весь интернет"})
 		}

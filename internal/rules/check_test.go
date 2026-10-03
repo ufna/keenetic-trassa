@@ -88,6 +88,11 @@ func TestStrictWarnings(t *testing.T) {
 	if HasErrors(ps) {
 		t.Errorf("предупреждения не должны считаться ошибками: %v", ps)
 	}
+	// Отрицание рядом с обычными условиями сужает правило, а не расширяет его на весь интернет.
+	ps = problemsOf(t, head+"*.com !google.com -> vpn strict\n")
+	if hasProblem(ps, Warning, 3, "strict на правиле с отрицанием") {
+		t.Errorf("отрицание внутри обычных условий не должно давать предупреждения: %v", ps)
+	}
 }
 
 func TestLoadStopsAtParseErrors(t *testing.T) {
