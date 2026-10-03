@@ -3,8 +3,10 @@ package dataplane
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -99,6 +101,16 @@ func swapped(set, kind string, addrs ...string) string {
 	return s + "swap " + set + "_n " + set + "\ndestroy " + set + "_n\n"
 }
 
+// fallMark is the condition of the "this layout, no route: go direct" rule.
+func fallMark(t *testing.T, src string) string {
+	t.Helper()
+	l, err := NewLayout(cfgOf(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("0x%x/0xffffffc0", markBase|l.gen<<genShift)
+}
+
 func vpn(strict bool) rules.Action { return rules.Action{Exit: "vpn", Strict: strict} }
 
 func TestRebuildFromScratch(t *testing.T) {
@@ -124,6 +136,21 @@ func TestRebuildFromScratch(t *testing.T) {
 			swapped("trassa_d4", "hash:ip") +
 			swapped("trassa_s1", "hash:net", "1.2.3.0/24", "9.9.9.9/32") +
 			swapped("trassa_s3", "hash:net", "10.0.0.0/8"),
+		// Routes first, then the rules leading to them, then the chain setting the marks.
+		"ip route replace blackhole default table 599",
+		"ip route replace default dev nwg2 table 541",
+		"ip route replace blackhole default table 542 metric 1000",
+		"ip route replace default dev nwg2 table 542",
+		"ip route flush table 543",
+		"ip route replace blackhole default table 544 metric 1000",
+		"ip route replace blackhole default table 544",
+		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
+		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
+		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark " + m[3] + "/0xffffffff lookup 543 pref 203",
+		"ip rule add fwmark " + m[4] + "/0xffffffff lookup 544 pref 204",
+		"ip rule add fwmark " + fallMark(t, twoExits) + " lookup main pref 298",
+		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
 		"iptables-restore -n <<\n" +
 			"*mangle\n:TRASSA - [0:0]\n" +
 			"-A TRASSA -m mark ! --mark 0x0 -j RETURN\n" +
@@ -138,20 +165,7 @@ func TestRebuildFromScratch(t *testing.T) {
 			"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_s3 dst -j MARK --set-mark 0x54520000\n" +
 			"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\n" +
 			"COMMIT\n",
-		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
-		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
-		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
-		"ip rule add fwmark " + m[3] + "/0xffffffff lookup 543 pref 203",
-		"ip rule add fwmark " + m[4] + "/0xffffffff lookup 544 pref 204",
-		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
-		"ip route replace blackhole default table 599",
-		"ip route replace default dev nwg2 table 541",
-		"ip route replace blackhole default table 542 metric 1000",
-		"ip route replace default dev nwg2 table 542",
-		"ip route flush table 543",
-		"ip route replace blackhole default table 544 metric 1000",
-		"ip route replace blackhole default table 544",
-		// The jump comes last: marks start being set once the rules and routes exist.
+		// The jump comes last.
 		"iptables -w -t mangle -A PREROUTING -s 192.168.1.94 -i br0 -j TRASSA",
 	})
 }
@@ -160,7 +174,8 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	m := marksOf(t, oneExit)
 	run := &scripted{out: map[string]string{
 		"ip rule list": "0:\tfrom all lookup local \n199:\tfrom all fwmark 0x54520000 lookup main \n201:\tfrom all fwmark " + m[1] +
-			" lookup 541 \n202:\tfrom all fwmark " + m[2] + " lookup 542 \n299:\tfrom all fwmark 0x54520000/0xffff0000 lookup 599 \n32766:\tfrom all lookup main \n",
+			" lookup 541 \n202:\tfrom all fwmark " + m[2] + " lookup 542 \n298:\tfrom all fwmark " + fallMark(t, oneExit) +
+			" lookup main \n299:\tfrom all fwmark 0x54520000/0xffff0000 lookup 599 \n32766:\tfrom all lookup main \n",
 		"iptables -w -t mangle -S PREROUTING": "-P PREROUTING ACCEPT\n-A PREROUTING -j _NDM_VPN_PREROUTING\n-A PREROUTING -i br0 -j TRASSA\n",
 		"ipset list -n":                       "_NDM_OGDN_4@default:do-1\ntrassa_d0\ntrassa_d1\ntrassa_d2\n",
 	}}
@@ -315,14 +330,15 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 	// Reconcile reapplies rules and routes: the kernel removes a route when its interface goes down.
 	m := marksOf(t, oneExit)
 	equal(t, run.changed(), []string{
-		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
-		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
-		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
-		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
 		"ip route replace blackhole default table 599",
 		"ip route replace default dev nwg2 table 541",
 		"ip route replace blackhole default table 542 metric 1000",
 		"ip route replace default dev nwg2 table 542",
+		"ip rule add fwmark 0x54520000/0xffffffff lookup main pref 199",
+		"ip rule add fwmark " + m[1] + "/0xffffffff lookup 541 pref 201",
+		"ip rule add fwmark " + m[2] + "/0xffffffff lookup 542 pref 202",
+		"ip rule add fwmark " + fallMark(t, oneExit) + " lookup main pref 298",
+		"ip rule add fwmark 0x54520000/0xffff0000 lookup 599 pref 299",
 	})
 	run.fail = []string{" -C "}
 	if err := r.Reconcile(context.Background()); !errors.Is(err, ErrMissing) {
@@ -332,7 +348,9 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 
 func TestTeardown(t *testing.T) {
 	run := &scripted{out: map[string]string{
-		"ip rule list":                        "0:\tfrom all lookup local \n201:\tfrom all fwmark 0x54520001 lookup 541 \n202:\tfrom all fwmark 0x54520002 lookup 542 \n1150:\tfrom all fwmark 0xffffaaa lookup 4096 \n",
+		"ip rule list": "0:\tfrom all lookup local \n199:\tfrom all fwmark 0x54520000 lookup main \n201:\tfrom all fwmark 0x54520001 lookup 541 \n" +
+			"202:\tfrom all fwmark 0x54520002 lookup 542 \n298:\tfrom all fwmark 0x54520000/0xffffffc0 lookup main \n" +
+			"299:\tfrom all fwmark 0x54520000/0xffff0000 lookup 599 \n1150:\tfrom all fwmark 0xffffaaa lookup 4096 \n",
 		"iptables -w -t mangle -S PREROUTING": "-A PREROUTING -j _NDM_VPN_PREROUTING\n-A PREROUTING -s 192.168.1.94/32 -i br0 -j TRASSA\n",
 		"ipset list -n":                       "_NDM_X\ntrassa_d0\ntrassa_s3\n",
 	}}
@@ -341,10 +359,14 @@ func TestTeardown(t *testing.T) {
 		"iptables -w -t mangle -D PREROUTING -s 192.168.1.94/32 -i br0 -j TRASSA",
 		"iptables -w -t mangle -F TRASSA",
 		"iptables -w -t mangle -X TRASSA",
+		"ip rule del pref 199 fwmark 0x54520000 lookup main",
 		"ip rule del pref 201 fwmark 0x54520001 lookup 541",
 		"ip route flush table 541",
 		"ip rule del pref 202 fwmark 0x54520002 lookup 542",
 		"ip route flush table 542",
+		"ip rule del pref 298 fwmark 0x54520000/0xffffffc0 lookup main",
+		"ip rule del pref 299 fwmark 0x54520000/0xffff0000 lookup 599",
+		"ip route flush table 599",
 		"ipset destroy trassa_d0",
 		"ipset destroy trassa_s3",
 	})
@@ -502,4 +524,128 @@ func TestSetsAreSwappedInWhole(t *testing.T) {
 			t.Errorf("a live set is flushed: %q", line)
 		}
 	}
+}
+
+// fib is a tiny model of Linux policy routing: rules in pref order, a "lookup" that finds no
+// route in its table falls through to the next rule (-EAGAIN), as fib_rules_lookup does.
+type fib struct {
+	rules  []fibRule
+	tables map[string]map[string]string // table -> metric -> "dev X" | "blackhole"
+}
+
+type fibRule struct {
+	pref       int
+	mark, mask uint32
+	table      string
+}
+
+func (f *fib) exec(cmd string) {
+	w := strings.Fields(cmd)
+	switch {
+	case len(w) > 3 && w[0] == "ip" && w[1] == "rule" && w[2] == "add":
+		var r fibRule
+		for i := 3; i+1 < len(w); i++ {
+			switch w[i] {
+			case "fwmark":
+				m, k, _ := strings.Cut(w[i+1], "/")
+				mv, _ := strconv.ParseUint(m, 0, 32)
+				kv, _ := strconv.ParseUint(k, 0, 32)
+				r.mark, r.mask = uint32(mv), uint32(kv)
+			case "lookup":
+				r.table = w[i+1]
+			case "pref":
+				r.pref, _ = strconv.Atoi(w[i+1])
+			}
+		}
+		f.rules = append(f.rules, r)
+	case len(w) > 3 && w[0] == "ip" && w[1] == "route" && w[2] == "replace":
+		t, metric := w[len(w)-1], "0"
+		if w[len(w)-2] == "metric" {
+			t, metric = w[len(w)-3], w[len(w)-1]
+		}
+		if f.tables[t] == nil {
+			f.tables[t] = map[string]string{}
+		}
+		if w[3] == "blackhole" {
+			f.tables[t][metric] = "blackhole"
+		} else {
+			f.tables[t][metric] = "dev " + w[5]
+		}
+	case len(w) == 5 && w[0] == "ip" && w[1] == "route" && w[2] == "flush":
+		f.tables[w[4]] = nil
+	}
+}
+
+// route says where a packet with the given mark goes.
+func (f *fib) route(mark uint32) string {
+	rs := append([]fibRule(nil), f.rules...)
+	rs = append(rs, fibRule{pref: 32766, table: "main"})
+	sort.SliceStable(rs, func(i, j int) bool { return rs[i].pref < rs[j].pref })
+	for _, r := range rs {
+		if r.mask != 0 && mark&r.mask != r.mark {
+			continue
+		}
+		if r.table == "main" {
+			return "main (ISP)"
+		}
+		if v := f.tables[r.table]; v != nil {
+			if x, ok := v["0"]; ok {
+				return "table " + r.table + ": " + x
+			}
+			if x, ok := v["1000"]; ok {
+				return "table " + r.table + ": " + x
+			}
+		}
+	}
+	return "unreachable"
+}
+
+// fibAfter replays the commands a router issued on a fresh routing policy database.
+func fibAfter(calls []string) *fib {
+	f := &fib{tables: map[string]map[string]string{}}
+	for _, c := range calls {
+		f.exec(c)
+	}
+	return f
+}
+
+// Where a packet goes is what matters, not which commands were issued: the meaning of every
+// kind of mark, with the tunnel up and down.
+func TestRoutingMeaning(t *testing.T) {
+	const src = "exit vpn = W\ndefault direct\nx.com -> vpn\ny.com -> vpn strict\n"
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	r.SetExits(map[string]string{"vpn": "nwg2"})
+	if err := r.Rebuild(cfgOf(t, src), nil); err != nil {
+		t.Fatal(err)
+	}
+	m := marksOf(t, src)
+	mark := func(s string) uint32 { return markOf(t, s) }
+	check := func(when string, f *fib, want map[uint32]string) {
+		t.Helper()
+		for k, v := range want {
+			if got := f.route(k); got != v {
+				t.Errorf("%s: mark %#x goes to %q, want %q", when, k, got, v)
+			}
+		}
+	}
+	up := map[uint32]string{
+		0:          "main (ISP)", // unmarked traffic: not touched
+		0x54520000: "main (ISP)", // direct
+		mark(m[1]): "table 541: dev nwg2",
+		mark(m[2]): "table 542: dev nwg2",
+		0x54520001: "table 599: blackhole", // a mark of another layout
+		0xffffaac:  "main (ISP)",           // a firmware mark: not ours
+	}
+	check("tunnel up", fibAfter(run.calls), up)
+
+	r.SetExits(map[string]string{"vpn": ""}) // all tunnels of the exit are down
+	down := map[uint32]string{
+		0:          "main (ISP)",
+		0x54520000: "main (ISP)",
+		mark(m[1]): "main (ISP)",           // a normal rule goes direct (spec 2.5, 3)
+		mark(m[2]): "table 542: blackhole", // strict is blocked
+		0x54520001: "table 599: blackhole",
+	}
+	check("tunnel down", fibAfter(run.calls), down)
 }

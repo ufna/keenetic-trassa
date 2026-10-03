@@ -19,6 +19,7 @@ const (
 	tableBase  = 540
 	prefBase   = 200
 	directPref = "199" // the direct slot goes back to the main table
+	fallPref   = "298" // a slot of this layout whose table has no route goes direct
 	stalePref  = "299" // a mark of any other layout goes nowhere
 	staleTable = "599"
 	routeChain = "TRASSA"
@@ -75,6 +76,7 @@ type Layout struct {
 	Slots   []Slot      // Slots[0] is direct; then two per exit: normal and strict
 	Static  []staticSet // one per rule with addresses, in rule order
 	Default Slot
+	gen     uint32
 	exits   map[string]int
 }
 
@@ -83,7 +85,7 @@ func NewLayout(cfg *rules.Config) (*Layout, error) {
 		return nil, fmt.Errorf("%d exits, at most %d are supported", len(cfg.Exits), rules.MaxExits)
 	}
 	gen := generation(cfg)
-	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, exits: map[string]int{}}
+	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, gen: gen, exits: map[string]int{}}
 	for i, e := range cfg.Exits {
 		l.exits[e.Name] = i
 		l.Slots = append(l.Slots, Slot{Index: 1 + 2*i, Exit: e.Name, gen: gen}, Slot{Index: 2 + 2*i, Exit: e.Name, Strict: true, gen: gen})

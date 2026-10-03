@@ -313,7 +313,8 @@ cmd_trassa_off() {
       iptables -w -t mangle -X TRASSA 2>/dev/null
       ip rule list | grep "fwmark 0x5452" | while read -r pref rest; do
         ip rule del pref "${pref%:}"
-        ip route flush table "${rest##*lookup }" 2>/dev/null
+        t=${rest##*lookup }; t=${t%% *}
+        case "$t" in 54[1-9] | 5[5-9][0-9]) ip route flush table "$t" 2>/dev/null ;; esac
       done
       for s in $(ipset list -n | grep "^trassa_"); do ipset destroy "$s"; done
       rm -f /tmp/trassa.state /tmp/trassa-web.pid

@@ -65,16 +65,20 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	if _, err := r.run.RunInput(ctx, l.setsScript(entries), "ipset", "restore"); err != nil {
 		return err
 	}
-	if _, err := r.run.RunInput(ctx, l.chainScript(), "iptables-restore", "-n"); err != nil {
-		return err
-	}
-	// Rules and routes first, then the jump: marks start being set once there is a path for them.
-	if err := r.syncRules(ctx, l); err != nil {
-		return err
-	}
+	// A path exists before anything points at it: routes, then the rules leading to them, then
+	// the chain setting the new marks. Rules of the previous layout go only after the chain
+	// stopped setting its marks, and the jump comes last.
 	if err := r.syncRoutes(ctx, l); err != nil {
 		return err
 	}
+	seen, err := r.addRules(ctx, l)
+	if err != nil {
+		return err
+	}
+	if _, err := r.run.RunInput(ctx, l.chainScript(), "iptables-restore", "-n"); err != nil {
+		return err
+	}
+	r.pruneRules(ctx, l, seen)
 	if err := r.syncJump(ctx); err != nil {
 		return err
 	}
@@ -117,20 +121,17 @@ func (r *Router) syncJump(ctx context.Context) error {
 	return err
 }
 
-// syncRules adds the routing rules the layout needs, then removes our own rules it does not
-// need: rules of another layout go only after the new ones are in place.
-func (r *Router) syncRules(ctx context.Context, l *Layout) error {
+// addRules adds the routing rules the layout needs and returns the rules list it saw.
+func (r *Router) addRules(ctx context.Context, l *Layout) (string, error) {
 	out, err := r.run.Run(ctx, "ip", "rule", "list")
 	if err != nil {
-		return err
+		return "", err
 	}
 	have := map[string]bool{}
 	for _, o := range ownRules(out) {
 		have[o.key()] = true
 	}
-	want, keep := map[string]bool{}, map[string]bool{}
 	for _, w := range l.wantedRules() {
-		want[w.key()], keep[w.table] = true, true
 		if have[w.key()] {
 			continue
 		}
@@ -139,14 +140,32 @@ func (r *Router) syncRules(ctx context.Context, l *Layout) error {
 			mark += "/0xffffffff"
 		}
 		if _, err := r.run.Run(ctx, "ip", "rule", "add", "fwmark", mark, "lookup", w.table, "pref", w.pref); err != nil {
-			return err
+			return "", err
 		}
 	}
-	for _, o := range ownRules(out) {
+	return out, nil
+}
+
+// pruneRules removes our own rules (from the list seen by addRules) that the layout does not need.
+func (r *Router) pruneRules(ctx context.Context, l *Layout, seen string) {
+	want, keep := map[string]bool{}, map[string]bool{}
+	for _, w := range l.wantedRules() {
+		want[w.key()], keep[w.table] = true, true
+	}
+	for _, o := range ownRules(seen) {
 		if !want[o.key()] {
 			dropRule(ctx, r.run, o, keep)
 		}
 	}
+}
+
+// syncRules adds the rules the layout needs, then removes our own rules it does not need.
+func (r *Router) syncRules(ctx context.Context, l *Layout) error {
+	seen, err := r.addRules(ctx, l)
+	if err != nil {
+		return err
+	}
+	r.pruneRules(ctx, l, seen)
 	return nil
 }
 
@@ -164,14 +183,19 @@ type ownRule struct{ pref, mark, table string }
 
 func (o ownRule) key() string { return o.pref + " " + o.mark + " " + o.table }
 
-// wantedRules are the routing rules a layout needs: direct back to the main table, one rule per
-// tunnel slot, and a dead end for marks of any other layout.
+// wantedRules are the routing rules a layout needs: direct back to the main table; one rule per
+// tunnel slot; a slot of this layout whose table has no route (a normal exit with no live
+// tunnel) falls through to the main table, i.e. goes direct; a mark of any other layout goes
+// nowhere. A strict slot never falls through: its table keeps a permanent blackhole.
 func (l *Layout) wantedRules() []ownRule {
 	out := []ownRule{{directPref, fmt.Sprintf("0x%x", markBase), "main"}}
 	for _, s := range l.Slots[1:] {
 		out = append(out, ownRule{s.Pref(), s.Mark(), s.Table()})
 	}
-	return append(out, ownRule{stalePref, fmt.Sprintf("0x%x/%s", markBase, markMask), staleTable})
+	genMask := uint32(0xffffffff) &^ (1<<genShift - 1)
+	return append(out,
+		ownRule{fallPref, fmt.Sprintf("0x%x/0x%x", markBase|l.gen<<genShift, genMask), "main"},
+		ownRule{stalePref, fmt.Sprintf("0x%x/%s", markBase, markMask), staleTable})
 }
 
 // ownRules finds rules with trassa marks in "ip rule list" output.
@@ -293,10 +317,10 @@ func (r *Router) Reconcile(ctx context.Context) error {
 	if _, err := r.run.Run(ctx, "iptables", mangle(append([]string{"-C", "PREROUTING"}, args...)...)...); err != nil {
 		return ErrMissing
 	}
-	if err := r.syncRules(ctx, r.layout); err != nil {
+	if err := r.syncRoutes(ctx, r.layout); err != nil {
 		return err
 	}
-	return r.syncRoutes(ctx, r.layout)
+	return r.syncRules(ctx, r.layout)
 }
 
 // Teardown removes everything trassa built for routing without knowing the layout:
