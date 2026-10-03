@@ -27,6 +27,7 @@ type ExitState struct {
 type Observation struct {
 	At     time.Time `json:"at"`
 	Client string    `json:"client"`
+	Device string    `json:"device,omitempty"` // the device's name from the firmware, if known
 	Name   string    `json:"name"`
 	Action string    `json:"action"`
 	Line   int       `json:"line"` // 0 means default matched

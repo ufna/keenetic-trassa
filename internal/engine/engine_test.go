@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"trassa/internal/claims"
 	"trassa/internal/ctl"
+	"trassa/internal/devices"
 	"trassa/internal/rules"
 )
 
@@ -565,4 +567,134 @@ func TestHTTPSHintsAreClaimed(t *testing.T) {
 	if cs := e.store.Claims(netip.MustParseAddr("3.3.3.3")); len(cs) != 1 || cs[0].Action.Exit != "vpn" {
 		t.Errorf("claims for the hint address: %+v", cs)
 	}
+}
+
+const devSrc = `exit vpn = W
+device pc = 192.168.1.94
+device tv = "Living room TV"
+default direct
+video.example -> vpn for pc
+tv.example -> vpn strict for tv
+`
+
+func devHosts() []devices.Host {
+	return []devices.Host{
+		{MAC: "aa:bb:cc:00:00:01", IP: netip.MustParseAddr("192.168.1.40"), Name: "Living room TV", Online: true},
+		{MAC: "aa:bb:cc:00:00:02", IP: netip.MustParseAddr("192.168.1.94"), Name: "Desktop", Online: true},
+	}
+}
+
+func wantSources(t *testing.T, got map[rules.View][]netip.Addr, want string) {
+	t.Helper()
+	if fmt.Sprint(got) != want {
+		t.Errorf("sources %v, want %s", got, want)
+	}
+}
+
+func TestDeviceRules(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, devSrc), sink, l.printf, t0)
+	// The answer goes to 192.168.1.94, a device of list pc: its decision, its view's set.
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	if got := strings.Join(sink.got, "\n"); got != "[1] 1.1.1.1 - => vpn" {
+		t.Errorf("changes: %q", got)
+	}
+	if o := e.State().Recent[0]; o.Action != "vpn" || o.Line != 5 {
+		t.Errorf("observation: %+v", o)
+	}
+	// A rule of list tv: no TV is known yet, but the address is kept.
+	e.HandlePacket(t0, answer("tv.example", "2.2.2.2"))
+	if len(sink.got) != 1 {
+		t.Errorf("no device of list tv is known, yet a set changed: %v", sink.got)
+	}
+	if o := e.State().Recent[0]; o.Action != "direct" || o.Line != 0 {
+		t.Errorf("the PC's decision for tv.example: %+v", o)
+	}
+	// The TV joins: its view gets the address learnt from the PC's answer.
+	hosts := devHosts()
+	builds := sink.builds
+	if err := e.SetDevices(hosts); err != nil {
+		t.Fatal(err)
+	}
+	if sink.builds != builds+1 || !slices.Contains(sink.rebuilt, "[2] 2.2.2.2 vpn strict") {
+		t.Errorf("a new device view must rebuild with its addresses: %d builds, %v", sink.builds-builds, sink.rebuilt)
+	}
+	wantSources(t, sink.sources, "map[1:[192.168.1.94] 2:[192.168.1.40]]")
+	// The TV changes its address: only the source sets are refilled.
+	hosts[0].IP = netip.MustParseAddr("192.168.1.41")
+	if err := e.SetDevices(hosts); err != nil {
+		t.Fatal(err)
+	}
+	if sink.builds != builds+1 || sink.sourced != 1 {
+		t.Errorf("an address change: %d builds, %d source updates", sink.builds-builds, sink.sourced)
+	}
+	wantSources(t, sink.sources, "map[1:[192.168.1.94] 2:[192.168.1.41]]")
+	if !strings.Contains(strings.Join(l.lines, "\n"), `device "Living room TV" of list tv: now at 192.168.1.41`) {
+		t.Errorf("log:\n%s", strings.Join(l.lines, "\n"))
+	}
+	// The same list again changes nothing.
+	e.SetDevices(hosts)
+	if sink.builds != builds+1 || sink.sourced != 1 {
+		t.Errorf("the same list: %d builds, %d source updates", sink.builds-builds, sink.sourced)
+	}
+	// Device names reach the page.
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	if d := e.State().Recent[0].Device; d != "Desktop" {
+		t.Errorf("device name %q", d)
+	}
+}
+
+func TestDeviceRulesInWhyAndStatus(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, devSrc), nil, l.printf, t0)
+	e.SetDevices(devHosts())
+	text, _ := e.Why("video.example", t0)
+	for _, want := range []string{"video.example → direct", "for pc: vpn (line 5)"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("why by name: no %q in\n%s", want, text)
+		}
+	}
+	if text, _ = e.Why("tv.example", t0); !strings.Contains(text, "for tv: vpn strict (line 6)") {
+		t.Errorf("why for tv:\n%s", text)
+	}
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	text, _ = e.Why("1.1.1.1", t0)
+	if !strings.Contains(text, "in the dynamic set for pc: vpn") || strings.Contains(text, "has not been seen") {
+		t.Errorf("why by address:\n%s", text)
+	}
+	status := e.Status(t0)
+	for _, want := range []string{"devices pc: Desktop 192.168.1.94", "devices tv: Living room TV 192.168.1.40"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status: no %q in\n%s", want, status)
+		}
+	}
+	hosts := devHosts()
+	hosts[0].Online = false
+	e.SetDevices(hosts)
+	if status = e.Status(t0); !strings.Contains(status, `devices tv: "Living room TV" not on the network`) {
+		t.Errorf("status with the TV away:\n%s", status)
+	}
+}
+
+func TestReloadFollowsDeviceLists(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, devSrc), sink, l.printf, t0)
+	e.SetDevices(devHosts())
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	// The lists swap places: pc is bit 2 now.
+	swapped := strings.Replace(devSrc, "device pc = 192.168.1.94\ndevice tv = \"Living room TV\"", "device tv = \"Living room TV\"\ndevice pc = 192.168.1.94", 1)
+	if err := e.Reload(config(t, swapped)); err != nil {
+		t.Fatal(err)
+	}
+	wantSources(t, sink.sources, "map[1:[192.168.1.40] 2:[192.168.1.94]]")
+	if !slices.Contains(sink.rebuilt, "[2] 1.1.1.1 vpn") {
+		t.Errorf("rebuilt: %v", sink.rebuilt)
+	}
+	// List tv is gone from the rules: its view is gone too.
+	if err := e.Reload(config(t, "exit vpn = W\ndevice pc = 192.168.1.94\ndefault direct\nvideo.example -> vpn for pc\n")); err != nil {
+		t.Fatal(err)
+	}
+	wantSources(t, sink.sources, "map[1:[192.168.1.94]]")
 }

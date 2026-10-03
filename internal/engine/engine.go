@@ -4,13 +4,16 @@ package engine
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"trassa/internal/claims"
 	"trassa/internal/ctl"
+	"trassa/internal/devices"
 	"trassa/internal/dnsmsg"
 	"trassa/internal/ippkt"
 	"trassa/internal/rules"
@@ -48,6 +51,7 @@ type Stats = ctl.Stats
 type observation struct {
 	at     time.Time
 	client netip.Addr
+	device string // the device's name from the firmware, if known
 	name   string
 	line   int // 0 means the default applied
 	action rules.Action
@@ -64,12 +68,17 @@ type Engine struct {
 	recent  []observation
 	exits   map[string]string // exit → name of the live interface; nil means unknown
 	dirty   bool              // kernel sets may have drifted from memory: a rebuild is needed
+	hosts   []devices.Host    // the firmware's device list, as last read
+	devs    devices.Map       // where the device lists' devices are
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
 	store := claims.New(cfg, minTTL)
 	store.SetLimits(maxClaims, maxPerAddr)
-	return &Engine{cfg: cfg, store: store, sink: sink, logf: logf, started: now}
+	// Addresses written in the device lists count before the firmware is asked.
+	devs := devices.Resolve(cfg, nil)
+	store.SetViews(devs.ViewList())
+	return &Engine{cfg: cfg, store: store, sink: sink, logf: logf, started: now, devs: devs}
 }
 
 func (e *Engine) Stats() Stats {
@@ -128,16 +137,14 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 		names = append(names, n)
 	}
 	e.stats.Answers++
-	d := e.cfg.MatchChain(names)
-	o := observation{at: now, client: u.Dst, name: names[0], action: d.Action}
+	// The decision shown is the asking device's; the memory keeps the answer for every device.
+	d := e.cfg.MatchChainFor(e.devs.Views[u.Dst], names)
+	o := observation{at: now, client: u.Dst, device: e.devs.Labels[u.Dst], name: names[0], action: d.Action}
 	if d.Rule != nil {
 		o.line = d.Rule.Line
+		e.stats.Claimed++
 	}
 	e.remember(o)
-	if d.Rule == nil {
-		return
-	}
-	e.stats.Claimed++
 	life := time.Duration(ttl) * time.Second
 	if life > maxTTL {
 		life = maxTTL
@@ -160,7 +167,10 @@ func (e *Engine) Reload(cfg *rules.Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
-	e.note(e.store.SetConfig(cfg, e.store.Views()), "rules changed")
+	old := e.devs
+	e.devs = devices.Resolve(cfg, e.hosts)
+	e.logDevices(old)
+	e.note(e.store.SetConfig(cfg, e.devs.ViewList()), "rules changed")
 	return e.rebuild()
 }
 
@@ -183,7 +193,7 @@ func (e *Engine) rebuild() error {
 	if e.sink == nil {
 		return nil
 	}
-	err := e.sink.Rebuild(e.cfg, nil, e.store.Entries())
+	err := e.sink.Rebuild(e.cfg, e.devs.Sources(), e.store.Entries())
 	e.dirty = err != nil
 	if err != nil {
 		e.stats.ApplyErrors++
@@ -218,6 +228,57 @@ func (e *Engine) SetExits(active map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.exits = active
+}
+
+// SetDevices records the firmware's device list. When the device views change, decisions for the
+// new views are computed and everything is rebuilt; when only addresses change, only the source
+// sets are refilled.
+func (e *Engine) SetDevices(hosts []devices.Host) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.hosts = hosts
+	old := e.devs
+	e.devs = devices.Resolve(e.cfg, hosts)
+	e.logDevices(old)
+	if views := e.devs.ViewList(); !slices.Equal(views, e.store.Views()) {
+		e.note(e.store.SetViews(views), "device lists changed")
+		return e.rebuild()
+	}
+	sources := e.devs.Sources()
+	if e.sink == nil || maps.EqualFunc(old.Sources(), sources, slices.Equal[[]netip.Addr]) {
+		return nil
+	}
+	if err := e.sink.SetSources(sources); err != nil {
+		// The kernel lags behind memory: a rebuild fixes it (see NeedsResync).
+		e.dirty = true
+		e.stats.ApplyErrors++
+		e.logf("could not update the device addresses: %v", err)
+		return err
+	}
+	return nil
+}
+
+// logDevices writes to the log the listed devices that changed their address or left the network.
+func (e *Engine) logDevices(old devices.Map) {
+	was := map[string]netip.Addr{}
+	for _, l := range old.Lists {
+		for _, m := range l.Members {
+			was[l.Name+" "+m.Ref.String()] = m.IP
+		}
+	}
+	for _, l := range e.devs.Lists {
+		for _, m := range l.Members {
+			prev, known := was[l.Name+" "+m.Ref.String()]
+			if !known || prev == m.IP {
+				continue
+			}
+			if m.IP.IsValid() {
+				e.logf("device %s of list %s: now at %s", m.Ref, l.Name, m.IP)
+			} else {
+				e.logf("device %s of list %s: left the network", m.Ref, l.Name)
+			}
+		}
+	}
 }
 
 // note records changes in the log and the counters.
@@ -305,20 +366,27 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 		fmt.Fprintf(&b, "no rule matched; default applies (line %d)\n", e.cfg.DefaultLine)
 	}
 	b.WriteString(e.exitLine(d.Action))
+	b.WriteString(e.cfg.DeviceLines(subject, e.devs.ViewList()))
 	if addr, err := netip.ParseAddr(subj); err == nil {
-		cs := e.store.Claims(addr)
-		if len(cs) == 0 {
+		if !e.store.Known(addr) {
 			b.WriteString("this address has not been seen in DNS answers\n")
 			return b.String(), nil
 		}
+		cs := e.store.Claims(addr)
 		for _, c := range cs {
 			fmt.Fprintf(&b, "claim: %s → %s (line %d, %s left)\n",
 				strings.Join(c.Names, " → "), c.Action, e.lineOf(c.Index), ago(c.Expires.Sub(now)))
 		}
-		if eff := e.store.Effective(addr); eff != nil {
+		switch eff := e.store.Effective(addr); {
+		case eff != nil:
 			fmt.Fprintf(&b, "in the dynamic set: %s\n", *eff)
-		} else {
+		case len(cs) > 0:
 			b.WriteString("not in the dynamic set: the address is in a subnet of an earlier rule\n")
+		}
+		for _, v := range e.store.Views() {
+			if eff := e.store.EffectiveFor(v, addr); eff != nil {
+				fmt.Fprintf(&b, "in the dynamic set for %s: %s\n", e.cfg.ViewName(v), *eff)
+			}
 		}
 		return b.String(), nil
 	}
@@ -374,6 +442,20 @@ func (e *Engine) Status(now time.Time) string {
 		}
 		fmt.Fprintf(&b, "exits: %s\n", strings.Join(parts, "; "))
 	}
+	for _, l := range e.devs.Lists {
+		parts := make([]string, 0, len(l.Members))
+		for _, m := range l.Members {
+			switch {
+			case m.IP.IsValid() && m.Label != "":
+				parts = append(parts, m.Label+" "+m.IP.String())
+			case m.IP.IsValid():
+				parts = append(parts, m.IP.String())
+			default:
+				parts = append(parts, m.Ref.String()+" not on the network")
+			}
+		}
+		fmt.Fprintf(&b, "devices %s: %s\n", l.Name, strings.Join(parts, ", "))
+	}
 	if len(e.recent) == 0 {
 		b.WriteString("no observations yet\n")
 		return b.String()
@@ -404,7 +486,7 @@ func (e *Engine) State() ctl.State {
 	}
 	for i := len(e.recent) - 1; i >= 0 && len(st.Recent) < stateRows; i-- {
 		o := e.recent[i]
-		st.Recent = append(st.Recent, ctl.Observation{At: o.at, Client: o.client.String(), Name: o.name,
+		st.Recent = append(st.Recent, ctl.Observation{At: o.at, Client: o.client.String(), Device: o.device, Name: o.name,
 			Action: o.action.String(), Line: o.line})
 	}
 	return st
