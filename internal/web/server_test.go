@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,10 +23,28 @@ import (
 
 const rulesText = "exit vpn = Wireguard2\ndefault direct\nyoutube.com -> vpn\n"
 
-// fakeAuth — роутер с логином admin и паролем secret.
-type fakeAuth struct{ n int }
+// fakeAuth — роутер с логином admin и паролем secret; считает закрытые вызовы.
+type fakeAuth struct {
+	mu       sync.Mutex
+	n        int
+	released int
+}
+
+func (f *fakeAuth) Release(ctx context.Context, ch *Challenge) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.released++
+}
+
+func (f *fakeAuth) count() (challenges, released int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.n, f.released
+}
 
 func (f *fakeAuth) Challenge(ctx context.Context) (*Challenge, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.n++
 	return &Challenge{Realm: "Netcraze Giga", Nonce: fmt.Sprintf("nonce%d", f.n)}, nil
 }
@@ -64,7 +83,7 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-// do выполняет запрос с телом JSON (или без тела). Запросы, кроме GET, идут с заголовком страницы.
+// do выполняет запрос с телом JSON (или без тела) с заголовком страницы, как app.js.
 func (e *env) do(method, path string, body any) (int, []byte, *http.Response) {
 	e.t.Helper()
 	var rd io.Reader
@@ -73,8 +92,8 @@ func (e *env) do(method, path string, body any) (int, []byte, *http.Response) {
 		rd = strings.NewReader(string(b))
 	}
 	req := httptest.NewRequest(method, path, rd)
-	if method != http.MethodGet {
-		req.Header.Set("X-Trassa", "1")
+	req.Header.Set("X-Trassa", "1")
+	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	if e.cookie != nil {
@@ -142,7 +161,7 @@ func TestLoginWrongPasswordAndLockout(t *testing.T) {
 	if code := e.login("secret"); code != 429 {
 		t.Errorf("после %d неудач вход должен быть закрыт: %d", maxFailures, code)
 	}
-	e.now = e.now.Add(lockout)
+	e.now = e.now.Add(failWindow)
 	if code := e.login("secret"); code != 200 {
 		t.Errorf("после паузы: %d", code)
 	}
@@ -320,4 +339,58 @@ func TestLogout(t *testing.T) {
 	if code, _, _ := e.do("GET", "/api/state", nil); code != 401 {
 		t.Errorf("после выхода: %d", code)
 	}
+}
+
+// Каждый вызов на вход открывает сеанс у прошивки: чужая страница не должна уметь их заказывать
+// (картинкой или ссылкой), а свои — не чаще, чем нужно человеку.
+func TestChallengeNeedsPageHeaderAndIsRateLimited(t *testing.T) {
+	e := newEnv(t)
+	rec := httptest.NewRecorder()
+	e.h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/login", nil))
+	if n, _ := e.srv.Auth.(*fakeAuth).count(); rec.Code != 403 || n != 0 {
+		t.Errorf("без заголовка: код %d, вызовов у прошивки %d", rec.Code, n)
+	}
+	for i := 0; i < challengeBurst; i++ {
+		if code, _, _ := e.do("GET", "/api/login", nil); code != 200 {
+			t.Fatalf("вызов %d: %d", i+1, code)
+		}
+	}
+	if code, _, _ := e.do("GET", "/api/login", nil); code != 429 {
+		t.Errorf("сверх запаса: %d", code)
+	}
+	e.now = e.now.Add(challengeEvery)
+	if code, _, _ := e.do("GET", "/api/login", nil); code != 200 {
+		t.Errorf("после паузы: %d", code)
+	}
+}
+
+// Вызов, на который не ответили (вытеснен или устарел), закрывается у прошивки.
+func TestStaleChallengesAreReleased(t *testing.T) {
+	e := newEnv(t)
+	auth := e.srv.Auth.(*fakeAuth)
+	for i := 0; i < maxPending+1; i++ {
+		e.now = e.now.Add(challengeEvery)
+		e.do("GET", "/api/login", nil)
+	}
+	waitReleased := func(want int) {
+		t.Helper()
+		for i := 0; i < 100; i++ {
+			if _, r := auth.count(); r == want {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		_, r := auth.count()
+		t.Errorf("закрыто вызовов %d, ожидалось %d", r, want)
+	}
+	waitReleased(1)
+	_, b, _ := e.do("GET", "/api/login", nil) // вытесняет ещё один
+	ch := decode[map[string]string](t, b)
+	e.now = e.now.Add(pendingTTL)
+	code, _, _ := e.do("POST", "/api/login", map[string]string{
+		"id": ch["id"], "login": "admin", "response": answer("admin", "secret", ch["realm"], ch["challenge"])})
+	if code != 400 {
+		t.Errorf("устаревший вызов: %d", code)
+	}
+	waitReleased(3)
 }

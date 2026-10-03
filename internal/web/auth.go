@@ -16,8 +16,11 @@ import (
 type Authenticator interface {
 	// Challenge получает у роутера одноразовый вызов на вход.
 	Challenge(ctx context.Context) (*Challenge, error)
-	// Verify передаёт роутеру ответ на вызов: true — логин и пароль верны.
+	// Verify передаёт роутеру ответ на вызов: true — логин и пароль верны. Сеанс прошивки,
+	// открытый вызовом, после этого закрыт при любом исходе.
 	Verify(ctx context.Context, ch *Challenge, login, response string) (bool, error)
+	// Release закрывает сеанс прошивки вызова, на который так и не ответили.
+	Release(ctx context.Context, ch *Challenge)
 }
 
 // Challenge — вызов роутера. Вызов привязан к сеансу прошивки, а сеанс — к cookie в Jar.
@@ -78,23 +81,28 @@ func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response s
 		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	c := a.client(ch.Jar)
-	resp, err := c.Do(req)
+	resp, err := a.client(ch.Jar).Do(req)
 	if err != nil {
 		return false, fmt.Errorf("прошивка не отвечает: %w", err)
 	}
 	drain(resp)
+	// Сеанс прошивки больше не нужен ни при каком исходе: у страницы trassa свой.
+	a.Release(ctx, ch)
 	switch resp.StatusCode {
 	case http.StatusOK:
-		// Сеанс прошивки больше не нужен: у страницы trassa свой.
-		if req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.Base+"/auth", nil); err == nil {
-			if resp, err := c.Do(req); err == nil {
-				drain(resp)
-			}
-		}
 		return true, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return false, nil
 	}
 	return false, fmt.Errorf("прошивка ответила на вход кодом %d", resp.StatusCode)
+}
+
+func (a RouterAuth) Release(ctx context.Context, ch *Challenge) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.Base+"/auth", nil)
+	if err != nil {
+		return
+	}
+	if resp, err := a.client(ch.Jar).Do(req); err == nil {
+		drain(resp)
+	}
 }

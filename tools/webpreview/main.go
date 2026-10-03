@@ -50,9 +50,12 @@ func (demoAuth) Verify(ctx context.Context, ch *web.Challenge, login, response s
 	return login == "admin" && response == answer("admin", "demo", ch.Realm, ch.Nonce), nil
 }
 
+func (demoAuth) Release(ctx context.Context, ch *web.Challenge) {}
+
 // signIn входит на страницу и возвращает cookie сеанса. do выполняет запрос.
 func signIn(do func(*http.Request) (*http.Response, error), base, password string) (*http.Cookie, error) {
 	req, _ := http.NewRequest(http.MethodGet, base+"/api/login", nil)
+	req.Header.Set("X-Trassa", "1")
 	resp, err := do(req)
 	if err != nil {
 		return nil, err

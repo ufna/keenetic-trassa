@@ -62,6 +62,7 @@ func (f *fakeRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.authed[sid] = true
 	case http.MethodDelete:
 		delete(f.authed, sid)
+		delete(f.nonces, sid)
 		f.logouts++
 	}
 }
@@ -81,8 +82,8 @@ func TestRouterAuth(t *testing.T) {
 		t.Fatalf("верный пароль: %v, %v", ok, err)
 	}
 	fr.mu.Lock()
-	if fr.logouts != 1 || len(fr.authed) != 0 {
-		t.Errorf("сеанс прошивки не закрыт: выходов %d, открытых сеансов %d", fr.logouts, len(fr.authed))
+	if fr.logouts != 1 || len(fr.authed) != 0 || len(fr.nonces) != 0 {
+		t.Errorf("сеанс прошивки не закрыт: выходов %d, открытых сеансов %d", fr.logouts, len(fr.nonces))
 	}
 	fr.mu.Unlock()
 
@@ -96,6 +97,13 @@ func TestRouterAuth(t *testing.T) {
 	if ok, _ := a.Verify(ctx, ch2, "admin", answer("admin", "secret", ch1.Realm, ch1.Nonce)); ok {
 		t.Error("ответ на чужой вызов принят")
 	}
+	// Вызов, на который так и не ответили, закрывается отдельно.
+	a.Release(ctx, ch1)
+	fr.mu.Lock()
+	if len(fr.nonces) != 0 {
+		t.Errorf("после неудачных входов и отказа от вызова у прошивки остались открытые сеансы: %d", len(fr.nonces))
+	}
+	fr.mu.Unlock()
 
 	fr.mu.Lock()
 	fr.broken = true

@@ -90,13 +90,13 @@ func (s *Server) secure(next http.Handler) http.Handler {
 	})
 }
 
-// guard пропускает к данным только с действующим сеансом. Изменяющий запрос принимается только
-// со страницы trassa: заголовок X-Trassa чужая страница поставить не может без разрешения сервера,
-// а сервер такого разрешения не даёт.
+// guard пропускает к данным только с действующим сеансом. Любой запрос к интерфейсу принимается
+// только со страницы trassa: заголовок X-Trassa чужая страница (форма, картинка, ссылка) поставить
+// не может без разрешения сервера, а сервер такого разрешения не даёт.
 func (s *Server) guard(needSession bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
-		if r.Method != http.MethodGet && r.Header.Get("X-Trassa") != "1" {
+		if r.Header.Get("X-Trassa") != "1" {
 			writeError(w, http.StatusForbidden, "запрос пришёл не со страницы trassa")
 			return
 		}
@@ -145,9 +145,25 @@ func lockedMessage(wait time.Duration) string {
 	return fmt.Sprintf("слишком много неудачных попыток входа — подождите %d с", int(wait/time.Second)+1)
 }
 
+// release закрывает у прошивки сеансы вызовов, на которые не ответили; ответ странице не ждёт.
+func (s *Server) release(chs ...*Challenge) {
+	for _, ch := range chs {
+		go func(ch *Challenge) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			s.Auth.Release(ctx, ch)
+		}(ch)
+	}
+}
+
 func (s *Server) loginChallenge(w http.ResponseWriter, r *http.Request) {
-	if wait, locked := s.gate.locked(s.now()); locked {
+	now := s.now()
+	if wait, locked := s.gate.locked(now); locked {
 		writeError(w, http.StatusTooManyRequests, lockedMessage(wait))
+		return
+	}
+	if !s.gate.allowChallenge(now) {
+		writeError(w, http.StatusTooManyRequests, "слишком частые попытки входа — подождите секунду")
 		return
 	}
 	ch, err := s.Auth.Challenge(r.Context())
@@ -155,7 +171,9 @@ func (s *Server) loginChallenge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "роутер не выдал вызов на вход: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": s.gate.addPending(ch, s.now()), "realm": ch.Realm, "challenge": ch.Nonce})
+	id, stale := s.gate.addPending(ch, now)
+	s.release(stale...)
+	writeJSON(w, http.StatusOK, map[string]string{"id": id, "realm": ch.Realm, "challenge": ch.Nonce})
 }
 
 type loginRequest struct {
@@ -174,12 +192,16 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, lockedMessage(wait))
 		return
 	}
-	ch, ok := s.gate.takePending(in.ID, now)
-	if !ok {
+	ch, fresh := s.gate.takePending(in.ID, now)
+	if !fresh {
+		if ch != nil {
+			s.release(ch)
+		}
 		writeError(w, http.StatusBadRequest, "вызов на вход устарел — попробуйте ещё раз")
 		return
 	}
 	if in.Login == "" || len(in.Login) > 64 || len(in.Response) != 64 {
+		s.release(ch)
 		writeError(w, http.StatusBadRequest, "нужны логин и ответ на вызов")
 		return
 	}
