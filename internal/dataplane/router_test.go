@@ -665,7 +665,7 @@ func TestRebuildWithViews(t *testing.T) {
 		swapped("trassa_v1", "hash:ip", "192.168.1.40"),
 		swapped("trassa_v1d0", "hash:ip"),
 		":TRASSA_V1 - [0:0]\n",
-		"-A TRASSA -m set --match-set trassa_v1 src -g TRASSA_V1\n",
+		"-A TRASSA -m conntrack --ctstate NEW -m set --match-set trassa_v1 src -g TRASSA_V1\n",
 		"-A TRASSA_V1 -m mark --mark 0x0 -m conntrack --ctstate NEW -m set --match-set trassa_v1d1 dst -j MARK",
 		"iptables -w -t mangle -F TRASSA_V9\niptables -w -t mangle -X TRASSA_V9",
 		"ipset destroy trassa_v9\nipset destroy trassa_v9d1",
@@ -726,5 +726,35 @@ func TestTeardownRemovesViewChains(t *testing.T) {
 	}
 	if strings.Contains(all, "TRASSA_DNS") {
 		t.Errorf("the DNS tap chain is not a view chain:\n%s", all)
+	}
+}
+
+// Only trassa's own view chains are removed: a chain of the same prefix without the view number is
+// someone else's.
+func TestOnlyNumberedViewChainsAreRemoved(t *testing.T) {
+	run := &scripted{out: map[string]string{"iptables-save -t mangle": ":TRASSA - [0:0]\n:TRASSA_VPN - [0:0]\n:TRASSA_V7 - [0:0]\n"}}
+	Teardown(context.Background(), run)
+	all := strings.Join(run.changed(), "\n")
+	if strings.Contains(all, "TRASSA_VPN") || !strings.Contains(all, "-X TRASSA_V7") {
+		t.Errorf("teardown:\n%s", all)
+	}
+}
+
+// If listing the chains failed during a rebuild, the next reconcile removes the stale ones.
+func TestReconcileRemovesStaleViewChains(t *testing.T) {
+	ip := netip.MustParseAddr
+	run := &scripted{}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, devicesSrc), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.calls = nil
+	run.out = map[string]string{"iptables-save -t mangle": ":TRASSA - [0:0]\n:TRASSA_V1 - [0:0]\n:TRASSA_V9 - [0:0]\n"}
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(run.changed(), "\n")
+	if !strings.Contains(all, "iptables -w -t mangle -F TRASSA_V9\niptables -w -t mangle -X TRASSA_V9") || strings.Contains(all, "TRASSA_V1\n") {
+		t.Errorf("reconcile:\n%s", all)
 	}
 }

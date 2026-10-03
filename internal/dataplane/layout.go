@@ -15,7 +15,7 @@ import (
 const (
 	markBase   = 0x54520000 // every trassa mark has 0x5452 in the upper 16 bits
 	markMask   = "0xffff0000"
-	genShift   = 6  // slot numbers take the lower 6 bits: at most 1 + 2*29 = 59 slots
+	genShift   = 6  // slot numbers take the lower 6 bits: at most 1 + 2*28 + 1 = 58 slots
 	genBits    = 10 // layout generation
 	tableBase  = 540
 	prefBase   = 200
@@ -291,7 +291,9 @@ func (l *Layout) chainScript() string {
 	rule(routeChain, "-m connmark --mark 0x%x/%s -j CONNMARK --restore-mark", markBase, markMask)
 	rule(routeChain, "-m mark ! --mark 0x0 -j RETURN")
 	for _, v := range l.Views {
-		rule(routeChain, "-m set --match-set %s src -g %s", viewSet(v), viewChain(v))
+		// Only a new connection goes there: a later packet either got its mark restored above or
+		// belongs to a connection trassa left alone.
+		rule(routeChain, "-m conntrack --ctstate NEW -m set --match-set %s src -g %s", viewSet(v), viewChain(v))
 	}
 	l.marks(rule, routeChain, 0)
 	for _, v := range l.Views {

@@ -415,9 +415,9 @@ func sortChanges(cs []Change) {
 
 // privateAddr reports whether the address is in a private or carrier-grade NAT network: the home
 // network, another network behind the router or a tunnel.
-func privateAddr(a netip.Addr) bool {
-	return a.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(a)
-}
+func privateAddr(a netip.Addr) bool { return a.IsPrivate() || cgnat.Contains(a) }
+
+var cgnat = netip.MustParsePrefix("100.64.0.0/10")
 
 // usable reports whether the address can be a destination of ordinary traffic. The kernel
 // address set rejects the zero address (blocking DNS servers answer with it) outright, and a

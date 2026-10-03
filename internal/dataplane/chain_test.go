@@ -1,7 +1,10 @@
 package dataplane
 
 import (
+	"context"
+	"fmt"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -102,15 +105,31 @@ func num(t *testing.T, s string) uint32 {
 	return uint32(n)
 }
 
+// packet is one packet of a connection as the model sees it.
+type packet struct {
+	src, dst       netip.Addr
+	fresh          bool   // the connection's first packet
+	mark, connmark uint32 // the packet's mark and the connection's
+}
+
 // mark runs the first packet of a new connection from src to dst through the chain TRASSA.
 func (m *model) mark(src, dst string) uint32 {
-	var mark uint32
-	m.run(routeChain, netip.MustParseAddr(src), netip.MustParseAddr(dst), &mark, 0)
-	return mark
+	first, _ := m.connection(src, dst)
+	return first
+}
+
+// connection runs a connection's first packet, then a later one that carries the mark the first
+// one saved into the connection, and returns both packets' marks.
+func (m *model) connection(src, dst string) (first, later uint32) {
+	p := packet{src: netip.MustParseAddr(src), dst: netip.MustParseAddr(dst), fresh: true}
+	m.run(routeChain, &p, 0)
+	q := packet{src: p.src, dst: p.dst, connmark: p.connmark}
+	m.run(routeChain, &q, 0)
+	return p.mark, q.mark
 }
 
 // run runs a chain. It stops on RETURN, at the end of the chain, or after a goto.
-func (m *model) run(chain string, src, dst netip.Addr, mark *uint32, depth int) {
+func (m *model) run(chain string, p *packet, depth int) {
 	if depth > 4 {
 		m.t.Fatal("model: chains loop")
 	}
@@ -134,27 +153,31 @@ func (m *model) run(chain string, src, dst netip.Addr, mark *uint32, depth int) 
 				if mask != "" {
 					mk = num(m.t, mask)
 				}
-				have := *mark
+				have := p.mark
 				if module == "connmark" {
-					have = 0 // the first packet: the connection has no mark yet
+					have = p.connmark
 				}
 				hit := have&mk == num(m.t, val)
 				match = match && hit != neg
 				neg = false
 				i++
 			case "--ctstate":
-				i++ // every packet here starts a new connection
+				if r[i+1] != "NEW" {
+					m.t.Fatalf("model: unknown state %q", r[i+1])
+				}
+				match = match && p.fresh
+				i++
 			case "--match-set":
-				a := dst
+				a := p.dst
 				if r[i+2] == "src" {
-					a = src
+					a = p.src
 				}
 				match = match && m.in(r[i+1], a)
 				i += 2
 			case "-s", "-d":
-				a := dst
+				a := p.dst
 				if r[i] == "-s" {
-					a = src
+					a = p.src
 				}
 				match = match && netip.MustParsePrefix(r[i+1]).Contains(a)
 				i++
@@ -171,10 +194,13 @@ func (m *model) run(chain string, src, dst netip.Addr, mark *uint32, depth int) 
 		case target[0] == "-j" && target[1] == "RETURN":
 			return
 		case target[0] == "-j" && target[1] == "MARK":
-			*mark = num(m.t, target[3])
-		case target[0] == "-j" && target[1] == "CONNMARK":
+			p.mark = num(m.t, target[3])
+		case target[0] == "-j" && target[1] == "CONNMARK" && target[2] == "--restore-mark":
+			p.mark = p.connmark
+		case target[0] == "-j" && target[1] == "CONNMARK" && target[2] == "--save-mark":
+			p.connmark = p.mark
 		case target[0] == "-g":
-			m.run(target[1], src, dst, mark, depth+1)
+			m.run(target[1], p, depth+1)
 			return
 		default:
 			m.t.Fatalf("model: unknown target %v", target)
@@ -192,7 +218,8 @@ instagram.example -> vpn for !office
 1.1.1.0/24 -> vpn
 `
 
-func TestDeviceViewsMeaning(t *testing.T) {
+// devicesModel builds devicesSrc for three devices: one in list tv, one in office, one in both.
+func devicesModel(t *testing.T) *model {
 	const tv, office, both rules.View = 1, 2, 3
 	ip := netip.MustParseAddr
 	run := &scripted{fail: []string{" -C "}}
@@ -209,7 +236,11 @@ func TestDeviceViewsMeaning(t *testing.T) {
 	if err := r.Rebuild(cfgOf(t, devicesSrc), sources, entries); err != nil {
 		t.Fatal(err)
 	}
-	m := newModel(t, run.calls)
+	return newModel(t, run.calls)
+}
+
+func TestDeviceViewsMeaning(t *testing.T) {
+	m := devicesModel(t)
 	vm := markOf(t, marksOf(t, devicesSrc)[1])
 	cases := []struct {
 		from, to string
@@ -315,5 +346,96 @@ func TestDefaultNoneKeepsLocalNetworks(t *testing.T) {
 func TestNoNoneSlotWithoutNone(t *testing.T) {
 	if got := len(marksOf(t, oneExit)); got != 3 {
 		t.Errorf("rules without none: %d slots, want 3", got)
+	}
+}
+
+// Every later packet of a connection keeps the first packet's mark: the saved mark is restored
+// before any view's chain is entered, and every view's chain saves its mark.
+func TestDeviceViewsKeepTheMarkOnLaterPackets(t *testing.T) {
+	m := devicesModel(t)
+	vm := markOf(t, marksOf(t, devicesSrc)[1])
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"192.168.1.40", "5.5.5.5", vm}, {"192.168.1.60", "5.5.5.5", vm}, {"192.168.1.30", "6.6.6.6", vm},
+		{"192.168.1.40", "91.108.4.9", vm}, {"192.168.1.50", "6.6.6.6", 0},
+	}
+	for _, c := range cases {
+		if first, later := m.connection(c.from, c.to); first != c.want || later != c.want {
+			t.Errorf("%s → %s: first packet %#x, later %#x, want %#x", c.from, c.to, first, later, c.want)
+		}
+	}
+}
+
+func TestNoneLeavesTheOtherMarksAlone(t *testing.T) {
+	const without = "exit vpn = W\nexit alt = W\ndefault direct\nx.example -> vpn\n"
+	with := without + "ads.example -> none\n"
+	if a, b := marksOf(t, without), marksOf(t, with); fmt.Sprint(a) != fmt.Sprint(b[:len(a)]) || len(b) != len(a)+1 {
+		t.Errorf("marks without none %v, with %v", a, b)
+	}
+}
+
+func TestNoneComesAndGoes(t *testing.T) {
+	const without = "exit vpn = W\ndefault direct\nx.example -> vpn\n"
+	with := without + "ads.example -> none\n"
+	none := rules.Action{Exit: rules.None}
+	nm := marksOf(t, with)[3]
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	if err := r.Rebuild(cfgOf(t, with), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	run.calls = nil
+	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("6.6.6.6"), New: &none}}); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, run.calls, []string{"ipset restore <<\nadd trassa_d3 6.6.6.6 -exist\n"})
+	run.calls = nil
+	run.out = map[string]string{"ip rule list": "203:\tfrom all fwmark " + nm + " lookup 543 \n"}
+	run.fail = nil
+	if err := r.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(run.calls, "ip route replace prohibit default table 543") {
+		t.Errorf("reconcile must restore the blocking route: %v", run.calls)
+	}
+	// The rules stop blocking: the slot's rule goes and its table is emptied.
+	run.calls = nil
+	if err := r.Rebuild(cfgOf(t, without), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(run.changed(), "\n")
+	for _, want := range []string{"ip rule del pref 203 fwmark " + nm + " lookup 543", "ip route flush table 543"} {
+		if !strings.Contains(all, want) {
+			t.Errorf("no %q in\n%s", want, all)
+		}
+	}
+}
+
+// default none is for every device, devices of a list included: their chain blocks too, and leaves
+// the local networks open.
+func TestDefaultNoneForADeviceView(t *testing.T) {
+	const src = "exit vpn = W\ndevice tv = 192.168.1.40\ndefault none\nallowed.example -> direct for tv\n"
+	ip := netip.MustParseAddr
+	run := &scripted{fail: []string{" -C "}}
+	r := NewRouter(run, "br0", netip.Addr{})
+	entries := []claims.Entry{{View: 1, Addr: ip("5.5.5.5"), Action: rules.Action{Exit: "direct"}}}
+	if err := r.Rebuild(cfgOf(t, src), map[rules.View][]netip.Addr{1: {ip("192.168.1.40")}}, entries); err != nil {
+		t.Fatal(err)
+	}
+	nm := markOf(t, marksOf(t, src)[3])
+	m := newModel(t, run.calls)
+	cases := []struct {
+		from, to string
+		want     uint32
+	}{
+		{"192.168.1.40", "5.5.5.5", markBase}, {"192.168.1.40", "8.8.8.8", nm}, {"192.168.1.40", "192.168.1.1", 0},
+		{"192.168.1.30", "5.5.5.5", nm},
+	}
+	for _, c := range cases {
+		if got := m.mark(c.from, c.to); got != c.want {
+			t.Errorf("%s → %s: mark %#x, want %#x", c.from, c.to, got, c.want)
+		}
 	}
 }

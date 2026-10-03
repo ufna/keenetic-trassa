@@ -192,7 +192,8 @@ func (o ownRule) key() string { return o.pref + " " + o.mark + " " + o.table }
 // wantedRules are the routing rules a layout needs: direct back to the main table; one rule per
 // tunnel slot; a slot of this layout whose table has no route (a normal exit with no live
 // tunnel) falls through to the main table, i.e. goes direct; a mark of any other layout goes
-// nowhere. A strict slot never falls through: its table keeps a permanent blackhole.
+// nowhere. A strict slot never falls through: its table keeps a permanent blackhole; neither does
+// the blocking slot, whose table holds a prohibit route.
 func (l *Layout) wantedRules() []ownRule {
 	out := []ownRule{{directPref, fmt.Sprintf("0x%x", markBase), "main"}}
 	for _, s := range l.Slots[1:] {
@@ -336,6 +337,8 @@ func (r *Router) Reconcile(ctx context.Context) error {
 	if err := r.syncRoutes(ctx, r.layout); err != nil {
 		return err
 	}
+	// Chains of earlier views, in case listing them failed during the rebuild.
+	r.dropViewChains(ctx, r.layout)
 	return r.syncRules(ctx, r.layout)
 }
 
@@ -384,10 +387,12 @@ func viewChains(ctx context.Context, run Runner) []string {
 	out, _ := run.Run(ctx, "iptables-save", "-t", "mangle")
 	var names []string
 	for _, line := range strings.Split(out, "\n") {
-		if !strings.HasPrefix(line, ":"+viewChainPrefix) {
+		f := strings.Fields(strings.TrimPrefix(line, ":"))
+		if !strings.HasPrefix(line, ":") || len(f) == 0 {
 			continue
 		}
-		if f := strings.Fields(line[1:]); len(f) > 0 {
+		// trassa's view chains end in the view number; another chain with this prefix is not ours.
+		if n, ok := strings.CutPrefix(f[0], viewChainPrefix); ok && n != "" && strings.Trim(n, "0123456789") == "" {
 			names = append(names, f[0])
 		}
 	}
