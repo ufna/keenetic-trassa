@@ -82,8 +82,8 @@ func signIn(do func(*http.Request) (*http.Response, error), base, password strin
 }
 
 // demo is the page with rules from rulesPath and a made-up but plausible daemon state; off starts
-// it with trassa turned off.
-func demo(rulesPath string, off bool) (http.Handler, error) {
+// it with trassa turned off, delay slows down the state as a busy router does.
+func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error) {
 	text, err := os.ReadFile(rulesPath)
 	if err != nil {
 		return nil, err
@@ -96,7 +96,10 @@ func demo(rulesPath string, off bool) (http.Handler, error) {
 		return nil, err
 	}
 	st := &store.Store{Dir: dir, Apply: func() (store.Applied, string) { return store.Running, "rules reloaded" }}
-	st.Save(string(text)+"# example edit from the page\n", true)
+	// Enough versions and answers for the lists to scroll.
+	for i := 1; i <= 8; i++ {
+		st.Save(string(text)+fmt.Sprintf("# example edit %d from the page\n", i), true)
+	}
 	if off {
 		st.Disable()
 	}
@@ -110,6 +113,11 @@ func demo(rulesPath string, off bool) (http.Handler, error) {
 			{At: now.Add(-41 * time.Second), Client: "fe80::c803:47ff:fe04:97ae", Name: "passport.yandex.by", Action: "direct"},
 			{At: now.Add(-63 * time.Second), Client: "192.168.1.94", Name: "t.me", Action: "vpn", Line: 13},
 		}}
+	for i, n := 0, len(state.Recent); i < 8; i++ {
+		o := state.Recent[i%n]
+		o.At = o.At.Add(-time.Duration(i+1) * 80 * time.Second)
+		state.Recent = append(state.Recent, o)
+	}
 	desc := map[string]string{"Wireguard0": "tunnel-b", "Wireguard1": "tunnel-c", "Wireguard2": "tunnel-a",
 		"Wireguard3": "tunnel-d", "Wireguard4": "tunnel-e"}
 	srv := &web.Server{
@@ -118,6 +126,9 @@ func demo(rulesPath string, off bool) (http.Handler, error) {
 		Daemon: func(cmd, arg string) (string, error) {
 			if cmd == "stop" {
 				return "trassa is stopping\n", nil
+			}
+			if cmd == "state" {
+				time.Sleep(delay)
 			}
 			if cmd == "state" && !st.Disabled() {
 				b, _ := json.Marshal(state)
@@ -181,11 +192,12 @@ func main() {
 	router := flag.String("router", "", "address of the real page, e.g. http://192.168.1.1:8090")
 	passFile := flag.String("pass", "backup/.router-pass", "file with the router administrator password")
 	off := flag.Bool("off", false, "demo: start with trassa turned off")
+	delay := flag.Duration("delay", 0, "demo: how long the daemon state takes, like a busy router")
 	flag.Parse()
 
 	var h http.Handler
 	if *router == "" {
-		inner, err := demo(*rulesPath, *off)
+		inner, err := demo(*rulesPath, *off, *delay)
 		if err != nil {
 			log.Fatal(err)
 		}

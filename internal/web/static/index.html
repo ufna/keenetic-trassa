@@ -9,12 +9,15 @@
 <script src="logic.js" defer></script>
 <script src="app.js" defer></script>
 </head>
-<body>
+<body class="loading">
 <div class="wrap">
   <header class="top">
     <div class="brand"><h1>trassa</h1><span>flexible routing</span></div>
+    <button class="switch" id="power" type="button" role="switch" aria-checked="false" aria-label="trassa is turned on" disabled>
+      <span class="track" aria-hidden="true"><span class="knob"></span></span>
+      <span class="switch-text" id="power-text"></span>
+    </button>
     <div class="chips" id="chips"></div>
-    <button class="btn power" id="power" type="button" hidden>Turn off</button>
     <button class="linkbtn" id="logout" type="button">Sign out</button>
   </header>
 
@@ -68,7 +71,7 @@
 
       <section class="panel" aria-labelledby="h-obs">
         <h2 id="h-obs">Recent DNS answers <small>what came in and where it went</small></h2>
-        <div class="tablewrap">
+        <div class="tablewrap" id="obs-wrap">
           <table class="obs">
             <thead><tr><th>Time</th><th>Name and device</th><th>Path</th></tr></thead>
             <tbody id="obs"></tbody>

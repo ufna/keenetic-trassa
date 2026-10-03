@@ -148,9 +148,9 @@ On the page: the rules editor with errors and warnings by line, "why" for any na
 link, the state of the exits and tunnels, the latest DNS answers and the version history with
 one-click restore (the last 20 versions are kept). The page listens on the home network only.
 
-The **Turn off** button in the header (it asks for a second click) stops the daemon: it removes
-its routes and the router routes all traffic as without trassa. trassa stays off after a reboot
-until **Turn on** is pressed; the page itself keeps working, and the rules can still be edited.
+The switch in the header turns trassa off and on. Off, the daemon stops and removes its routes,
+and the router routes all traffic as without trassa; trassa stays off after a reboot until it is
+switched on again. The page itself keeps working, and the rules can still be edited.
 
 ## Commands
 
@@ -192,7 +192,7 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 - If the daemon stops or crashes, DNS keeps working (the kernel passes DNS answers by itself)
   and traffic goes as without trassa; `strict` rules block their traffic until the daemon is
   back. The supervisor restarts it within seconds.
-- The quickest way back to the router's own routing is **Turn off** on the page or
+- The quickest way back to the router's own routing is the switch on the page or
   `trassa disable` on the router: the daemon removes everything it built and stays off.
 - `tools/router.sh trassa-off` stops trassa, disables the start at boot and removes everything
   it built, without relying on trassa itself. The same by hand on the router:

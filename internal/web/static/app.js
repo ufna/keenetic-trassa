@@ -11,6 +11,8 @@
   var enabled = null;       // trassa is turned on, from the last state; null until it arrives
   var startingUntil = 0;    // after turning on, "not running" means "starting" until this time
   var pollTimer = null;
+  var HISTORY_ROWS = 6;     // versions shown without scrolling
+  var OBS_ROWS = 8;         // DNS answers shown without scrolling
   var signedIn = false;
 
   var KIND = {
@@ -201,6 +203,7 @@
       li.appendChild(acts);
       ol.appendChild(li);
     });
+    fitRows(ol, ol.children, HISTORY_ROWS);
   }
 
   // putVersion puts a version's text into the editor; that does not put it into effect.
@@ -287,7 +290,6 @@
       renderPower();
     }
     if (!s.enabled) {
-      chips.appendChild(chip("turned off", "off"));
       banner.textContent = "trassa is turned off: the daemon is stopped and the router routes all traffic as without trassa. " +
         "You can still edit and save rules: they take effect when trassa is turned on." +
         (d ? " The daemon is still stopping." : "");
@@ -393,40 +395,52 @@
       tr.appendChild(td);
       tb.appendChild(tr);
     });
+    fitRows($("obs-wrap"), tb.children, OBS_ROWS);
+  }
+
+  // fitRows lets box show at most n rows and scroll the rest. Row heights differ and change with
+  // the screen width, so the height is taken from the n-th row itself.
+  function fitRows(box, rows, n) {
+    if (rows.length <= n) {
+      box.style.maxHeight = "";
+      return;
+    }
+    var bottom = rows[n - 1].getBoundingClientRect().bottom;
+    box.style.maxHeight = Math.ceil(bottom - box.getBoundingClientRect().top + box.scrollTop) + "px";
+  }
+
+  function fitLists() {
+    fitRows($("history"), $("history").children, HISTORY_ROWS);
+    fitRows($("obs-wrap"), $("obs").children, OBS_ROWS);
   }
 
   /* ---- Turning trassa on and off ---- */
-  function renderPower() {
+  // showSwitch puts the switch in position on: true, false, or null while the state is unknown.
+  function showSwitch(on) {
     var b = $("power");
-    delete b.dataset.armed;
-    b.hidden = enabled === null;
-    b.className = enabled ? "btn power" : "btn primary power";
-    b.textContent = enabled ? "Turn off" : "Turn on";
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    b.setAttribute("aria-label", on ? "trassa is turned on" : "trassa is turned off");
+    $("power-text").textContent = on === null ? "" : on ? "On" : "Off";
+    b.disabled = on === null;
   }
 
+  function renderPower() { showSwitch(enabled); }
+
+  // power flips the switch at once and then asks the router; if the router refuses, it flips back.
   async function power() {
-    var b = $("power");
-    if (enabled && !b.dataset.armed) {
-      b.dataset.armed = "1";
-      b.className = "btn warn power";
-      b.textContent = "Turn off? Click again";
-      // As with restoring a version: a stray click later turns nothing off.
-      setTimeout(function () { if (b.dataset.armed) renderPower(); }, 5000);
-      return;
-    }
+    var b = $("power"), want = !enabled;
+    showSwitch(want);
     b.disabled = true;
     try {
-      var r = await api("POST", "/api/power", { on: !enabled });
+      var r = await api("POST", "/api/power", { on: want });
       enabled = r.enabled;
       startingUntil = enabled ? Date.now() + 30000 : 0;
-      renderPower();
       await loadState();
     } catch (e) {
-      renderPower();
-      $("banner").textContent = e.message;
+      $("banner").textContent = "trassa not turned " + (want ? "on" : "off") + ": " + e.message;
       $("banner").hidden = false;
     } finally {
-      b.disabled = false;
+      renderPower();
     }
   }
 
@@ -473,16 +487,25 @@
     showLogin();
   }
 
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  function reveal() { document.body.classList.remove("loading"); }
+
   async function start() {
     try {
       await loadRules(false);
     } catch (e) {
-      if (e.status !== 401) setStatus(e.message, "bad");
+      // Not signed in: the sign-in form covers the page, and the page appears after signing in.
+      if (e.status !== 401) {
+        setStatus(e.message, "bad");
+        reveal();
+      }
       return;
     }
     signedIn = true;
-    loadHistory();
-    loadState();
+    // The page appears once, with everything in place: parts filling in one by one make it jump.
+    // A slow router holds it back for three seconds at most.
+    await Promise.race([Promise.all([loadHistory(), loadState()]), wait(3000)]);
+    reveal();
     clearInterval(pollTimer);
     pollTimer = setInterval(function () { if (!document.hidden && signedIn) loadState(); }, 5000);
   }
@@ -508,6 +531,7 @@
   $("why-form").addEventListener("submit", why);
   $("login-form").addEventListener("submit", login);
   $("logout").addEventListener("click", logout);
+  window.addEventListener("resize", fitLists);
   window.addEventListener("beforeunload", function (ev) {
     if (dirty()) { ev.preventDefault(); ev.returnValue = ""; }
   });
