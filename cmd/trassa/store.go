@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"trassa/internal/ctl"
+	"trassa/internal/devices"
 	"trassa/internal/exits"
 	"trassa/internal/rules"
 	"trassa/internal/store"
@@ -24,16 +25,18 @@ const (
 	reloadTimeout = 40 * time.Second
 )
 
-// newStore returns the rules directory on the router: exits are checked with the firmware and
-// the daemon applies the rules.
+// newStore returns the rules directory on the router: exits and device lists are checked with the
+// firmware, and the daemon applies the rules.
 func newStore(dir, rci string) *store.Store {
-	src := exits.RCI{Base: rci, Client: &http.Client{Timeout: 3 * time.Second}}
+	client := &http.Client{Timeout: 3 * time.Second}
+	src := exits.RCI{Base: rci, Client: client}
+	devs := devices.RCI{Base: rci, Client: client}
 	return &store.Store{
 		Dir: dir,
 		Validate: func(c *rules.Config) []rules.Problem {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			return exits.Validate(ctx, c, src)
+			return append(exits.Validate(ctx, c, src), devices.Check(ctx, c, devs)...)
 		},
 		Apply: applyViaDaemon,
 	}

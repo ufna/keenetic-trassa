@@ -23,6 +23,7 @@ import (
 
 	"trassa/internal/ctl"
 	"trassa/internal/dataplane"
+	"trassa/internal/devices"
 	"trassa/internal/engine"
 	"trassa/internal/exits"
 	"trassa/internal/nfq"
@@ -307,6 +308,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		return 1
 	}
 	var router *dataplane.Router
+	devSrc := devices.RCI{Base: *rci, Client: &http.Client{Timeout: 3 * time.Second}}
 	var sink engine.Sink
 	var validate func(*rules.Config) []rules.Problem
 	var src exits.Source
@@ -317,12 +319,19 @@ func cmdRun(args []string, errw io.Writer) int {
 			mode += " for " + sourceAddr.String()
 		}
 		src = exits.RCI{Base: *rci, Client: &http.Client{Timeout: 3 * time.Second}}
-		validate = func(c *rules.Config) []rules.Problem {
+		checkExits := func(c *rules.Config) []rules.Problem {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			return exits.Validate(ctx, c, src)
 		}
-		if ps := validate(cfg); rules.HasErrors(ps) {
+		validate = func(c *rules.Config) []rules.Problem {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return append(checkExits(c), devices.Check(ctx, c, devSrc)...)
+		}
+		// At start only the exits are checked: right after a router reboot its device list may be
+		// incomplete, and a device the firmware does not know yet is picked up on a later poll.
+		if ps := checkExits(cfg); rules.HasErrors(ps) {
 			printProblems(errw, ps)
 			fmt.Fprintln(errw, "exits failed the check on the router, the daemon is not started")
 			return 1
@@ -369,6 +378,24 @@ func cmdRun(args []string, errw io.Writer) int {
 		current = active
 	}
 
+	// refreshDevices asks the firmware which devices are on the network. If it does not answer,
+	// the last known addresses stay; one log line per series of failures.
+	devicesFailed := false
+	refreshDevices := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		hosts, err := devSrc.Hosts(ctx)
+		if err != nil {
+			if !devicesFailed {
+				logger.Printf("device list unknown, the last known device addresses stay: %v", err)
+			}
+			devicesFailed = true
+			return
+		}
+		devicesFailed = false
+		eng.SetDevices(hosts) // the engine logs its own failures
+	}
+
 	// The socket goes first: it also checks that no other instance is running.
 	// After a reload over the socket the tunnels are rechecked at once: otherwise a new exit would
 	// count as unavailable until the next poll.
@@ -401,6 +428,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	}
 	defer srv.Close()
 
+	refreshDevices()
 	if router != nil {
 		refreshExits()
 		if f, err := openState(*statePath); err == nil {
@@ -527,6 +555,8 @@ func cmdRun(args []string, errw io.Writer) int {
 	defer tick.Stop()
 	exitsTick := time.NewTicker(5 * time.Second)
 	defer exitsTick.Stop()
+	devicesTick := time.NewTicker(30 * time.Second)
+	defer devicesTick.Stop()
 	// The state is on flash: written rarely, and on every stop.
 	stateTick := time.NewTicker(30 * time.Minute)
 	defer stateTick.Stop()
@@ -542,8 +572,11 @@ func cmdRun(args []string, errw io.Writer) int {
 			checkRoutes()
 		case <-exitsTick.C:
 			refreshExits()
+		case <-devicesTick.C:
+			refreshDevices()
 		case <-kick:
 			refreshExits()
+			refreshDevices()
 		case <-stateTick.C:
 			if router != nil {
 				if err := saveState(*statePath, eng); err != nil {
