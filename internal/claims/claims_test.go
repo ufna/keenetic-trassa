@@ -145,7 +145,7 @@ func TestSetConfig(t *testing.T) {
 	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip2}, hour)
 
 	changed := "exit vpn = W\nexit alt = W\ndefault direct\nvideo.example -> alt\n"
-	wantChanges(t, s.SetConfig(config(t, changed)), "1.1.1.1 vpn strict => alt", "2.2.2.2 alt => -")
+	wantChanges(t, s.SetConfig(config(t, changed), nil), "1.1.1.1 vpn strict => alt", "2.2.2.2 alt => -")
 	if s.Len() != 1 {
 		t.Errorf("Len = %d, want 1", s.Len())
 	}
@@ -173,7 +173,7 @@ func TestStoreDoesNotAliasCallerSlices(t *testing.T) {
 	names := []string{"video.example"}
 	s.Observe(t0, names, []netip.Addr{ip1}, hour)
 	names[0] = "unknown.example"
-	wantChanges(t, s.SetConfig(config(t, src))) // same rules, so there must be no changes
+	wantChanges(t, s.SetConfig(config(t, src), nil)) // same rules, so there must be no changes
 
 	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, 3*hour)
 	got := s.Claims(ip1)
@@ -242,7 +242,7 @@ func TestLimits(t *testing.T) {
 		t.Errorf("claim not accepted after room was freed: %v", got)
 	}
 	// Changing the rules also recounts the total.
-	s.SetConfig(config(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
+	s.SetConfig(config(t, "exit vpn = W\nexit alt = W\ndefault direct\n"), nil)
 	if s.Total() != 0 || s.Len() != 0 {
 		t.Errorf("after a rules change %d total, %d addresses", s.Total(), s.Len())
 	}
@@ -254,7 +254,7 @@ func TestEntries(t *testing.T) {
 	s.Observe(t0, []string{"yandex.ru"}, []netip.Addr{ip1}, hour)
 	got := s.Entries()
 	// 10.9.1.1 is in the subnet of an earlier rule, so it is not in the dynamic sets.
-	want := []Entry{{ip1, rules.Action{Exit: "direct"}}, {ip2, rules.Action{Exit: "vpn", Strict: true}}}
+	want := []Entry{{Addr: ip1, Action: rules.Action{Exit: "direct"}}, {Addr: ip2, Action: rules.Action{Exit: "vpn", Strict: true}}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("Entries = %+v, want %+v", got, want)
 	}
@@ -353,5 +353,97 @@ func TestLoadNormalizesNames(t *testing.T) {
 	}
 	if cs := s.Claims(ip2); len(cs) != 0 {
 		t.Errorf("a name with a control character was loaded: %+v", cs)
+	}
+}
+
+const devSrc = `exit vpn = W
+device tv = 192.168.1.40
+device office = 192.168.1.50
+default direct
+youtube.example -> vpn for tv
+instagram.example -> vpn for !office
+10.9.0.0/16 -> direct for tv
+lan.example -> vpn
+`
+
+const (
+	tv     rules.View = 1
+	office rules.View = 2
+)
+
+func wantViewChanges(t *testing.T, got []Change, want ...string) {
+	t.Helper()
+	var s []string
+	for _, c := range got {
+		s = append(s, fmt.Sprintf("[%d] %s %s => %s", c.View, c.Addr, show(c.Old), show(c.New)))
+	}
+	if fmt.Sprint(s) != fmt.Sprint(want) {
+		t.Fatalf("changes %q, want %q", s, want)
+	}
+}
+
+func TestClaimsPerView(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	wantViewChanges(t, s.SetViews([]rules.View{office, tv}))
+	if fmt.Sprint(s.Views()) != "[1 2]" {
+		t.Fatalf("views %v", s.Views())
+	}
+	wantViewChanges(t, s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour), "[1] 1.1.1.1 - => vpn")
+	if s.Effective(ip1) != nil || s.EffectiveFor(office, ip1) != nil || show(s.EffectiveFor(tv, ip1)) != "vpn" {
+		t.Error("youtube.example must be in the TV's set only")
+	}
+	if len(s.Claims(ip1)) != 0 || len(s.ClaimsFor(tv, ip1)) != 1 || s.ClaimsFor(tv, ip1)[0].Action.Exit != "vpn" || !s.Known(ip1) {
+		t.Errorf("claims for views: %+v / %+v", s.Claims(ip1), s.ClaimsFor(tv, ip1))
+	}
+	wantViewChanges(t, s.Observe(t0, []string{"instagram.example"}, []netip.Addr{ip2}, hour),
+		"[0] 2.2.2.2 - => vpn", "[1] 2.2.2.2 - => vpn")
+	// A subnet rule for the TV is older than the name rule: the TV's static set serves the address.
+	lan := netip.MustParseAddr("10.9.1.1")
+	wantViewChanges(t, s.Observe(t0, []string{"lan.example"}, []netip.Addr{lan}, hour),
+		"[0] 10.9.1.1 - => vpn", "[2] 10.9.1.1 - => vpn")
+	got := fmt.Sprint(s.Entries())
+	for _, want := range []string{"{0 2.2.2.2 vpn}", "{1 1.1.1.1 vpn}", "{2 10.9.1.1 vpn}"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("entries %s: no %s", got, want)
+		}
+	}
+	wantViewChanges(t, s.Expire(t0.Add(2*hour)),
+		"[0] 2.2.2.2 vpn => -", "[0] 10.9.1.1 vpn => -", "[1] 1.1.1.1 vpn => -", "[1] 2.2.2.2 vpn => -", "[2] 10.9.1.1 vpn => -")
+}
+
+func TestSetViewsDecidesNewViews(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	// No TV is known yet, but the answer is kept: a TV may join later.
+	wantViewChanges(t, s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour))
+	if s.Len() != 1 || !s.Known(ip1) {
+		t.Fatal("an answer for a device list's rule must be kept")
+	}
+	wantViewChanges(t, s.SetViews([]rules.View{tv}), "[1] 1.1.1.1 - => vpn")
+	wantViewChanges(t, s.SetViews(nil))
+	if s.EffectiveFor(tv, ip1) != nil {
+		t.Error("a view no longer tracked has no set")
+	}
+}
+
+func TestSetConfigWithViews(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	s.SetViews([]rules.View{tv})
+	s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour)
+	// The lists swap places: list tv is now bit 2.
+	swapped := strings.Replace(devSrc, "device tv = 192.168.1.40\ndevice office = 192.168.1.50", "device office = 192.168.1.50\ndevice tv = 192.168.1.40", 1)
+	wantViewChanges(t, s.SetConfig(config(t, swapped), []rules.View{2}), "[2] 1.1.1.1 - => vpn")
+}
+
+func TestLoadDecidesForViews(t *testing.T) {
+	s := New(config(t, devSrc), hour)
+	s.Observe(t0, []string{"youtube.example"}, []netip.Addr{ip1}, hour)
+	var buf bytes.Buffer
+	if err := s.Save(&buf); err != nil {
+		t.Fatal(err)
+	}
+	r := New(config(t, devSrc), hour)
+	r.SetViews([]rules.View{tv})
+	if n := r.Load(&buf, t0); n != 1 || show(r.EffectiveFor(tv, ip1)) != "vpn" {
+		t.Errorf("loaded %d, tv: %s", n, show(r.EffectiveFor(tv, ip1)))
 	}
 }

@@ -157,7 +157,7 @@ func (e *Engine) Reload(cfg *rules.Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
-	e.note(e.store.SetConfig(cfg), "rules changed")
+	e.note(e.store.SetConfig(cfg, e.store.Views()), "rules changed")
 	return e.rebuild()
 }
 

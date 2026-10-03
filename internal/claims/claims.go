@@ -7,22 +7,28 @@ import (
 	"encoding/json"
 	"io"
 	"net/netip"
+	"slices"
 	"sort"
 	"time"
 
 	"trassa/internal/rules"
 )
 
-// Claim is a rule's claim on an address, created from a DNS answer.
+// Claim is a claim on an address, created from a DNS answer. The decision depends on the device:
+// Index and Action are given for the view a caller asked about.
 type Claim struct {
-	Names   []string // the queried name and its CNAME targets
-	Index   int      // rule number; lower means older
-	Action  rules.Action
+	Names   []string     // the queried name and its CNAME targets
+	Index   int          // rule number for the view asked about; lower means older
+	Action  rules.Action // the decision for the view asked about
 	Expires time.Time
+
+	dec  []rules.Decision // per tracked view (Store.views); Rule == nil: no rule for that view
+	rank int              // the earliest rule for any device: eviction keeps claims of older rules
 }
 
-// Change is a change to the dynamic sets. nil means "the address is in no set".
+// Change is a change to the dynamic sets of one view. nil means "the address is in no set".
 type Change struct {
+	View     rules.View
 	Addr     netip.Addr
 	Old, New *rules.Action
 }
@@ -30,6 +36,7 @@ type Change struct {
 // Store is not safe for concurrent use: the caller serializes access.
 type Store struct {
 	cfg    *rules.Config
+	views  []rules.View // tracked views: views[0] is 0, a device in no list; then device views ascending
 	minTTL time.Duration
 	byAddr map[netip.Addr][]Claim
 
@@ -51,13 +58,57 @@ func (s *Store) Total() int { return s.total }
 func (s *Store) Dropped() uint64 { return s.dropped }
 
 func New(cfg *rules.Config, minTTL time.Duration) *Store {
-	return &Store{cfg: cfg, minTTL: minTTL, byAddr: map[netip.Addr][]Claim{}}
+	return &Store{cfg: cfg, views: []rules.View{0}, minTTL: minTTL, byAddr: map[netip.Addr][]Claim{}}
+}
+
+// Views returns the tracked device views, ascending, without the view of devices in no list.
+func (s *Store) Views() []rules.View { return append([]rules.View(nil), s.views[1:]...) }
+
+// position returns the position of view v among the tracked views.
+func (s *Store) position(v rules.View) (int, bool) {
+	for i, w := range s.views {
+		if w == v {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// decide decides a name chain for every tracked view. ok is false if no rule matches the chain for
+// any device at all; a chain matched only by a rule of an untracked view is still kept, since a
+// device of that view may join later.
+func (s *Store) decide(names []string) (dec []rules.Decision, rank int, ok bool) {
+	any := s.cfg.MatchChainAny(names)
+	if any.Rule == nil {
+		return nil, 0, false
+	}
+	dec = make([]rules.Decision, len(s.views))
+	for i, v := range s.views {
+		dec[i] = s.cfg.MatchChainFor(v, names)
+	}
+	return dec, any.Index, true
 }
 
 func (s *Store) Len() int { return len(s.byAddr) }
 
-// Claims returns a copy of the claims on an address: the store rewrites its slices in place.
-func (s *Store) Claims(addr netip.Addr) []Claim { return append([]Claim(nil), s.byAddr[addr]...) }
+// ClaimsFor returns the claims on an address that have a rule for view v, with Index and Action for v.
+func (s *Store) ClaimsFor(v rules.View, addr netip.Addr) []Claim {
+	i, ok := s.position(v)
+	if !ok {
+		return nil
+	}
+	var out []Claim
+	for _, c := range s.byAddr[addr] {
+		if d := c.dec[i]; d.Rule != nil {
+			c.Index, c.Action = d.Index, d.Action
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// Claims returns the claims on an address for a device in no list.
+func (s *Store) Claims(addr netip.Addr) []Claim { return s.ClaimsFor(0, addr) }
 
 // AddrsOf returns the addresses claimed by the queried name, in ascending order.
 func (s *Store) AddrsOf(name string) []netip.Addr {
@@ -74,30 +125,61 @@ func (s *Store) AddrsOf(name string) []netip.Addr {
 	return out
 }
 
-// Effective returns the action with which the address belongs in a dynamic set, or nil.
-func (s *Store) Effective(addr netip.Addr) *rules.Action {
-	cs := s.byAddr[addr]
-	if len(cs) == 0 {
+// Known reports whether any DNS answer claimed the address, for any device.
+func (s *Store) Known(addr netip.Addr) bool { return len(s.byAddr[addr]) > 0 }
+
+// EffectiveFor returns the action with which the address belongs in view v's dynamic set, or nil.
+func (s *Store) EffectiveFor(v rules.View, addr netip.Addr) *rules.Action {
+	i, ok := s.position(v)
+	if !ok {
 		return nil
 	}
-	best := cs[0]
-	for _, c := range cs[1:] {
-		if c.Index < best.Index {
-			best = c
+	return s.effective(i, addr)
+}
+
+// Effective is EffectiveFor for a device in no list.
+func (s *Store) Effective(addr netip.Addr) *rules.Action { return s.EffectiveFor(0, addr) }
+
+func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
+	cs := s.byAddr[addr]
+	var best *rules.Decision
+	for k := range cs {
+		if d := &cs[k].dec[i]; d.Rule != nil && (best == nil || d.Index < best.Index) {
+			best = d
 		}
 	}
+	if best == nil {
+		return nil
+	}
 	// A subnet of an earlier rule is older: its static set serves the address.
-	if st := s.cfg.MatchAddr(addr); st.Rule != nil && st.Index < best.Index {
+	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && st.Index < best.Index {
 		return nil
 	}
 	a := best.Action
 	return &a
 }
 
+// effectiveAll returns the address's action for every tracked view.
+func (s *Store) effectiveAll(addr netip.Addr) []*rules.Action {
+	out := make([]*rules.Action, len(s.views))
+	for i := range s.views {
+		out[i] = s.effective(i, addr)
+	}
+	return out
+}
+
+// changes compares an address's actions with old, taken under the same views, view by view.
+func (s *Store) changes(out []Change, addr netip.Addr, old []*rules.Action) []Change {
+	for i, v := range s.views {
+		out = appendChange(out, v, addr, old[i], s.effective(i, addr))
+	}
+	return out
+}
+
 // Observe records a DNS answer: names are the queried name and its CNAME targets, addrs the answer's addresses.
 func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl time.Duration) []Change {
-	d := s.cfg.MatchChain(names)
-	if d.Rule == nil {
+	dec, rank, ok := s.decide(names)
+	if !ok {
 		return nil
 	}
 	if ttl < s.minTTL {
@@ -105,15 +187,15 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	}
 	// Copy: we keep the caller's slice for a long time, and it must not change under us.
 	names = append([]string(nil), names...)
-	c := Claim{Names: names, Index: d.Index, Action: d.Action, Expires: now.Add(ttl)}
+	c := Claim{Names: names, Expires: now.Add(ttl), dec: dec, rank: rank}
 	var out []Change
 	for _, a := range addrs {
 		if !usable(a) {
 			continue
 		}
-		old := s.Effective(a)
+		old := s.effectiveAll(a)
 		s.add(a, c)
-		out = appendChange(out, a, old, s.Effective(a))
+		out = s.changes(out, a, old)
 	}
 	return out
 }
@@ -122,7 +204,7 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 func (s *Store) Expire(now time.Time) []Change {
 	var out []Change
 	for a, cs := range s.byAddr {
-		old := s.Effective(a)
+		old := s.effectiveAll(a)
 		live := cs[:0]
 		for _, c := range cs {
 			if c.Expires.After(now) {
@@ -131,35 +213,58 @@ func (s *Store) Expire(now time.Time) []Change {
 		}
 		s.total -= len(cs) - len(live)
 		s.put(a, live)
-		out = appendChange(out, a, old, s.Effective(a))
+		out = s.changes(out, a, old)
 	}
 	sortChanges(out)
 	return out
 }
 
-// SetConfig switches the store to new rules: every claim is decided again from its name chain.
-func (s *Store) SetConfig(cfg *rules.Config) []Change {
-	old := make(map[netip.Addr]*rules.Action, len(s.byAddr))
-	for a := range s.byAddr {
-		old[a] = s.Effective(a)
+// SetConfig switches the store to new rules and device views (the view of devices in no list is
+// tracked always): every claim is decided again from its name chain. Changes are reported for the
+// views tracked after the switch; a view tracked before but not after has no sets any more.
+func (s *Store) SetConfig(cfg *rules.Config, views []rules.View) []Change {
+	old := make(map[rules.View]map[netip.Addr]*rules.Action, len(s.views))
+	for i, v := range s.views {
+		m := make(map[netip.Addr]*rules.Action, len(s.byAddr))
+		for a := range s.byAddr {
+			m[a] = s.effective(i, a)
+		}
+		old[v] = m
 	}
-	s.cfg = cfg
+	s.cfg, s.views = cfg, trackedViews(views)
 	var out []Change
 	for a, cs := range s.byAddr {
 		kept := cs[:0]
 		for _, c := range cs {
-			d := cfg.MatchChain(c.Names)
-			if d.Rule == nil {
+			dec, rank, ok := s.decide(c.Names)
+			if !ok {
 				continue
 			}
-			c.Index, c.Action = d.Index, d.Action
+			c.dec, c.rank = dec, rank
 			kept = append(kept, c)
 		}
 		s.total -= len(cs) - len(kept)
 		s.put(a, kept)
-		out = appendChange(out, a, old[a], s.Effective(a))
+		for i, v := range s.views {
+			out = appendChange(out, v, a, old[v][a], s.effective(i, a))
+		}
 	}
 	sortChanges(out)
+	return out
+}
+
+// SetViews switches the tracked device views under the same rules.
+func (s *Store) SetViews(views []rules.View) []Change { return s.SetConfig(s.cfg, views) }
+
+// trackedViews puts the view of devices in no list first, then the distinct device views ascending.
+func trackedViews(views []rules.View) []rules.View {
+	out := []rules.View{0}
+	for _, v := range views {
+		if v != 0 && !slices.Contains(out, v) {
+			out = append(out, v)
+		}
+	}
+	slices.Sort(out[1:])
 	return out
 }
 
@@ -188,11 +293,11 @@ func (s *Store) add(a netip.Addr, c Claim) {
 		// The address is full: a new claim evicts the worst one only if it is older than it.
 		worst := 0
 		for i := range cs {
-			if cs[i].Index > cs[worst].Index {
+			if cs[i].rank > cs[worst].rank {
 				worst = i
 			}
 		}
-		if cs[worst].Index <= c.Index {
+		if cs[worst].rank <= c.rank {
 			s.dropped++
 			return
 		}
@@ -207,15 +312,20 @@ func (s *Store) add(a netip.Addr, c Claim) {
 	s.total++
 }
 
-func appendChange(out []Change, a netip.Addr, old, cur *rules.Action) []Change {
+func appendChange(out []Change, v rules.View, a netip.Addr, old, cur *rules.Action) []Change {
 	if old == nil && cur == nil || old != nil && cur != nil && *old == *cur {
 		return out
 	}
-	return append(out, Change{Addr: a, Old: old, New: cur})
+	return append(out, Change{View: v, Addr: a, Old: old, New: cur})
 }
 
 func sortChanges(cs []Change) {
-	sort.Slice(cs, func(i, j int) bool { return cs[i].Addr.Less(cs[j].Addr) })
+	sort.Slice(cs, func(i, j int) bool {
+		if cs[i].View != cs[j].View {
+			return cs[i].View < cs[j].View
+		}
+		return cs[i].Addr.Less(cs[j].Addr)
+	})
 }
 
 // usable reports whether the address can be a destination of ordinary traffic. The kernel
@@ -229,21 +339,30 @@ func usable(a netip.Addr) bool {
 	return b[0] != 0 && b[0] != 127 && b[0] < 224 && !(b[0] == 169 && b[1] == 254)
 }
 
-// Entry is an address and the action with which it belongs in a dynamic set.
+// Entry is an address and the action with which it belongs in a view's dynamic set.
 type Entry struct {
+	View   rules.View
 	Addr   netip.Addr
 	Action rules.Action
 }
 
-// Entries returns everything that belongs in the dynamic sets, by ascending address.
+// Entries returns everything that belongs in the dynamic sets of the tracked views, by view, then
+// by ascending address.
 func (s *Store) Entries() []Entry {
 	out := make([]Entry, 0, len(s.byAddr))
 	for a := range s.byAddr {
-		if eff := s.Effective(a); eff != nil {
-			out = append(out, Entry{Addr: a, Action: *eff})
+		for i, v := range s.views {
+			if eff := s.effective(i, a); eff != nil {
+				out = append(out, Entry{View: v, Addr: a, Action: *eff})
+			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Addr.Less(out[j].Addr) })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].View != out[j].View {
+			return out[i].View < out[j].View
+		}
+		return out[i].Addr.Less(out[j].Addr)
+	})
 	return out
 }
 
@@ -295,12 +414,12 @@ func (s *Store) Load(r io.Reader, now time.Time) int {
 		if limit := now.Add(maxKeep); expires.After(limit) {
 			expires = limit
 		}
-		d := s.cfg.MatchChain(v.Names)
-		if d.Rule == nil {
+		dec, rank, ok := s.decide(v.Names)
+		if !ok {
 			continue
 		}
 		before := s.total
-		s.add(a, Claim{Names: v.Names, Index: d.Index, Action: d.Action, Expires: expires})
+		s.add(a, Claim{Names: v.Names, Expires: expires, dec: dec, rank: rank})
 		if s.total > before {
 			n++
 		}
