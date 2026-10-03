@@ -343,7 +343,11 @@
       }
       var li = el("li", via[t.exit] === t.name ? "active" : "");
       li.appendChild(el("span", "dot " + (t.error ? "bad" : t.up ? "ok" : "off")));
-      li.appendChild(el("span", "name", t.name + (t.description ? " · " + t.description : "")));
+      // The name as written in the rules, then whatever else identifies it: the description
+      // and the firmware name (tunnel-a · Wireguard2 or Wireguard2 · tunnel-a).
+      var label = [t.name];
+      [t.description, t.id].forEach(function (x) { if (x && label.indexOf(x) < 0) label.push(x); });
+      li.appendChild(el("span", "name", label.join(" · ")));
       li.appendChild(el("span", "meta", t.error || (t.up ? "connected" : "not connected")));
       groups[t.exit].appendChild(li);
     });

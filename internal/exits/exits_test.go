@@ -17,6 +17,15 @@ const (
 	ethernet = `{"id":"GigabitEthernet1","index":1,"type":"GigabitEthernet","link":"up","connected":"yes"}`
 )
 
+// ifaceList is "show interface" as the firmware returns it: switch ports appear under numeric keys.
+const ifaceList = `{
+	"Wireguard2": {"id": "Wireguard2", "description": "tunnel-a", "type": "Wireguard"},
+	"Wireguard0": {"id": "Wireguard0", "description": "tunnel-b", "type": "Wireguard"},
+	"Wireguard3": {"id": "Wireguard3", "description": "dup", "type": "Wireguard"},
+	"GigabitEthernet1": {"id": "GigabitEthernet1", "description": "dup", "type": "GigabitEthernet"},
+	"1": {"id": "GigabitEthernet0/0", "description": "", "type": "Port"}
+}`
+
 func firmware(t *testing.T) RCI {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -35,6 +44,8 @@ func firmware(t *testing.T) RCI {
 			w.Write([]byte("<html>"))
 		case "Empty":
 			w.Write([]byte("{}"))
+		case "/rci/show/interface": // the whole list, keyed by firmware name
+			w.Write([]byte(ifaceList))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -59,10 +70,10 @@ func TestInterface(t *testing.T) {
 		name string
 		want Status
 	}{
-		{"Wireguard2", Status{Name: "Wireguard2", Exists: true, Type: "Wireguard", System: "nwg2", Up: true, Description: "tunnel-a"}},
-		{"Wireguard0", Status{Name: "Wireguard0", Exists: true, Type: "Wireguard", System: "nwg0"}},
-		{"Wireguard3", Status{Name: "Wireguard3", Exists: true, Type: "Wireguard", System: "nwg3"}},
-		{"GigabitEthernet1", Status{Name: "GigabitEthernet1", Exists: true, Type: "GigabitEthernet"}},
+		{"Wireguard2", Status{Name: "Wireguard2", ID: "Wireguard2", Exists: true, Type: "Wireguard", System: "nwg2", Up: true, Description: "tunnel-a"}},
+		{"Wireguard0", Status{Name: "Wireguard0", ID: "Wireguard0", Exists: true, Type: "Wireguard", System: "nwg0"}},
+		{"Wireguard3", Status{Name: "Wireguard3", ID: "Wireguard3", Exists: true, Type: "Wireguard", System: "nwg3"}},
+		{"GigabitEthernet1", Status{Name: "GigabitEthernet1", ID: "GigabitEthernet1", Exists: true, Type: "GigabitEthernet"}},
 		{"Nope", Status{Name: "Nope"}},
 		{"Empty", Status{Name: "Empty"}},
 	}
@@ -152,8 +163,8 @@ func TestTunnels(t *testing.T) {
 	cfg := config(t, "exit vpn = Wireguard2, Wireguard0, Ghost, Broken\ndefault direct\n")
 	got := Tunnels(context.Background(), cfg, firmware(t))
 	want := []Tunnel{
-		{Exit: "vpn", Name: "Wireguard2", Description: "tunnel-a", Up: true},
-		{Exit: "vpn", Name: "Wireguard0"},
+		{Exit: "vpn", Name: "Wireguard2", ID: "Wireguard2", Description: "tunnel-a", Up: true},
+		{Exit: "vpn", Name: "Wireguard0", ID: "Wireguard0"},
 		{Exit: "vpn", Name: "Ghost", Error: "no such interface on the router"},
 		{Exit: "vpn", Name: "Broken", Error: "firmware answered with code 500"},
 	}
@@ -164,5 +175,32 @@ func TestTunnels(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("%d: %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// In the rules an interface may be named by its description in the firmware settings.
+func TestInterfaceByDescription(t *testing.T) {
+	src := firmware(t)
+	ctx := context.Background()
+	want := Status{Name: "tunnel-a", ID: "Wireguard2", Exists: true, Type: "Wireguard", System: "nwg2", Up: true, Description: "tunnel-a"}
+	if got, err := src.Interface(ctx, "tunnel-a"); err != nil || got != want {
+		t.Errorf("tunnel-a: %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := src.Interface(ctx, "tunnel-b"); err != nil || got.ID != "Wireguard0" || got.System != "nwg0" || got.Up {
+		t.Errorf("tunnel-b: %+v, %v", got, err)
+	}
+	if got, err := src.Interface(ctx, "no-such-tunnel"); err != nil || got.Exists {
+		t.Errorf("an unknown description: %+v, %v", got, err)
+	}
+	if _, err := src.Interface(ctx, "dup"); err == nil || !strings.Contains(err.Error(), "several interfaces") || !strings.Contains(err.Error(), "Wireguard3") {
+		t.Errorf("a description of two interfaces must be an error: %v", err)
+	}
+	cfg := config(t, "exit vpn = tunnel-a, tunnel-b\ndefault direct\n")
+	if ps := Validate(ctx, cfg, src); len(ps) != 0 {
+		t.Errorf("validate: %v", ps)
+	}
+	active, err := Active(ctx, cfg, src, nil)
+	if err != nil || active["vpn"] != (Choice{Interface: "tunnel-a", System: "nwg2"}) {
+		t.Errorf("active: %+v, %v", active, err)
 	}
 }

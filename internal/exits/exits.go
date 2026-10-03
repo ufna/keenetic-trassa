@@ -8,14 +8,18 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"sort"
 	"strconv"
+	"strings"
 
 	"trassa/internal/rules"
 )
 
 // Status is what the firmware reports about an interface.
 type Status struct {
-	Name   string // firmware name, e.g. Wireguard2
+	Name   string // as written in the rules: a firmware name (Wireguard2) or a description (tunnel-a)
+	ID     string // firmware name, e.g. Wireguard2; empty if the interface does not exist
 	Exists bool
 	Type   string // firmware type, e.g. Wireguard
 	System string // system name, e.g. nwg2; empty if the interface cannot be an exit
@@ -29,7 +33,8 @@ type Source interface {
 	Interface(ctx context.Context, name string) (Status, error)
 }
 
-// RCI queries the firmware at its local address.
+// RCI queries the firmware at its local address. An interface may be named by its firmware
+// name (Wireguard2) or by its description in the firmware settings (tunnel-a).
 type RCI struct {
 	Base   string // e.g. http://127.0.0.1:79
 	Client *http.Client
@@ -49,17 +54,36 @@ type ifaceJSON struct {
 	} `json:"wireguard"`
 }
 
+func (r RCI) client() *http.Client {
+	if r.Client != nil {
+		return r.Client
+	}
+	return http.DefaultClient
+}
+
 func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
-	st := Status{Name: name}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Base+"/rci/show/interface/"+url.PathEscape(name), nil)
+	st, err := r.byID(ctx, name)
+	if err != nil || st.Exists {
+		st.Name = name
+		return st, err
+	}
+	id, err := r.byDescription(ctx, name)
+	if err != nil || id == "" {
+		return Status{Name: name}, err
+	}
+	st, err = r.byID(ctx, id)
+	st.Name = name
+	return st, err
+}
+
+// byID asks the firmware about the interface with this firmware name.
+func (r RCI) byID(ctx context.Context, id string) (Status, error) {
+	var st Status
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Base+"/rci/show/interface/"+url.PathEscape(id), nil)
 	if err != nil {
 		return st, err
 	}
-	client := r.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	resp, err := r.client().Do(req)
 	if err != nil {
 		return st, fmt.Errorf("firmware does not respond: %w", err)
 	}
@@ -77,7 +101,7 @@ func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
 	if j.ID == "" {
 		return st, nil
 	}
-	st.Exists, st.Type, st.Description = true, j.Type, j.Description
+	st.ID, st.Exists, st.Type, st.Description = j.ID, true, j.Type, j.Description
 	if j.Type != "Wireguard" || j.Index == nil {
 		return st, nil
 	}
@@ -91,6 +115,51 @@ func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
 		}
 	}
 	return st, nil
+}
+
+// byDescription finds the firmware name of the interface with this description; "" if there is
+// none. A description shared by several interfaces is an error: the rule would be ambiguous.
+func (r RCI) byDescription(ctx context.Context, desc string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Base+"/rci/show/interface", nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := r.client().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("firmware does not respond: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("firmware answered with code %d", resp.StatusCode)
+	}
+	var all map[string]struct {
+		ID          string `json:"id"`
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&all); err != nil {
+		return "", fmt.Errorf("cannot parse firmware answer: %w", err)
+	}
+	var found []string
+	for key, v := range all {
+		if v.Description != desc {
+			continue
+		}
+		id := v.ID
+		if id == "" {
+			id = key
+		}
+		if !slices.Contains(found, id) {
+			found = append(found, id)
+		}
+	}
+	sort.Strings(found)
+	switch len(found) {
+	case 0:
+		return "", nil
+	case 1:
+		return found[0], nil
+	}
+	return "", fmt.Errorf("description %q matches several interfaces: %s", desc, strings.Join(found, ", "))
 }
 
 // Validate checks the interfaces of all exits: each must exist and be a WireGuard tunnel.
@@ -158,7 +227,8 @@ func Active(ctx context.Context, cfg *rules.Config, src Source, prev map[string]
 // Tunnel is an exit interface and what the firmware knows about it; used by the web page.
 type Tunnel struct {
 	Exit        string `json:"exit"`
-	Name        string `json:"name"`
+	Name        string `json:"name"` // as written in the rules
+	ID          string `json:"id"`   // firmware name
 	Description string `json:"description"`
 	Up          bool   `json:"up"`
 	Error       string `json:"error,omitempty"`
@@ -177,7 +247,7 @@ func Tunnels(ctx context.Context, cfg *rules.Config, src Source) []Tunnel {
 			case !st.Exists:
 				t.Error = "no such interface on the router"
 			default:
-				t.Description, t.Up = st.Description, st.Up
+				t.ID, t.Description, t.Up = st.ID, st.Description, st.Up
 			}
 			out = append(out, t)
 		}

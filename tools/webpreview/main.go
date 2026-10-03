@@ -122,7 +122,7 @@ func demo(rulesPath string) (http.Handler, error) {
 			var out []exits.Tunnel
 			for _, e := range cfg.Exits {
 				for _, n := range e.Interfaces {
-					out = append(out, exits.Tunnel{Exit: e.Name, Name: n, Description: desc[n], Up: n == "Wireguard2"})
+					out = append(out, exits.Tunnel{Exit: e.Name, Name: n, ID: n, Description: desc[n], Up: n == "Wireguard2"})
 				}
 			}
 			return out
