@@ -72,13 +72,18 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 		return nil, fmt.Errorf("firmware answered with code %d", resp.StatusCode)
 	}
 	var j struct {
-		Host []hostJSON `json:"host"`
+		Host *[]hostJSON `json:"host"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&j); err != nil {
 		return nil, fmt.Errorf("cannot parse firmware answer: %w", err)
 	}
-	hosts := make([]Host, 0, len(j.Host))
-	for _, h := range j.Host {
+	// An answer without the list (an error from the firmware) is a failure, not an empty network:
+	// the caller then keeps the device addresses it knew.
+	if j.Host == nil {
+		return nil, fmt.Errorf("firmware answer has no device list")
+	}
+	hosts := make([]Host, 0, len(*j.Host))
+	for _, h := range *j.Host {
 		host := Host{MAC: strings.ToLower(h.MAC), Name: h.Name, Hostname: h.Hostname, Online: h.Active || h.DHCP.Expires > 0}
 		if a, err := netip.ParseAddr(h.IP); err == nil && a.Is4() && !a.IsUnspecified() {
 			host.IP = a

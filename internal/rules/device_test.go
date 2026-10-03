@@ -226,3 +226,25 @@ func TestExpectationsUseDevicesInNoList(t *testing.T) {
 		t.Errorf("expectations are about devices in no list: %v", ps)
 	}
 }
+
+// Review of task 1: an unquoted item that looks like an address or a MAC but is not a valid one is
+// an error, not a device name; addresses that cannot be a device on the home network are refused.
+func TestDeviceMalformedAddresses(t *testing.T) {
+	const base = "exit vpn = W\ndefault direct\n"
+	for _, item := range []string{"192.168.1.0/24", "192.168.1.5:80", "aa:bb:cc:dd:ee:f", "02-00-5e-10-00-00-00-01", "aa:bb:cc:dd:ee:ff:00:11"} {
+		_, ps := Parse(base+"device office = "+item+"\n", nil)
+		if !HasErrors(ps) || !strings.Contains(fmt.Sprint(ps), "malformed") {
+			t.Errorf("%s: %v, want a malformed address or MAC error", item, ps)
+		}
+	}
+	for _, item := range []string{"0.0.0.0", "255.255.255.255", "127.0.0.1", "224.0.0.1"} {
+		_, ps := Parse(base+"device office = "+item+"\n", nil)
+		if !HasErrors(ps) || !strings.Contains(fmt.Sprint(ps), "cannot be a device") {
+			t.Errorf("%s: %v, want an error", item, ps)
+		}
+	}
+	// A quoted name may look like anything.
+	if _, ps := Parse(base+`device office = "192.168.1.0/24"`+"\n", nil); HasErrors(ps) {
+		t.Errorf("a quoted name: %v", ps)
+	}
+}

@@ -160,3 +160,16 @@ device both = "Living room TV"
 		t.Errorf("no firmware list: views %v", m.ViewList())
 	}
 }
+
+// Review of task 3: an answer without a device list is a failure, not an empty network: otherwise
+// every device named in the rules would drop out of its list until the next good answer.
+func TestRCIHostsWithoutList(t *testing.T) {
+	for _, body := range []string{`{}`, `{"host":null}`, `{"status":[{"status":"error","message":"no such command"}]}`} {
+		if _, err := serve(t, 200, body).Hosts(context.Background()); err == nil || !strings.Contains(err.Error(), "no device list") {
+			t.Errorf("%s: %v, want an error", body, err)
+		}
+	}
+	if hs, err := serve(t, 200, `{"host":[]}`).Hosts(context.Background()); err != nil || len(hs) != 0 {
+		t.Errorf("an empty list is a valid answer: %v, %v", hs, err)
+	}
+}

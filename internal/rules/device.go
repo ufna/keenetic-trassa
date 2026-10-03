@@ -158,16 +158,31 @@ func splitDevices(s string) ([]deviceItem, error) {
 func parseDevice(it deviceItem) (DeviceRef, error) {
 	if !it.quoted {
 		if a, err := netip.ParseAddr(it.text); err == nil {
-			if !a.Is4() {
-				return DeviceRef{}, fmt.Errorf("device %s: IPv6 is not supported yet", it.text)
+			switch {
+			case a.Is4() && !deviceAddr(a):
+				return DeviceRef{}, fmt.Errorf("device %s: this address cannot be a device on the home network", it.text)
+			case a.Is4():
+				return DeviceRef{Addr: a}, nil
 			}
-			return DeviceRef{Addr: a}, nil
+			// A MAC of 8 bytes written with colons also reads as an IPv6 address.
+			if _, err := net.ParseMAC(it.text); err == nil {
+				return DeviceRef{}, fmt.Errorf("device %s: malformed MAC: a MAC has 6 bytes", it.text)
+			}
+			return DeviceRef{}, fmt.Errorf("device %s: IPv6 is not supported yet", it.text)
 		}
 		if looksNumeric(it.text) {
 			return DeviceRef{}, fmt.Errorf("device %q looks like an address but is malformed", it.text)
 		}
-		if mac, err := net.ParseMAC(it.text); err == nil && len(mac) == 6 {
+		if mac, err := net.ParseMAC(it.text); err == nil {
+			if len(mac) != 6 {
+				return DeviceRef{}, fmt.Errorf("device %s: malformed MAC: a MAC has 6 bytes", it.text)
+			}
 			return DeviceRef{MAC: mac.String()}, nil
+		}
+		// An unquoted item with these characters was meant as an address or a MAC: taken as a name,
+		// it would quietly match nothing and leave the list without the device.
+		if strings.ContainsAny(it.text, "/:") {
+			return DeviceRef{}, fmt.Errorf("device %q: a malformed address or MAC; a name with such characters goes in double quotes", it.text)
 		}
 		if strings.ContainsAny(it.text, " \t") {
 			return DeviceRef{}, fmt.Errorf("device %q: a name with spaces goes in double quotes; or a comma is missing", it.text)
@@ -177,6 +192,14 @@ func parseDevice(it deviceItem) (DeviceRef, error) {
 		return DeviceRef{}, fmt.Errorf("device name %q: at most %d characters, no control characters", it.text, maxDeviceName)
 	}
 	return DeviceRef{Name: it.text}, nil
+}
+
+// deviceAddr reports whether an IPv4 address can be a device on the home network: not the zero,
+// loopback, link-local, multicast or broadcast address. The kernel's address set refuses some of
+// them outright, and one such entry would break the whole rebuild.
+func deviceAddr(a netip.Addr) bool {
+	b := a.As4()
+	return b[0] != 0 && b[0] != 127 && b[0] < 224 && !(b[0] == 169 && b[1] == 254)
 }
 
 // forLists parses the device lists after "for": "tv, phones", "!office".
