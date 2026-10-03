@@ -67,8 +67,9 @@ for f in rules/lists/*; do
 		put "$f" "/opt/etc/trassa/lists/$(basename "$f")" 644
 	fi
 done
-# Not executable: trassa does not start by itself after a router reboot.
-put deploy/S99trassa /opt/etc/init.d/S99trassa 644
+# Executable: Entware's rc.unslung starts trassa when the router boots.
+# tools/router.sh trassa-off removes the execute bit again.
+put deploy/S99trassa /opt/etc/init.d/S99trassa 755
 put deploy/50-trassa-netfilter.sh /opt/etc/ndm/netfilter.d/50-trassa.sh 755
 put deploy/50-trassa-iflayer.sh /opt/etc/ndm/iflayerchanged.d/50-trassa.sh 755
 

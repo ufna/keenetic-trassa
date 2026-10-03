@@ -1,6 +1,8 @@
 #!/bin/sh
 # trassa: start, supervise and stop the daemon and the web page.
 # The log and service files live in /tmp (RAM) so the flash does not wear out.
+# At boot Entware's rc.unslung sources this script with ".": so there is no exit at the top
+# level, and every variable and function is prefixed with trassa_ / TRASSA_.
 
 TRASSA_BIN=/opt/sbin/trassa
 TRASSA_CONF=/opt/etc/trassa

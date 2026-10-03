@@ -317,6 +317,7 @@ cmd_trassa_off() {
       done
       for s in $(ipset list -n | grep "^trassa_"); do ipset destroy "$s"; done
       rm -f /tmp/trassa.state /tmp/trassa-web.pid
+      rm -rf /opt/var/lib/trassa
       echo "trassa rules in tables: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA); routing rules: $(ip rule list | grep -c "fwmark 0x5452"); address sets: $(ipset list -n | grep -c "^trassa_")"
       echo "trassa processes: $(pidof trassa 2>/dev/null | wc -w)"' \
     || die "failed to run the command on the router. Fallback: tools/router.sh opkg-off"
