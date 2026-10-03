@@ -394,3 +394,42 @@ func TestStaleChallengesAreReleased(t *testing.T) {
 	}
 	waitReleased(3)
 }
+
+func TestStateReportsDaemonKind(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	for _, c := range []struct {
+		err  error
+		want string
+	}{
+		{fmt.Errorf("%w (test)", ctl.ErrNoDaemon), "not-running"},
+		{fmt.Errorf("%w (test)", ctl.ErrNoReply), "no-reply"},
+		{errors.New("something else"), "error"},
+		{nil, "running"},
+	} {
+		e.daemon = func(cmd, arg string) (string, error) {
+			if c.err != nil {
+				return "", c.err
+			}
+			b, _ := json.Marshal(ctl.State{Mode: "route"})
+			return string(b), nil
+		}
+		_, b, _ := e.do("GET", "/api/state", nil)
+		if got := decode[stateJSON](t, b).DaemonState; got != c.want {
+			t.Errorf("%v: daemonState %q, want %q", c.err, got, c.want)
+		}
+	}
+}
+
+func TestSaveRejectedByDaemon(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	e.srv.Store.Apply = func() (store.Applied, string) { return store.Rejected, "interface W does not exist on the router" }
+	_, b, _ := e.do("POST", "/api/save", map[string]any{"text": rulesText + "t.me -> vpn\n"})
+	if res := decode[resultJSON](t, b); res.Saved || res.Applied != "rejected" || !strings.Contains(res.Message, "does not exist") {
+		t.Errorf("result: %s", b)
+	}
+	if text, _ := e.srv.Store.Current(); text != rulesText {
+		t.Errorf("the rules file changed: %q", text)
+	}
+}

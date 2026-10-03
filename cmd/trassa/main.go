@@ -20,7 +20,7 @@ Usage:
   trassa why <name, address or link>            decision and DNS details from the running daemon
   trassa status                                 daemon state
   trassa reload                                 reload the rules without stopping
-  trassa rollback [-y] [-dir directory]         restore the previous rules version from history
+  trassa rollback [-y] [-dir directory]         undo the last rules change (run again to redo it)
   trassa run [-rules file] [-only address]      run the daemon in observe mode
   trassa run -route [-source address]           run the daemon in routing mode
   trassa web [-listen address] [-dir directory] web page for editing the rules (192.168.1.1:8090)

@@ -277,3 +277,66 @@ func TestConcurrentSaves(t *testing.T) {
 		t.Error("the newest version does not match the current one")
 	}
 }
+
+// A save the daemon rejected must not cost the history its oldest version.
+func TestRejectedSaveKeepsFullHistory(t *testing.T) {
+	s := newStore(t, textA)
+	for i := 0; i < Keep; i++ {
+		mustSave(t, s, textA+strings.Repeat("# edit\n", i+1))
+	}
+	before, _ := s.History()
+	s.Apply = func() (Applied, string) { return Rejected, "rejected" }
+	if res, err := s.Save(textB, false); err != nil || res.Saved {
+		t.Fatalf("%+v, %v", res, err)
+	}
+	after, _ := s.History()
+	if len(after) != Keep || after[len(after)-1].ID != before[len(before)-1].ID {
+		t.Errorf("history after a rejected save: %d versions, oldest %s (was %s)", len(after), after[len(after)-1].ID, before[len(before)-1].ID)
+	}
+}
+
+// The page and trassa rollback are separate processes with separate Store values: the lock is
+// on the directory, not on the value.
+func TestTwoStoresShareTheLock(t *testing.T) {
+	first := newStore(t, textA)
+	second := &Store{Dir: first.Dir, Now: first.Now}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			s := first
+			if i%2 == 1 {
+				s = second
+			}
+			s.Save(textA+strings.Repeat("# edit\n", i+1), false)
+		}(i)
+	}
+	wg.Wait()
+	h, err := first.History()
+	if err != nil || len(h) != 9 || !h[0].Current {
+		t.Fatalf("%d versions (want 9), error %v", len(h), err)
+	}
+	if text, _ := first.Version(h[0].ID); text != current(t, first) {
+		t.Error("the newest version differs from the rules file")
+	}
+}
+
+// Temporary files left by a crash are cleaned up on the next save; fresh ones are not touched.
+func TestStaleTempFilesAreRemoved(t *testing.T) {
+	s := newStore(t, textA)
+	mustSave(t, s, textB)
+	old := filepath.Join(s.Dir, historyDir, ".tmp-old")
+	fresh := filepath.Join(s.Dir, ".tmp-fresh")
+	os.WriteFile(old, nil, 0o644)
+	os.WriteFile(fresh, nil, 0o644)
+	past := time.Now().Add(-2 * time.Hour)
+	os.Chtimes(old, past, past)
+	mustSave(t, s, textC)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("an hour-old temporary file is still there")
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Error("a fresh temporary file was removed")
+	}
+}

@@ -57,9 +57,13 @@ func cmdWeb(args []string, errw io.Writer) int {
 		WriteTimeout: 90 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10, ErrorLog: logger}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	// Shutdown lets requests in progress finish: a save restores the previous rules file when the
+	// daemon rejects the new one, and that must not be cut off. The init script waits 10 seconds.
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		<-sig
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
 		defer cancel()
 		hs.Shutdown(ctx)
 	}()
@@ -68,6 +72,7 @@ func cmdWeb(args []string, errw io.Writer) int {
 		logger.Printf("web page: %v", err)
 		return 1
 	}
+	<-stopped
 	logger.Print("web page stopped")
 	return 0
 }

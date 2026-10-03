@@ -210,5 +210,14 @@ func main() {
 		h = withCookie(proxy, c)
 	}
 	log.Printf("page: http://%s/", *listen)
-	log.Fatal(http.ListenAndServe(*listen, withWait(h)))
+	// Only this address: the -router mode carries a live session to the real router, and a page
+	// that rebinds its own name to 127.0.0.1 must not reach it.
+	guarded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != *listen {
+			http.Error(w, "open http://"+*listen+"/", http.StatusMisdirectedRequest)
+			return
+		}
+		withWait(h).ServeHTTP(w, r)
+	})
+	log.Fatal(http.ListenAndServe(*listen, guarded))
 }

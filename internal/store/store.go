@@ -176,6 +176,7 @@ func (s *Store) save(text, kind string, confirm bool) (Result, error) {
 		return Result{}, err
 	}
 	defer unlock()
+	s.removeStaleTemp()
 
 	var res Result
 	cfg, ps := s.Check(text)
@@ -214,7 +215,6 @@ func (s *Store) save(text, kind string, confirm bool) (Result, error) {
 		os.Remove(s.versionPath(id))
 		return res, err
 	}
-	s.prune()
 
 	res.Applied = NotRunning
 	if s.Apply != nil {
@@ -237,6 +237,8 @@ func (s *Store) save(text, kind string, confirm bool) (Result, error) {
 		return res, nil
 	}
 	res.Saved = true
+	// Only now: a rejected save must not push the oldest version out of the history.
+	s.prune()
 	return res, nil
 }
 
@@ -413,6 +415,7 @@ func writeTemp(dir string, data []byte) (string, error) {
 }
 
 // writeAtomic replaces the file as a whole: if writing fails midway, the old file remains.
+// The directory is synced too, so the rename itself survives a power cut.
 func writeAtomic(path string, data []byte) error {
 	tmp, err := writeTemp(filepath.Dir(path), data)
 	if err != nil {
@@ -422,5 +425,25 @@ func writeAtomic(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
+	if d, err := os.Open(filepath.Dir(path)); err == nil {
+		d.Sync()
+		d.Close()
+	}
 	return nil
+}
+
+// staleTemp is how old a temporary file must be to count as left over from a crash: a save
+// in progress in another process is never that slow.
+const staleTemp = time.Hour
+
+// removeStaleTemp removes temporary files left in the rules directory and the history by a crash.
+func (s *Store) removeStaleTemp() {
+	for _, dir := range []string{s.Dir, s.historyPath()} {
+		matches, _ := filepath.Glob(filepath.Join(dir, ".tmp-*"))
+		for _, m := range matches {
+			if fi, err := os.Stat(m); err == nil && time.Since(fi.ModTime()) > staleTemp {
+				os.Remove(m)
+			}
+		}
+	}
 }

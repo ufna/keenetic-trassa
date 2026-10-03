@@ -362,6 +362,11 @@ func cmdRun(args []string, errw io.Writer) int {
 	kick := make(chan struct{}, 1)
 	reloadAndKick := func() (string, error) {
 		text, err := reload()
+		if err != nil {
+			logger.Printf("rules reload requested over the control socket: %v\n%s", err, text)
+		} else {
+			logger.Printf("rules reload requested over the control socket: %s", strings.TrimSpace(text))
+		}
 		select {
 		case kick <- struct{}{}:
 		default:

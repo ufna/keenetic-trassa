@@ -55,7 +55,8 @@ func toResult(res store.Result) resultJSON {
 }
 
 type stateJSON struct {
-	Daemon      *ctl.State     `json:"daemon"` // nil means the daemon is not answering
+	Daemon      *ctl.State     `json:"daemon"`      // nil means the daemon is not answering
+	DaemonState string         `json:"daemonState"` // running, not-running, no-reply or error
 	DaemonError string         `json:"daemonError,omitempty"`
 	Tunnels     []exits.Tunnel `json:"tunnels"`
 	Now         time.Time      `json:"now"`
@@ -69,6 +70,16 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 		if err = json.Unmarshal([]byte(text), &st); err == nil {
 			out.Daemon = &st
 		}
+	}
+	switch {
+	case err == nil:
+		out.DaemonState = "running"
+	case errors.Is(err, ctl.ErrNoDaemon):
+		out.DaemonState = "not-running"
+	case errors.Is(err, ctl.ErrNoReply):
+		out.DaemonState = "no-reply"
+	default:
+		out.DaemonState = "error"
 	}
 	if err != nil {
 		out.DaemonError = err.Error()

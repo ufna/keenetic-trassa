@@ -281,9 +281,14 @@
     var d = s.daemon, chips = $("chips"), banner = $("banner");
     chips.replaceChildren();
     if (!d) {
-      chips.appendChild(chip("daemon not answering", "bad"));
-      banner.textContent = "The trassa daemon is not answering (" + s.daemonError + "). You can still edit and save rules: " +
-        "they will take effect when it starts. No counters or DNS answers until then.";
+      var kind = {
+        "not-running": ["daemon not running", "The trassa daemon is not running. You can still edit and save rules: " +
+          "they will take effect when it starts. No counters or DNS answers until then."],
+        "no-reply": ["daemon busy", "The trassa daemon did not reply in time — it may be rebuilding its address sets. " +
+          "The page will refresh in a few seconds."]
+      }[s.daemonState] || ["daemon error", "The trassa daemon answered with an error."];
+      chips.appendChild(chip(kind[0], "bad"));
+      banner.textContent = kind[1] + " (" + s.daemonError + ")";
       banner.hidden = false;
     } else {
       banner.hidden = true;
