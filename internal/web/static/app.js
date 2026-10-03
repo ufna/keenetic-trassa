@@ -399,14 +399,18 @@
   }
 
   // fitRows lets box show at most n rows and scroll the rest. Row heights differ and change with
-  // the screen width, so the height is taken from the n-th row itself.
+  // the screen width, so the height is taken from the n-th row itself. It is measured twice: the
+  // scrollbar that appears takes width, and rows with long names wrap and grow taller.
   function fitRows(box, rows, n) {
     if (rows.length <= n) {
       box.style.maxHeight = "";
       return;
     }
-    var bottom = rows[n - 1].getBoundingClientRect().bottom;
-    box.style.maxHeight = Math.ceil(bottom - box.getBoundingClientRect().top + box.scrollTop) + "px";
+    for (var i = 0; i < 2; i++) {
+      var bottom = rows[n - 1].getBoundingClientRect().bottom;
+      var bar = box.offsetHeight - box.clientHeight; // a horizontal scrollbar takes height too
+      box.style.maxHeight = Math.ceil(bottom - box.getBoundingClientRect().top + box.scrollTop + bar) + "px";
+    }
   }
 
   function fitLists() {
