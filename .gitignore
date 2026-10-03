@@ -1,3 +1,5 @@
 backup/
 build/
 .superpowers/
+rules/*.router
+rules/*.new
