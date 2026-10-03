@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/netip"
 	"slices"
@@ -36,6 +37,9 @@ func (h Host) Label() string {
 type Source interface {
 	Hosts(ctx context.Context) ([]Host, error)
 }
+
+// maxAnswer bounds the firmware's answer: a home network's device list is far smaller.
+const maxAnswer = 4 << 20
 
 // RCI asks the firmware at its local address.
 type RCI struct {
@@ -74,7 +78,14 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 	var j struct {
 		Host *[]hostJSON `json:"host"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&j); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAnswer+1))
+	if err != nil {
+		return nil, fmt.Errorf("cannot read firmware answer: %w", err)
+	}
+	if len(body) > maxAnswer {
+		return nil, fmt.Errorf("firmware answer is larger than %d MiB", maxAnswer>>20)
+	}
+	if err := json.Unmarshal(body, &j); err != nil {
 		return nil, fmt.Errorf("cannot parse firmware answer: %w", err)
 	}
 	// An answer without the list (an error from the firmware) is a failure, not an empty network:
@@ -85,6 +96,9 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 	hosts := make([]Host, 0, len(*j.Host))
 	for _, h := range *j.Host {
 		host := Host{MAC: strings.ToLower(h.MAC), Name: h.Name, Hostname: h.Hostname, Online: h.Active || h.DHCP.Expires > 0}
+		if mac, err := net.ParseMAC(h.MAC); err == nil {
+			host.MAC = mac.String() // the form the rules use, whatever the firmware writes
+		}
 		if a, err := netip.ParseAddr(h.IP); err == nil && a.Is4() && !a.IsUnspecified() {
 			host.IP = a
 		}
@@ -101,6 +115,16 @@ func byName(hosts []Host, name string) []Host {
 		}
 	}
 	return out
+}
+
+// byHostname finds a device by the name it reports about itself.
+func byHostname(hosts []Host, name string) *Host {
+	for i := range hosts {
+		if hosts[i].Hostname != "" && strings.EqualFold(hosts[i].Hostname, name) {
+			return &hosts[i]
+		}
+	}
+	return nil
 }
 
 func byMAC(hosts []Host, mac string) *Host {
@@ -124,11 +148,18 @@ func Validate(cfg *rules.Config, hosts []Host) []rules.Problem {
 		for _, m := range d.Members {
 			switch {
 			case m.Name != "":
-				switch n := len(byName(hosts, m.Name)); {
-				case n == 0:
+				switch hs := byName(hosts, m.Name); {
+				case len(hs) == 0 && byHostname(hosts, m.Name) != nil:
+					h := byHostname(hosts, m.Name)
+					add(d.Line, rules.Error, "device %q has no name in the router settings: it calls itself %s; give it this name in the router settings, or write its MAC %s", m.Name, h.Hostname, h.MAC)
+				case len(hs) == 0:
 					add(d.Line, rules.Error, "device %q is not in the router's device list: give the device this name in the router settings, or write its MAC or address", m.Name)
-				case n > 1:
-					add(d.Line, rules.Error, "device name %q matches %d devices in the router's device list: rename them, or write the MAC", m.Name, n)
+				case len(hs) > 1:
+					macs := make([]string, len(hs))
+					for i, h := range hs {
+						macs[i] = h.MAC
+					}
+					add(d.Line, rules.Error, "device name %q matches %d devices in the router's device list (%s): rename them, or write the MAC", m.Name, len(hs), strings.Join(macs, ", "))
 				}
 			case m.MAC != "":
 				if byMAC(hosts, m.MAC) == nil {
@@ -143,12 +174,24 @@ func Validate(cfg *rules.Config, hosts []Host) []rules.Problem {
 // Check asks the firmware for its devices and validates the device lists. Without device lists
 // it does not ask.
 func Check(ctx context.Context, cfg *rules.Config, src Source) []rules.Problem {
-	if len(cfg.Devices) == 0 {
+	names, macs := false, false
+	for _, d := range cfg.Devices {
+		for _, m := range d.Members {
+			names = names || m.Name != ""
+			macs = macs || m.MAC != ""
+		}
+	}
+	// Addresses need no firmware; MACs only ever give warnings, so an unreachable firmware does too.
+	if !names && !macs {
 		return nil
 	}
 	hosts, err := src.Hosts(ctx)
 	if err != nil {
-		return []rules.Problem{{Line: cfg.Devices[0].Line, Severity: rules.Error, Msg: "cannot read the router's device list: " + err.Error()}}
+		sev := rules.Error
+		if !names {
+			sev = rules.Warning
+		}
+		return []rules.Problem{{Line: cfg.Devices[0].Line, Severity: sev, Msg: "cannot read the router's device list: " + err.Error()}}
 	}
 	return Validate(cfg, hosts)
 }
@@ -158,7 +201,14 @@ type Member struct {
 	Ref   rules.DeviceRef
 	Label string     // the device's name in the firmware, if known
 	IP    netip.Addr // invalid if the device has no address now
+	State string     // on the network, not on the network, not in the router's device list, or matches N devices
 }
+
+const (
+	stateOn      = "on the network"
+	stateOff     = "not on the network"
+	stateUnknown = "not in the router's device list"
+)
 
 // List is a device list and its devices.
 type List struct {
@@ -178,7 +228,8 @@ type Map struct {
 func Resolve(cfg *rules.Config, hosts []Host) Map {
 	m := Map{Views: map[netip.Addr]rules.View{}, Labels: map[netip.Addr]string{}}
 	for _, h := range hosts {
-		if h.IP.IsValid() && h.Label() != "" {
+		// An address may still be listed for a device gone from the network: the one there now wins.
+		if _, have := m.Labels[h.IP]; h.IP.IsValid() && h.Label() != "" && (!have || h.Online) {
 			m.Labels[h.IP] = h.Label()
 		}
 	}
@@ -188,23 +239,26 @@ func Resolve(cfg *rules.Config, hosts []Host) Map {
 		}
 		l := List{Name: d.Name}
 		for _, ref := range d.Members {
-			mem := Member{Ref: ref}
+			mem := Member{Ref: ref, State: stateUnknown}
+			found := func(h *Host) {
+				mem.Label, mem.State = h.Label(), stateOff
+				if h.Online && h.IP.IsValid() {
+					mem.IP, mem.State = h.IP, stateOn
+				}
+			}
 			switch {
 			case ref.Addr.IsValid():
-				mem.IP, mem.Label = ref.Addr, m.Labels[ref.Addr]
+				mem.IP, mem.Label, mem.State = ref.Addr, m.Labels[ref.Addr], stateOn
 			case ref.MAC != "":
 				if h := byMAC(hosts, ref.MAC); h != nil {
-					mem.Label = h.Label()
-					if h.Online {
-						mem.IP = h.IP
-					}
+					found(h)
 				}
 			default:
-				if hs := byName(hosts, ref.Name); len(hs) == 1 {
-					mem.Label = hs[0].Label()
-					if hs[0].Online {
-						mem.IP = hs[0].IP
-					}
+				switch hs := byName(hosts, ref.Name); {
+				case len(hs) == 1:
+					found(&hs[0])
+				case len(hs) > 1:
+					mem.State = fmt.Sprintf("matches %d devices in the router's device list", len(hs))
 				}
 			}
 			if mem.IP.IsValid() {

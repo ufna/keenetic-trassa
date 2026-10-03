@@ -173,3 +173,66 @@ func TestRCIHostsWithoutList(t *testing.T) {
 		t.Errorf("an empty list is a valid answer: %v, %v", hs, err)
 	}
 }
+
+func TestLabelsPreferOnlineHosts(t *testing.T) {
+	cfg := config(t, "default direct\ndevice office = 192.168.1.5\n")
+	hosts := []Host{
+		{MAC: "aa:bb:cc:00:00:10", IP: netip.MustParseAddr("192.168.1.5"), Name: "Current", Online: true},
+		{MAC: "aa:bb:cc:00:00:11", IP: netip.MustParseAddr("192.168.1.5"), Name: "Stale"},
+	}
+	for _, hs := range [][]Host{hosts, {hosts[1], hosts[0]}} {
+		m := Resolve(cfg, hs)
+		if got := m.Labels[netip.MustParseAddr("192.168.1.5")]; got != "Current" {
+			t.Errorf("label %q", got)
+		}
+	}
+}
+
+func TestValidateMessages(t *testing.T) {
+	cfg := config(t, "default direct\ndevice a = \"Pixel-7\"\ndevice b = \"Twin\"\n")
+	got := fmt.Sprint(Validate(cfg, hosts(t)))
+	for _, want := range []string{
+		`device "Pixel-7" has no name in the router settings: it calls itself Pixel-7`,
+		`aa:bb:cc:00:00:05, aa:bb:cc:00:00:06`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("no %q in %s", want, got)
+		}
+	}
+}
+
+func TestRCIHostsLimits(t *testing.T) {
+	big := `{"host":[` + strings.Repeat(`{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","name":"`+strings.Repeat("x", 1000)+`"},`, 4500) + `{}]}`
+	if _, err := serve(t, 200, big).Hosts(context.Background()); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("an oversized answer: %v", err)
+	}
+	hs, err := serve(t, 200, `{"host":[{"mac":"AA-BB-CC-00-00-01","ip":"192.168.1.40","active":true}]}`).Hosts(context.Background())
+	if err != nil || hs[0].MAC != "aa:bb:cc:00:00:01" {
+		t.Errorf("MAC with dashes: %+v, %v", hs, err)
+	}
+}
+
+func TestMemberStates(t *testing.T) {
+	cfg := config(t, `default direct
+device tv = "Living room TV", "Old phone", "Twin", "Nobody", aa:bb:cc:00:00:99, 192.168.1.50
+`)
+	var got []string
+	for _, m := range Resolve(cfg, hosts(t)).Lists[0].Members {
+		got = append(got, m.State)
+	}
+	want := "[on the network not on the network matches 2 devices in the router's device list not in the router's device list not in the router's device list on the network]"
+	if fmt.Sprint(got) != want {
+		t.Errorf("states %v\nwant   %s", got, want)
+	}
+}
+
+func TestCheckAsksOnlyWhenNeeded(t *testing.T) {
+	down := RCI{Base: "http://127.0.0.1:1"}
+	if ps := Check(context.Background(), config(t, "default direct\ndevice office = 192.168.1.50\n"), down); ps != nil {
+		t.Errorf("addresses need no firmware: %v", ps)
+	}
+	ps := Check(context.Background(), config(t, "default direct\ndevice tv = aa:bb:cc:00:00:01\n"), down)
+	if len(ps) != 1 || ps[0].Severity != rules.Warning {
+		t.Errorf("MACs only: an unreachable firmware is a warning: %v", ps)
+	}
+}
