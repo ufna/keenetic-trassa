@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -81,6 +83,10 @@ func (p *parser) device(n int, rest string) {
 		p.errf(n, "expected: device <name> = <device>, <device>...")
 		return
 	}
+	if reservedWord(name) {
+		p.errf(n, "%q is a reserved word and cannot be a device list name", name)
+		return
+	}
 	if !validIdent(name) {
 		p.errf(n, "device list name %q: only lowercase Latin letters, digits, - and _ are allowed", name)
 		return
@@ -95,12 +101,20 @@ func (p *parser) device(n int, rest string) {
 		return
 	}
 	d := DeviceList{Name: name, Line: n}
+	seen := map[string]bool{}
 	for _, it := range items {
 		ref, err := parseDevice(it)
 		if err != nil {
 			p.errf(n, "%v", err)
 			return
 		}
+		// Names are compared like the firmware's: without regard to case.
+		key := strings.ToLower(ref.String())
+		if seen[key] {
+			p.errf(n, "device %s is listed twice", ref)
+			return
+		}
+		seen[key] = true
 		d.Members = append(d.Members, ref)
 	}
 	p.cfg.Devices = append(p.cfg.Devices, d)
@@ -129,7 +143,7 @@ func splitDevices(s string) ([]deviceItem, error) {
 			if end < 0 {
 				return nil, errors.New("a device name in quotes has no closing quote")
 			}
-			it = deviceItem{text: s[i+1 : i+1+end], quoted: true}
+			it = deviceItem{text: strings.TrimSpace(s[i+1 : i+1+end]), quoted: true}
 			i += end + 2
 		} else {
 			end := strings.IndexByte(s[i:], ',')
@@ -188,7 +202,7 @@ func parseDevice(it deviceItem) (DeviceRef, error) {
 			return DeviceRef{}, fmt.Errorf("device %q: a name with spaces goes in double quotes; or a comma is missing", it.text)
 		}
 	}
-	if len(it.text) > maxDeviceName || strings.ContainsFunc(it.text, unicode.IsControl) {
+	if utf8.RuneCountInString(it.text) > maxDeviceName || strings.ContainsFunc(it.text, unicode.IsControl) {
 		return DeviceRef{}, fmt.Errorf("device name %q: at most %d characters, no control characters", it.text, maxDeviceName)
 	}
 	return DeviceRef{Name: it.text}, nil
@@ -214,6 +228,12 @@ func (p *parser) forLists(n int, s string, r *Rule) bool {
 		neg := strings.HasPrefix(item, "!")
 		name := strings.TrimPrefix(item, "!")
 		switch {
+		case slices.Contains(strings.Fields(name), "strict"):
+			p.errf(n, "strict goes before for: -> <exit> strict for <lists>")
+			return false
+		case reservedWord(name):
+			p.errf(n, "for: %q is a reserved word", name)
+			return false
 		case name == "":
 			p.errf(n, "for: empty device list name, or a missing comma")
 			return false

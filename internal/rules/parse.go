@@ -150,7 +150,8 @@ func (p *parser) errf(line int, format string, args ...any) {
 // double quotes belongs to a device name.
 func clean(raw string) string {
 	s := strings.TrimRight(raw, "\r")
-	quotes := strings.HasPrefix(strings.TrimSpace(s), "device ")
+	f := strings.Fields(s)
+	quotes := len(f) > 0 && f[0] == "device"
 	in := false
 	for i := 0; i < len(s); i++ {
 		if quotes && s[i] == '"' {
@@ -184,6 +185,9 @@ func (p *parser) line(n int, raw string) {
 	}
 }
 
+// reservedWord is a word of the rules language that cannot be a name.
+func reservedWord(s string) bool { return s == "strict" || s == "for" }
+
 func validIdent(s string) bool {
 	if s == "" || s == "strict" || s == "for" {
 		return false
@@ -215,6 +219,10 @@ func (p *parser) exit(n int, rest string) {
 	name = strings.TrimSpace(name)
 	if !ok || name == "" {
 		p.errf(n, "expected: exit <name> = <interface>, <interface>...")
+		return
+	}
+	if reservedWord(name) {
+		p.errf(n, "%q is a reserved word and cannot be an exit name", name)
 		return
 	}
 	if !validIdent(name) {
@@ -251,7 +259,7 @@ func (p *parser) exit(n int, rest string) {
 
 func (p *parser) action(n int, f []string) (Action, bool) {
 	if len(f) == 0 || len(f) > 2 || len(f) == 2 && f[1] != "strict" {
-		p.errf(n, "expected an exit: direct or <exit name> [strict]")
+		p.errf(n, "expected an exit: direct, none or <exit name> [strict]")
 		return Action{}, false
 	}
 	a := Action{Exit: f[0], Strict: len(f) == 2}

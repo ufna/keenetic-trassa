@@ -95,7 +95,7 @@ func (c *Config) shadowedBy(i int) string {
 	for _, cond := range r.Pos {
 		line := 0
 		for j := 0; j < i && line == 0; j++ {
-			if c.Rules[j].coversDevices(r) && c.Rules[j].takes(cond) {
+			if c.Rules[j].takes(cond) && c.Rules[j].coversDevices(r) {
 				line = c.Rules[j].Line
 			}
 		}

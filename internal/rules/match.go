@@ -104,9 +104,9 @@ func (c *Config) MatchAddrFor(v View, a netip.Addr) Decision {
 // MatchAddr is MatchAddrFor for a device in no list.
 func (c *Config) MatchAddr(a netip.Addr) Decision { return c.MatchAddrFor(0, a) }
 
-// subject normalizes whatever a person typed: an address (returned valid) or a domain name. An
+// parseSubject normalizes whatever a person typed: an address (returned valid) or a domain name. An
 // incomplete address or IPv6 is an error, not a name: otherwise the answer would be plausible but wrong.
-func subject(s string) (string, netip.Addr, error) {
+func parseSubject(s string) (string, netip.Addr, error) {
 	s = strings.TrimSpace(s)
 	if strings.Contains(s, "://") {
 		u, err := url.Parse(s)
@@ -134,7 +134,7 @@ func subject(s string) (string, netip.Addr, error) {
 // MatchSubjectFor decides what happens, for a device whose lists are v, to whatever a person typed,
 // an address or a name, and returns its normalized form.
 func (c *Config) MatchSubjectFor(v View, s string) (string, Decision, error) {
-	subj, a, err := subject(s)
+	subj, a, err := parseSubject(s)
 	if err != nil {
 		return "", Decision{}, err
 	}
@@ -164,8 +164,9 @@ func (c *Config) MatchChainFor(v View, names []string) Decision { return c.match
 // MatchChain is MatchChainFor for a device in no list.
 func (c *Config) MatchChain(names []string) Decision { return c.MatchChainFor(0, names) }
 
-// MatchChainAny is MatchChain over all rules, "for" ignored: the earliest rule matching the chain
-// for some device. The address memory keeps an answer if any device may need it.
+// MatchChainAny is MatchChain over all rules, "for" ignored: the first rule matching the first name
+// in the chain that matches at all. No rule matches the chain for any device exactly when this one
+// finds nothing, so the address memory keeps an answer if any device may need it.
 func (c *Config) MatchChainAny(names []string) Decision { return c.matchChain(0, true, names) }
 
 // DeviceLines lists the views whose decision for the subject differs from that of a device in no

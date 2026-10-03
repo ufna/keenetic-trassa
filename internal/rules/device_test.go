@@ -96,7 +96,7 @@ func TestDeviceErrors(t *testing.T) {
 	cases := []struct{ lines, want string }{
 		{"device tv", "expected: device <name> = <device>"},
 		{"device TV = 1.2.3.4", "only lowercase Latin letters"},
-		{"device for = 1.2.3.4", "only lowercase Latin letters"},
+		{"device for = 1.2.3.4", `"for" is a reserved word`},
 		{"device tv = ", "empty device in the list"},
 		{"device tv = 1.2.3.4,", "empty device in the list"},
 		{`device tv = ""`, "empty device in the list"},
