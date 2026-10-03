@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Проверка, резервная копия и откат роутера Netcraze Giga.
-# Работает по локальной сети, интернет не нужен. Подробности — в файле ОТКАТ.md.
+# Check, backup and rollback of the Netcraze Giga router.
+# Works over the local network, no internet needed. Details in ОТКАТ.md (rollback guide).
 set -euo pipefail
 
 ROUTER=${ROUTER:-http://192.168.1.1}
@@ -11,36 +11,36 @@ PASSFILE=$ROOT/backup/.router-pass
 JAR=$(mktemp)
 trap 'rm -f "$JAR"' EXIT
 
-die() { echo "ОШИБКА: $*" >&2; exit 1; }
+die() { echo "ERROR: $*" >&2; exit 1; }
 say() { echo ">>> $*"; }
 
 for t in curl jq md5sum sha256sum; do
-  command -v "$t" >/dev/null || die "не найдена программа $t"
+  command -v "$t" >/dev/null || die "program not found: $t"
 done
 
 usage() {
   cat <<EOF
-Использование: tools/router.sh <команда>
+Usage: tools/router.sh <command>
 
-Только чтение:
-  check              сравнить состояние роутера с резервной копией
-  wait               ждать, пока роутер загрузится и появится интернет
-  backup             снять новую резервную копию в backup/<сегодня>
-  cli '<команда>'    выполнить команду роутера (осторожно: может менять настройки)
-  selftest-upload    проверить загрузку файлов: записать и удалить пробный файл
+Read-only:
+  check              compare the router state with the backup
+  wait               wait until the router has booted and the internet is up
+  backup             take a new backup into backup/<today>
+  cli '<command>'    run a router command (careful: it can change settings)
+  selftest-upload    test file upload: write and delete a test file
 
-Изменение прошивки (нужен интернет, спрашивает подтверждение):
-  components install|remove <имя>...   изменить набор компонентов и перезагрузить
+Firmware change (needs internet, asks for confirmation):
+  components install|remove <name>...   change the component set and reboot
 
-Откат (каждая команда спрашивает подтверждение):
-  trassa-off         остановить trassa и снять его правила (без перезагрузки)
-  opkg-off           отключить Entware и перезагрузить: сторонние программы перестают запускаться
-  restore-config     вернуть настройки из резервной копии и перезагрузить
-  restore-firmware   вернуть прошивку из резервной копии и перезагрузить
-  restore-all        прошивка, затем настройки, затем проверка
+Rollback (every command asks for confirmation):
+  trassa-off         stop trassa and remove its rules (no reboot)
+  opkg-off           disable Entware and reboot: third-party programs stop starting
+  restore-config     restore the settings from the backup and reboot
+  restore-firmware   restore the firmware from the backup and reboot
+  restore-all        firmware, then settings, then check
 
-Резервная копия: $BACKUP
-Пароль: переменная ROUTER_PASS, файл backup/.router-pass или ввод с клавиатуры.
+Backup: $BACKUP
+Password: the ROUTER_PASS variable, the file backup/.router-pass, or typed at the keyboard.
 EOF
 }
 
@@ -49,7 +49,7 @@ password() {
   elif [ -r "$PASSFILE" ]; then tr -d '\r\n' < "$PASSFILE"
   else
     local p
-    read -r -s -p "Пароль администратора роутера ($LOGIN): " p </dev/tty; echo >&2
+    read -r -s -p "Router admin password ($LOGIN): " p </dev/tty; echo >&2
     printf '%s' "$p"
   fi
 }
@@ -59,84 +59,84 @@ reachable() { curl -sS -m 5 -o /dev/null "$ROUTER/auth" 2>/dev/null; }
 login() {
   local head realm challenge pass md5 sha code
   head=$(curl -sS -m 10 -c "$JAR" -o /dev/null -D - "$ROUTER/auth") \
-    || die "роутер $ROUTER не отвечает. См. ОТКАТ.md, раздел «Роутер не отвечает»."
+    || die "router $ROUTER is not responding. See ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
   realm=$(printf '%s' "$head" | grep -i '^X-NDM-Realm:' | cut -d' ' -f2- | tr -d '\r')
   challenge=$(printf '%s' "$head" | grep -i '^X-NDM-Challenge:' | cut -d' ' -f2- | tr -d '\r')
-  [ -n "$challenge" ] || die "роутер не выдал запрос на вход — это точно $ROUTER?"
+  [ -n "$challenge" ] || die "the router sent no login challenge: is $ROUTER really the router?"
   pass=$(password)
   md5=$(printf '%s' "$LOGIN:$realm:$pass" | md5sum | cut -d' ' -f1)
   sha=$(printf '%s' "$challenge$md5" | sha256sum | cut -d' ' -f1)
   code=$(curl -sS -m 10 -b "$JAR" -c "$JAR" -o /dev/null -w '%{http_code}' \
     -H 'Content-Type: application/json' \
     -d "{\"login\":\"$LOGIN\",\"password\":\"$sha\"}" "$ROUTER/auth")
-  [ "$code" = 200 ] || die "вход не удался (код $code): неверный пароль?"
+  [ "$code" = 200 ] || die "login failed (code $code): wrong password?"
 }
 
 rci_get()  { curl -sS -m 30 -b "$JAR" "$ROUTER/rci/$1"; }
 rci_post() { curl -sS -m 60 -b "$JAR" -H 'Content-Type: application/json' -d "$2" "$ROUTER/rci/$1"; }
 
-# Ошибки роутер возвращает с кодом 200, внутри ответа: {"status":[{"status":"error",...}]}
+# The router returns errors with HTTP code 200, inside the response: {"status":[{"status":"error",...}]}
 rci_errors() { jq -r '[.. | objects | select(.status? == "error") | .message] | join("; ")' 2>/dev/null; }
 
 cli() {
   local out err
   out=$(rci_post "" "$(jq -n --arg c "$1" '{parse:$c}')")
   err=$(printf '%s' "$out" | rci_errors)
-  [ -z "$err" ] || die "команда «$1» отклонена роутером: $err"
+  [ -z "$err" ] || die "the router rejected the command «$1»: $err"
   printf '%s\n' "$out"
 }
 
 confirm() {
   [ "${YES:-}" = 1 ] && return 0
   local a
-  read -r -p "$1 Введите ДА для продолжения: " a </dev/tty
-  [ "$a" = "ДА" ] || die "отменено"
+  read -r -p "$1 Type yes to continue: " a </dev/tty
+  [ "$a" = "yes" ] || die "cancelled"
 }
 
-# upload <локальный файл> <путь на роутере>, например flash:startup-config
+# upload <local file> <path on the router>, e.g. flash:startup-config
 upload() {
   local src=$1 dst=$2 size out port err
-  [ -r "$src" ] || die "нет файла $src"
+  [ -r "$src" ] || die "file not found: $src"
   size=$(stat -c %s "$src")
   out=$(rci_post put "$(jq -n --arg f "$dst" --argjson s "$size" '{filename:$f,size:$s}')")
   port=$(printf '%s' "$out" | jq -r '.port.port // empty')
-  [ -n "$port" ] || die "роутер не принял загрузку $dst: $(printf '%s' "$out" | rci_errors)"
-  say "загрузка $(basename "$src") → $dst ($size байт)"
+  [ -n "$port" ] || die "the router did not accept the upload of $dst: $(printf '%s' "$out" | rci_errors)"
+  say "uploading $(basename "$src") → $dst ($size bytes)"
   curl -sS -m 600 -b "$JAR" -o /dev/null -F "port=$port" -F "Filedata=@$src" "$ROUTER/fui" \
-    || die "передача файла оборвалась"
+    || die "the file transfer was interrupted"
   for _ in $(seq 1 300); do
     out=$(rci_get put)
     err=$(printf '%s' "$out" | rci_errors)
-    [ -z "$err" ] || die "роутер отклонил файл $dst: $err"
+    [ -z "$err" ] || die "the router rejected the file $dst: $err"
     printf '%s' "$out" | jq -e '.continued == true' >/dev/null 2>&1 || break
     sleep 1
   done
-  say "файл принят"
+  say "file accepted"
 }
 
 wait_down() {
-  say "жду, пока роутер уйдёт в перезагрузку"
+  say "waiting for the router to go down for the reboot"
   for _ in $(seq 1 60); do reachable || return 0; sleep 2; done
-  say "роутер так и не пропал из сети — возможно, перезагрузка уже прошла"
+  say "the router never dropped off the network; the reboot may have already happened"
 }
 
 wait_up() {
-  say "жду роутер (до 10 минут)"
+  say "waiting for the router (up to 10 minutes)"
   for _ in $(seq 1 300); do
-    if reachable; then say "роутер отвечает"; return 0; fi
+    if reachable; then say "the router is responding"; return 0; fi
     sleep 2
   done
-  die "роутер не появился за 10 минут. См. ОТКАТ.md, раздел «Роутер не отвечает»."
+  die "the router did not come back within 10 minutes. See ОТКАТ.md (rollback guide), section «Роутер не отвечает» (router not responding)."
 }
 
 wait_internet() {
-  say "жду интернет (до 5 минут)"
+  say "waiting for the internet (up to 5 minutes)"
   for _ in $(seq 1 60); do
     login 2>/dev/null && [ "$(rci_get show/internet/status | jq -r '.internet')" = true ] \
-      && { say "интернет есть"; return 0; }
+      && { say "the internet is up"; return 0; }
     sleep 5
   done
-  say "интернет не появился за 5 минут — запустите: tools/router.sh check"
+  say "the internet did not come up within 5 minutes; run: tools/router.sh check"
   return 1
 }
 
@@ -154,35 +154,35 @@ cmd_check() {
   ver=$(rci_get show/version)
 
   now=$(printf '%s' "$ver" | jq -r '.release'); was=$(jq -r '.release' "$BACKUP/version.json")
-  if [ "$now" = "$was" ]; then row "Версия прошивки" "как было" "$now"; else row "Версия прошивки" "ИЗМЕНЕНО" "$was → $now"; bad=1; fi
+  if [ "$now" = "$was" ]; then row "Firmware version" "unchanged" "$now"; else row "Firmware version" "CHANGED" "$was → $now"; bad=1; fi
 
   now=$(printf '%s' "$ver" | jq -r '.ndw.components' | tr ',' '\n' | sort)
   was=$(sort "$BACKUP/components-from-version.txt")
-  if [ "$now" = "$was" ]; then row "Набор компонентов" "как было" "$(printf '%s\n' "$now" | wc -l) шт."
+  if [ "$now" = "$was" ]; then row "Component set" "unchanged" "$(printf '%s\n' "$now" | wc -l) items"
   else
-    row "Набор компонентов" "ИЗМЕНЕНО" "добавлено: $(comm -13 <(printf '%s\n' "$was") <(printf '%s\n' "$now") | tr '\n' ' ') убрано: $(comm -23 <(printf '%s\n' "$was") <(printf '%s\n' "$now") | tr '\n' ' ')"
+    row "Component set" "CHANGED" "added: $(comm -13 <(printf '%s\n' "$was") <(printf '%s\n' "$now") | tr '\n' ' ') removed: $(comm -23 <(printf '%s\n' "$was") <(printf '%s\n' "$now") | tr '\n' ' ')"
     bad=1
   fi
 
   now=$(curl -sS -m 30 -b "$JAR" "$ROUTER/ci/startup-config.txt" | grep -v '^! \$\$\$' | sha256sum | cut -d' ' -f1)
   was=$(grep -v '^! \$\$\$' "$BACKUP/startup-config.txt" | sha256sum | cut -d' ' -f1)
-  if [ "$now" = "$was" ]; then row "Настройки" "как было" ""; else row "Настройки" "ИЗМЕНЕНО" "отличаются от резервной копии"; bad=1; fi
+  if [ "$now" = "$was" ]; then row "Settings" "unchanged" ""; else row "Settings" "CHANGED" "differ from the backup"; bad=1; fi
 
   st=$(rci_get show/internet/status | jq -r '.internet')
-  if [ "$st" = true ]; then row "Интернет (по данным роутера)" "есть" ""; else row "Интернет (по данным роутера)" "НЕТ" ""; bad=1; fi
+  if [ "$st" = true ]; then row "Internet (as reported by the router)" "yes" ""; else row "Internet (as reported by the router)" "NO" ""; bad=1; fi
 
   while read -r name was; do
     now=$(rci_get "show/interface/$name" | jq -r '.connected // "no"')
-    if [ "$now" = "$was" ]; then row "Туннель $name" "как было" "$now"; else row "Туннель $name" "ИЗМЕНЕНО" "$was → $now"; bad=1; fi
+    if [ "$now" = "$was" ]; then row "Tunnel $name" "unchanged" "$now"; else row "Tunnel $name" "CHANGED" "$was → $now"; bad=1; fi
   done < <(jq -r 'to_entries[] | select(.value.type=="Wireguard") | "\(.key) \(.value.connected // "no")"' "$BACKUP/interface.json")
 
-  if getent hosts www.google.com >/dev/null 2>&1; then row "DNS с этого компьютера" "работает" ""; else row "DNS с этого компьютера" "НЕТ" ""; bad=1; fi
+  if getent hosts www.google.com >/dev/null 2>&1; then row "DNS from this computer" "works" ""; else row "DNS from this computer" "NO" ""; bad=1; fi
 
   st=$(curl -sS -m 10 -o /dev/null -w '%{http_code}' https://www.youtube.com/generate_204 2>/dev/null || true)
-  if [ "$st" = 204 ]; then row "YouTube (через туннель)" "работает" ""; else row "YouTube (через туннель)" "НЕТ" "код ${st:-нет ответа}"; bad=1; fi
+  if [ "$st" = 204 ]; then row "YouTube (via the tunnel)" "works" ""; else row "YouTube (via the tunnel)" "NO" "code ${st:-no response}"; bad=1; fi
 
   echo
-  if [ "$bad" = 0 ]; then say "всё как в резервной копии"; else say "есть отличия от резервной копии (см. выше)"; fi
+  if [ "$bad" = 0 ]; then say "everything matches the backup"; else say "there are differences from the backup (see above)"; fi
   return "$bad"
 }
 
@@ -195,24 +195,24 @@ cmd_backup() {
   jq -r '.ndw.components' "$dir/version.json" | tr ',' '\n' | sort > "$dir/components-from-version.txt"
   rci_get show/interface > "$dir/interface.json"
   curl -sS -m 30 -b "$JAR" -o "$dir/startup-config.txt" "$ROUTER/ci/startup-config.txt"
-  say "скачиваю образ прошивки"
+  say "downloading the firmware image"
   curl -sS -m 600 -b "$JAR" -o "$dir/firmware.bin" "$ROUTER/ci/firmware"
   chmod 600 "$dir"/*
-  say "резервная копия: $dir"
+  say "backup: $dir"
   ls -la "$dir"
 }
 
 cmd_opkg_off() {
-  confirm "Entware будет отключён, роутер перезагрузится (интернета не будет несколько минут). Сторонние программы на роутере перестанут запускаться."
+  confirm "Entware will be disabled and the router will reboot (no internet for a few minutes). Third-party programs on the router will no longer start."
   login
   cli 'no opkg disk' >/dev/null
   cli 'system configuration save' >/dev/null
-  say "Entware отключён, настройки сохранены. Файлы на накопителе роутера не удалены."
+  say "Entware disabled, settings saved. Files on the router's storage were not deleted."
   reboot
   wait_internet || true
 }
 
-# Запрос с продолжением: роутер отвечает {"continued":true}, пока операция идёт.
+# Request with continuation: the router answers {"continued":true} while the operation is in progress.
 rci_continued() {
   local path=$1 body=$2 out
   out=$(rci_post "$path" "$body")
@@ -224,31 +224,31 @@ rci_continued() {
   printf '%s\n' "$out"
 }
 
-# components install|remove <имя>... — меняет набор компонентов прошивки.
-# Роутер сам скачивает пересобранную прошивку (нужен интернет), записывает её и перезагружается.
+# components install|remove <name>... changes the firmware component set.
+# The router downloads the rebuilt firmware by itself (needs internet), writes it and reboots.
 cmd_components() {
   local action=${1:-}; shift || true
-  [ "$action" = install ] || [ "$action" = remove ] || die "нужно: components install|remove <имя>..."
-  [ $# -gt 0 ] || die "не указаны компоненты"
-  confirm "Набор компонентов прошивки изменится ($action: $*), роутер перезагрузится (интернета не будет несколько минут). Не выключайте питание."
+  [ "$action" = install ] || [ "$action" = remove ] || die "expected: components install|remove <name>..."
+  [ $# -gt 0 ] || die "no components given"
+  confirm "The firmware component set will change ($action: $*) and the router will reboot (no internet for a few minutes). Do not turn off the power."
   login
   local body out err last=""
   body=$(printf '%s\n' "$@" | jq -R '{component: .}' | jq -s -c .)
   rci_continued "" '{"components":{"list":{}}}' >/dev/null
   out=$(rci_post "components/$action" "$body")
   err=$(printf '%s' "$out" | rci_errors)
-  [ -z "$err" ] || die "роутер отклонил изменение состава: $err"
-  say "состав изменён: $action $*"
+  [ -z "$err" ] || die "the router rejected the component change: $err"
+  say "component set changed: $action $*"
   out=$(rci_post components/commit '{"reason":"manual"}')
   err=$(printf '%s' "$out" | rci_errors)
-  [ -z "$err" ] || die "роутер не начал обновление: $err"
-  say "обновление запущено; роутер скачивает и записывает прошивку"
+  [ -z "$err" ] || die "the router did not start the update: $err"
+  say "update started; the router is downloading and writing the firmware"
   for _ in $(seq 1 600); do
     out=$(curl -sS -m 5 -b "$JAR" "$ROUTER/rci/components/commit" 2>/dev/null) || break
     out=$(printf '%s' "$out" | jq -c . 2>/dev/null) || break
     if [ "$out" != "$last" ]; then echo "    $out"; last=$out; fi
     err=$(printf '%s' "$out" | rci_errors)
-    [ -z "$err" ] || die "обновление остановилось: $err"
+    [ -z "$err" ] || die "the update stopped: $err"
     sleep 1
   done
   wait_down
@@ -257,19 +257,19 @@ cmd_components() {
   cmd_check || true
 }
 
-# Проверка самой загрузки файлов: пишет маленький файл на накопитель роутера и удаляет его.
+# Test of the file upload itself: writes a small file to the router's storage and deletes it.
 cmd_selftest_upload() {
   local tmp name=router-sh-selftest.txt
   login
   tmp=$(mktemp); echo "router.sh selftest $(date)" > "$tmp"
   upload "$tmp" "storage:/$name"; rm -f "$tmp"
-  if cli 'ls storage:/' | grep -q "$name"; then say "файл виден на роутере"; else die "файл не появился на роутере"; fi
+  if cli 'ls storage:/' | grep -q "$name"; then say "the file is visible on the router"; else die "the file did not appear on the router"; fi
   cli "erase storage:/$name" >/dev/null
-  if cli 'ls storage:/' | grep -q "$name"; then die "файл не удалился"; else say "файл удалён, загрузка работает"; fi
+  if cli 'ls storage:/' | grep -q "$name"; then die "the file was not deleted"; else say "file deleted, upload works"; fi
 }
 
 cmd_restore_config() {
-  confirm "Настройки роутера будут заменены резервной копией, роутер перезагрузится (интернета не будет несколько минут)."
+  confirm "The router settings will be replaced with the backup and the router will reboot (no internet for a few minutes)."
   login
   upload "$BACKUP/startup-config.txt" flash:startup-config
   reboot
@@ -277,7 +277,7 @@ cmd_restore_config() {
 }
 
 cmd_restore_firmware() {
-  confirm "Прошивка будет заменена образом из резервной копии, роутер перезагрузится (интернета не будет несколько минут). Не выключайте питание."
+  confirm "The firmware will be replaced with the image from the backup and the router will reboot (no internet for a few minutes). Do not turn off the power."
   login
   upload "$BACKUP/firmware.bin" flash:firmware
   reboot
@@ -285,19 +285,19 @@ cmd_restore_firmware() {
 }
 
 cmd_restore_all() {
-  confirm "Будут возвращены прошивка и настройки из резервной копии. Две перезагрузки, около 10 минут без интернета. Не выключайте питание."
+  confirm "The firmware and the settings will be restored from the backup. Two reboots, about 10 minutes without internet. Do not turn off the power."
   YES=1
   cmd_restore_firmware
   cmd_restore_config
   cmd_check || true
 }
 
-# Остановить trassa и снять его правила. Работает по SSH, интернет не нужен.
-# Правила снимаются ещё и напрямую, без участия самого trassa: откат не должен зависеть
-# от исправности программы, которую откатывают.
+# Stop trassa and remove its rules. Works over SSH, no internet needed.
+# The rules are also removed directly, without trassa itself: the rollback must not depend
+# on the program being rolled back working correctly.
 cmd_trassa_off() {
   local key=$ROOT/backup/ssh/router_ed25519
-  [ -r "$key" ] || die "нет ключа $key"
+  [ -r "$key" ] || die "key not found: $key"
   ssh -i "$key" -o IdentitiesOnly=yes -o UserKnownHostsFile="$ROOT/backup/ssh/known_hosts" \
     -o BatchMode=yes -o ConnectTimeout=10 root@192.168.1.1 '
       sh /opt/etc/init.d/S99trassa stop
@@ -317,17 +317,17 @@ cmd_trassa_off() {
       done
       for s in $(ipset list -n | grep "^trassa_"); do ipset destroy "$s"; done
       rm -f /tmp/trassa.state /tmp/trassa-web.pid
-      echo "правил trassa в таблицах: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA); правил маршрутизации: $(ip rule list | grep -c "fwmark 0x5452"); списков адресов: $(ipset list -n | grep -c "^trassa_")"
-      echo "процессов trassa: $(pidof trassa 2>/dev/null | wc -w)"' \
-    || die "не удалось выполнить команду на роутере. Запасной путь: tools/router.sh opkg-off"
-  say "trassa остановлен; после перезагрузки роутера сам не запустится"
+      echo "trassa rules in tables: $( (iptables-save; ip6tables-save) 2>/dev/null | grep -c TRASSA); routing rules: $(ip rule list | grep -c "fwmark 0x5452"); address sets: $(ipset list -n | grep -c "^trassa_")"
+      echo "trassa processes: $(pidof trassa 2>/dev/null | wc -w)"' \
+    || die "failed to run the command on the router. Fallback: tools/router.sh opkg-off"
+  say "trassa stopped; it will not start by itself after a router reboot"
 }
 
 case "${1:-}" in
   check)            cmd_check ;;
   wait)             wait_up; wait_internet ;;
   backup)           cmd_backup ;;
-  cli)              [ -n "${2:-}" ] || die "укажите команду"; login; cli "$2" ;;
+  cli)              [ -n "${2:-}" ] || die "no command given"; login; cli "$2" ;;
   selftest-upload)  cmd_selftest_upload ;;
   components)       shift; cmd_components "$@" ;;
   trassa-off)       cmd_trassa_off ;;

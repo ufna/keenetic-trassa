@@ -11,22 +11,22 @@ import (
 )
 
 const (
-	markBase   = 0x54520000 // метки trassa: markBase + номер пары
+	markBase   = 0x54520000 // trassa marks: markBase + slot number
 	markMask   = "0xffff0000"
-	markPrefix = "fwmark 0x5452" // так метки trassa выглядят в выводе ip rule
+	markPrefix = "fwmark 0x5452" // how trassa marks look in ip rule output
 	tableBase  = 540
 	prefBase   = 200
 	routeChain = "TRASSA"
 	setPrefix  = "trassa_"
 )
 
-// localNets — назначения, которые не уходят в туннель по default: частные и служебные сети.
+// localNets are destinations that do not go into the tunnel via default: private and special networks.
 var localNets = []string{
 	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
 	"169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/3",
 }
 
-// Slot — пара «выход + режим». Номер 0 — direct.
+// Slot is an "exit + mode" pair. Number 0 is direct.
 type Slot struct {
 	Index  int
 	Exit   string
@@ -44,17 +44,17 @@ type staticSet struct {
 	Slot Slot
 }
 
-// Layout — что должно существовать в ядре для данных правил.
+// Layout is what must exist in the kernel for the given rules.
 type Layout struct {
-	Slots   []Slot      // Slots[0] — direct; дальше по два на выход: обычный и strict
-	Static  []staticSet // по одному на правило с адресами, в порядке правил
+	Slots   []Slot      // Slots[0] is direct; then two per exit: normal and strict
+	Static  []staticSet // one per rule with addresses, in rule order
 	Default Slot
 	exits   map[string]int
 }
 
 func NewLayout(cfg *rules.Config) (*Layout, error) {
 	if len(cfg.Exits) > rules.MaxExits {
-		return nil, fmt.Errorf("выходов %d, поддерживается не больше %d", len(cfg.Exits), rules.MaxExits)
+		return nil, fmt.Errorf("%d exits, at most %d are supported", len(cfg.Exits), rules.MaxExits)
 	}
 	l := &Layout{Slots: []Slot{{Exit: rules.Direct}}, exits: map[string]int{}}
 	for i, e := range cfg.Exits {
@@ -65,20 +65,20 @@ func NewLayout(cfg *rules.Config) (*Layout, error) {
 		if len(r.Nets) > 0 {
 			slot, ok := l.Slot(r.Action)
 			if !ok {
-				return nil, fmt.Errorf("строка %d: выход %q не объявлен", r.Line, r.Action.Exit)
+				return nil, fmt.Errorf("line %d: exit %q is not declared", r.Line, r.Action.Exit)
 			}
 			l.Static = append(l.Static, staticSet{Name: setPrefix + "s" + strconv.Itoa(i), Nets: r.Nets, Slot: slot})
 		}
 	}
 	def, ok := l.Slot(cfg.Default)
 	if !ok {
-		return nil, fmt.Errorf("default: выход %q не объявлен", cfg.Default.Exit)
+		return nil, fmt.Errorf("default: exit %q is not declared", cfg.Default.Exit)
 	}
 	l.Default = def
 	return l, nil
 }
 
-// Slot возвращает пару для действия; false — такого выхода в раскладке нет.
+// Slot returns the slot for an action; false means the layout has no such exit.
 func (l *Layout) Slot(a rules.Action) (Slot, bool) {
 	if a.Exit == rules.Direct {
 		return l.Slots[0], true
@@ -108,7 +108,7 @@ func (l *Layout) hasSet(name string) bool {
 	return false
 }
 
-// setsScript — ввод для «ipset restore»: все списки создаются, очищаются и наполняются заново.
+// setsScript is the input for "ipset restore": every set is created, flushed and filled again.
 func (l *Layout) setsScript(entries []claims.Entry) string {
 	var b strings.Builder
 	for _, s := range l.Slots {
@@ -121,7 +121,7 @@ func (l *Layout) setsScript(entries []claims.Entry) string {
 		}
 	}
 	for _, e := range entries {
-		// Снимок сделан по тем же правилам, что и раскладка; запись с неизвестным выходом пропускается.
+		// The snapshot was taken under the same rules as the layout; an entry with an unknown exit is skipped.
 		if slot, ok := l.Slot(e.Action); ok {
 			fmt.Fprintf(&b, "add %s %s -exist\n", slot.Set(), e.Addr)
 		}
@@ -129,21 +129,21 @@ func (l *Layout) setsScript(entries []claims.Entry) string {
 	return b.String()
 }
 
-// chainScript — ввод для «iptables-restore -n»: объявление цепочки очищает её, затем идут правила.
+// chainScript is the input for "iptables-restore -n": declaring the chain flushes it, then the rules follow.
 func (l *Layout) chainScript() string {
 	var b strings.Builder
 	b.WriteString("*mangle\n:" + routeChain + " - [0:0]\n")
 	rule := func(format string, args ...any) {
 		fmt.Fprintf(&b, "-A "+routeChain+" "+format+"\n", args...)
 	}
-	// Пакет уже помечен прошивкой — не наш.
+	// The packet is already marked by the firmware, so it is not ours.
 	rule("-m mark ! --mark 0x0 -j RETURN")
-	// Установленное соединение идёт прежним путём.
+	// An established connection keeps its path.
 	rule("-m connmark --mark 0x%x/%s -j CONNMARK --restore-mark", markBase, markMask)
 	rule("-m mark ! --mark 0x0 -j RETURN")
-	// Метку получает только первый пакет соединения. Уже идущее соединение без метки не
-	// перекидывается на другой путь посреди передачи, а ответы на входящие соединения
-	// не принимаются за исходящие.
+	// Only the first packet of a connection gets a mark. An unmarked connection already in
+	// progress is not moved to another path mid-transfer, and replies to inbound connections
+	// are not mistaken for outbound ones.
 	const fresh = "-m mark --mark 0x0 -m conntrack --ctstate NEW"
 	for _, s := range l.Slots {
 		rule(fresh+" -m set --match-set %s dst -j MARK --set-mark %s", s.Set(), s.Mark())

@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// Decision — результат сопоставления. Rule == nil означает, что сработал default;
-// Index тогда равен числу правил, то есть ниже любого правила по старшинству.
+// Decision is the result of matching. Rule == nil means the default applied;
+// Index is then the number of rules, i.e. lower in precedence than any rule.
 type Decision struct {
 	Index  int
 	Rule   *Rule
@@ -41,7 +41,7 @@ func (r *Rule) matchName(name string) bool {
 	return true
 }
 
-// MatchName находит первое правило, подходящее имени. Имя должно быть приведено NormalizeName.
+// MatchName finds the first rule matching the name. The name must be normalized with NormalizeName.
 func (c *Config) MatchName(name string) Decision {
 	for i := range c.Rules {
 		if c.Rules[i].matchName(name) {
@@ -51,7 +51,7 @@ func (c *Config) MatchName(name string) Decision {
 	return c.defaultDecision()
 }
 
-// MatchAddr находит первое правило, в чьи адреса и подсети входит a.
+// MatchAddr finds the first rule whose addresses and subnets contain a.
 func (c *Config) MatchAddr(a netip.Addr) Decision {
 	for i := range c.Rules {
 		for _, n := range c.Rules[i].Nets {
@@ -63,26 +63,26 @@ func (c *Config) MatchAddr(a netip.Addr) Decision {
 	return c.defaultDecision()
 }
 
-// MatchSubject решает судьбу того, что ввёл человек — адреса или имени — и возвращает
-// приведённую запись. Недописанный адрес и IPv6 — ошибка, а не имя: иначе ответ был бы
-// правдоподобным, но неверным.
+// MatchSubject decides what happens to whatever a person typed, an address or a name, and returns
+// its normalized form. An incomplete address or IPv6 is an error, not a name: otherwise the answer
+// would be plausible but wrong.
 func (c *Config) MatchSubject(s string) (string, Decision, error) {
 	s = strings.TrimSpace(s)
 	if strings.Contains(s, "://") {
 		u, err := url.Parse(s)
 		if err != nil || u.Hostname() == "" {
-			return "", Decision{}, fmt.Errorf("%q: не удалось взять домен из ссылки", s)
+			return "", Decision{}, fmt.Errorf("%q: could not take a domain from the link", s)
 		}
 		s = u.Hostname()
 	}
 	if a, err := netip.ParseAddr(s); err == nil {
 		if !a.Is4() {
-			return "", Decision{}, fmt.Errorf("адрес %s: IPv6 пока не поддерживается", s)
+			return "", Decision{}, fmt.Errorf("address %s: IPv6 is not supported yet", s)
 		}
 		return a.String(), c.MatchAddr(a), nil
 	}
 	if looksNumeric(s) {
-		return "", Decision{}, fmt.Errorf("%q похоже на адрес, но записано неверно", s)
+		return "", Decision{}, fmt.Errorf("%q looks like an address but is malformed", s)
 	}
 	name, err := NormalizeName(s)
 	if err != nil {
@@ -91,7 +91,7 @@ func (c *Config) MatchSubject(s string) (string, Decision, error) {
 	return name, c.MatchName(name), nil
 }
 
-// Explain объясняет по одним правилам, без сведений из DNS, куда пойдёт имя, адрес или ссылка.
+// Explain explains, from the rules alone and without DNS data, where a name, address or link will go.
 func (c *Config) Explain(subject string) (string, error) {
 	subj, d, err := c.MatchSubject(subject)
 	if err != nil {
@@ -100,20 +100,20 @@ func (c *Config) Explain(subject string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s → %s\n", subj, d.Action)
 	if d.Rule != nil {
-		fmt.Fprintf(&b, "правило, строка %d: %s\n", d.Rule.Line, d.Rule.Text)
+		fmt.Fprintf(&b, "rule, line %d: %s\n", d.Rule.Line, d.Rule.Text)
 	} else {
-		fmt.Fprintf(&b, "ни одно правило не подошло, действует default (строка %d)\n", c.DefaultLine)
+		fmt.Fprintf(&b, "no rule matched; default applies (line %d)\n", c.DefaultLine)
 	}
 	if e, found := c.Exit(d.Action.Exit); found {
-		fmt.Fprintf(&b, "выход %s: %s\n", e.Name, strings.Join(e.Interfaces, ", "))
+		fmt.Fprintf(&b, "exit %s: %s\n", e.Name, strings.Join(e.Interfaces, ", "))
 	} else {
-		b.WriteString("выход direct: напрямую через провайдера\n")
+		b.WriteString("exit direct: straight through the ISP\n")
 	}
 	return b.String(), nil
 }
 
-// MatchChain решает судьбу DNS-ответа: names — запрошенное имя и его CNAME-цели по порядку.
-// Берётся первое имя цепочки, для которого нашлось правило.
+// MatchChain decides what happens to a DNS response: names are the queried name and its CNAME targets in order.
+// The first name in the chain that has a matching rule wins.
 func (c *Config) MatchChain(names []string) Decision {
 	for _, n := range names {
 		if d := c.MatchName(n); d.Rule != nil {

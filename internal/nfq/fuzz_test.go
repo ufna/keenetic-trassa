@@ -10,7 +10,7 @@ func FuzzParse(f *testing.F) {
 		rs, _ := parse(b)
 		for _, r := range rs {
 			if r.packet != nil && len(r.packet.Payload) > len(b) {
-				t.Fatalf("полезная нагрузка длиннее входа: %d > %d", len(r.packet.Payload), len(b))
+				t.Fatalf("payload longer than the input: %d > %d", len(r.packet.Payload), len(b))
 			}
 		}
 	})

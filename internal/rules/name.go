@@ -1,4 +1,4 @@
-// Package rules разбирает файл правил trassa и сопоставляет имена и адреса с правилами.
+// Package rules parses the trassa rules file and matches names and addresses against the rules.
 package rules
 
 import (
@@ -8,32 +8,32 @@ import (
 	"unicode"
 )
 
-// NormalizeName приводит доменное имя к виду, в котором оно сравнивается:
-// нижний регистр, без точки в конце, метки с не-ASCII символами — в punycode.
+// NormalizeName brings a domain name to the form used for comparison:
+// lowercase, no trailing dot, labels with non-ASCII characters in punycode.
 func NormalizeName(s string) (string, error) {
 	s = strings.TrimSuffix(strings.TrimSpace(s), ".")
 	if s == "" {
-		return "", errors.New("пустое имя")
+		return "", errors.New("empty name")
 	}
 	labels := strings.Split(strings.ToLower(s), ".")
 	for i, l := range labels {
 		if l == "" {
-			return "", fmt.Errorf("имя %q: пустая метка", s)
+			return "", fmt.Errorf("name %q: empty label", s)
 		}
 		a, err := toASCIILabel(l)
 		if err != nil {
-			return "", fmt.Errorf("имя %q: %w", s, err)
+			return "", fmt.Errorf("name %q: %w", s, err)
 		}
 		labels[i] = a
 	}
 	name := strings.Join(labels, ".")
 	if len(name) > 253 {
-		return "", errors.New("имя длиннее 253 символов")
+		return "", errors.New("name is longer than 253 characters")
 	}
 	return name, nil
 }
 
-// looksNumeric сообщает, что запись состоит только из цифр и точек, то есть похожа на адрес.
+// looksNumeric reports that the text consists only of digits and dots, i.e. looks like an address.
 func looksNumeric(s string) bool {
 	return s != "" && strings.Trim(s, "0123456789.") == ""
 }
@@ -54,30 +54,30 @@ func toASCIILabel(l string) (string, error) {
 		case unicode.IsDigit(r):
 			nonASCII = true
 		default:
-			// Невидимые символы, знаки препинания, следы неверной кодировки: под такое имя
-			// не подойдёт ни один настоящий домен, поэтому это ошибка, а не punycode.
-			return "", fmt.Errorf("недопустимый символ U+%04X (если он действительно нужен, запишите метку в виде xn--…)", r)
+			// Invisible characters, punctuation, traces of a wrong encoding: no real domain
+			// matches such a name, so it is an error rather than punycode.
+			return "", fmt.Errorf("invalid character U+%04X (if you really need it, write the label in xn--… form)", r)
 		}
 	}
 	if latin && other {
-		return "", fmt.Errorf("в метке %q смешаны латинские и нелатинские буквы — проверьте раскладку", l)
+		return "", fmt.Errorf("label %q mixes Latin and non-Latin letters: check the keyboard layout", l)
 	}
 	if nonASCII {
 		l = "xn--" + punycodeEncode(l)
 	}
 	if len(l) > 63 {
-		return "", errors.New("метка длиннее 63 символов")
+		return "", errors.New("label is longer than 63 characters")
 	}
 	for i := 0; i < len(l); i++ {
 		c := l[i]
 		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-			return "", fmt.Errorf("недопустимый символ %q", c)
+			return "", fmt.Errorf("invalid character %q", c)
 		}
 	}
 	return l, nil
 }
 
-// Параметры punycode из RFC 3492.
+// Punycode parameters from RFC 3492.
 const (
 	pcBase        = 36
 	pcTMin        = 1

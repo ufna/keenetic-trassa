@@ -2,44 +2,44 @@ package ctl
 
 import "time"
 
-// Stats — счётчики демона.
+// Stats holds the daemon counters.
 type Stats struct {
-	Packets     uint64 `json:"packets"`     // пакетов из очереди
-	Answers     uint64 `json:"answers"`     // DNS-ответов с адресами
-	Claimed     uint64 `json:"claimed"`     // из них подошло под правило
-	Changes     uint64 `json:"changes"`     // изменений списков
-	NotDNS      uint64 `json:"notDNS"`      // не UDP с порта 53
-	Malformed   uint64 `json:"malformed"`   // DNS не разобрался
-	Skipped     uint64 `json:"skipped"`     // запрос, ошибка, усечённый ответ, ответ без адресов
-	BadName     uint64 `json:"badName"`     // запрошенное имя не похоже на доменное
-	Dropped     uint64 `json:"dropped"`     // не учтено: память заполнена
-	ApplyErrors uint64 `json:"applyErrors"` // сбоев обновления списков и маршрутов
+	Packets     uint64 `json:"packets"`     // packets from the queue
+	Answers     uint64 `json:"answers"`     // DNS answers with addresses
+	Claimed     uint64 `json:"claimed"`     // of those, matched a rule
+	Changes     uint64 `json:"changes"`     // address set changes
+	NotDNS      uint64 `json:"notDNS"`      // not UDP from port 53
+	Malformed   uint64 `json:"malformed"`   // DNS failed to parse
+	Skipped     uint64 `json:"skipped"`     // query, error, truncated answer, answer without addresses
+	BadName     uint64 `json:"badName"`     // queried name does not look like a domain name
+	Dropped     uint64 `json:"dropped"`     // not recorded: memory is full
+	ApplyErrors uint64 `json:"applyErrors"` // failures updating address sets and routes
 }
 
-// ExitState — через какой интерфейс сейчас идёт выход.
+// ExitState is the interface an exit currently goes through.
 type ExitState struct {
 	Name  string `json:"name"`
-	Via   string `json:"via"`   // имя интерфейса в прошивке; пусто — живых туннелей нет
-	Known bool   `json:"known"` // демон уже спрашивал прошивку
+	Via   string `json:"via"`   // firmware interface name; empty means no live tunnels
+	Known bool   `json:"known"` // the daemon has already queried the firmware
 }
 
-// Observation — DNS-ответ и решение по нему.
+// Observation is a DNS answer and the decision made on it.
 type Observation struct {
 	At     time.Time `json:"at"`
 	Client string    `json:"client"`
 	Name   string    `json:"name"`
 	Action string    `json:"action"`
-	Line   int       `json:"line"` // 0 — сработал default
+	Line   int       `json:"line"` // 0 means default matched
 }
 
-// State — состояние демона для веб-страницы (команда state).
+// State is the daemon state for the web page (the state command).
 type State struct {
-	Mode    string        `json:"mode"` // observe или route
+	Mode    string        `json:"mode"` // observe or route
 	Started time.Time     `json:"started"`
 	Rules   int           `json:"rules"`
-	Addrs   int           `json:"addrs"`  // адресов в памяти
-	Claims  int           `json:"claims"` // претензий
+	Addrs   int           `json:"addrs"`  // addresses in memory
+	Claims  int           `json:"claims"` // claims
 	Stats   Stats         `json:"stats"`
 	Exits   []ExitState   `json:"exits"`
-	Recent  []Observation `json:"recent"` // новые первыми
+	Recent  []Observation `json:"recent"` // newest first
 }

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,68 +12,68 @@
 <body>
 <div class="wrap">
   <header class="top">
-    <div class="brand"><h1>trassa</h1><span>гибкая маршрутизация</span></div>
+    <div class="brand"><h1>trassa</h1><span>flexible routing</span></div>
     <div class="chips" id="chips"></div>
-    <button class="linkbtn" id="logout" type="button">Выйти</button>
+    <button class="linkbtn" id="logout" type="button">Sign out</button>
   </header>
 
   <div class="banner" id="banner" hidden></div>
-  <div class="counters" id="counters" aria-label="Счётчики демона"></div>
+  <div class="counters" id="counters" aria-label="Daemon counters"></div>
 
   <div class="grid">
     <div class="col">
       <section class="panel" aria-labelledby="h-rules">
-        <h2 id="h-rules">Правила <small>/opt/etc/trassa/rules.conf · первое подошедшее правило выигрывает</small></h2>
+        <h2 id="h-rules">Rules <small>/opt/etc/trassa/rules.conf · the first matching rule wins</small></h2>
         <div class="editor">
           <div class="gutter" id="gutter" aria-hidden="true"></div>
-          <textarea id="rules" wrap="off" spellcheck="false" autocomplete="off" aria-label="Текст правил"></textarea>
+          <textarea id="rules" wrap="off" spellcheck="false" autocomplete="off" aria-label="Rules text"></textarea>
         </div>
         <ul class="problems" id="problems"></ul>
         <div class="confirm" id="confirm" hidden>
           <span id="confirm-text"></span>
           <div class="actions">
-            <button class="btn warn" type="button" id="confirm-yes">Применить с предупреждениями</button>
-            <button class="btn" type="button" id="confirm-no">Вернуться к правке</button>
+            <button class="btn warn" type="button" id="confirm-yes">Apply with warnings</button>
+            <button class="btn" type="button" id="confirm-no">Back to editing</button>
           </div>
         </div>
         <div class="actions">
-          <button class="btn" type="button" id="check">Проверить</button>
-          <button class="btn primary" type="button" id="save">Сохранить и применить</button>
-          <button class="btn" type="button" id="revert">Отменить правку</button>
+          <button class="btn" type="button" id="check">Check</button>
+          <button class="btn primary" type="button" id="save">Save and apply</button>
+          <button class="btn" type="button" id="revert">Discard edit</button>
           <span class="status-line" id="status" aria-live="polite"></span>
         </div>
       </section>
 
       <section class="panel" aria-labelledby="h-history">
-        <h2 id="h-history">История версий <small>хранятся 20 последних</small></h2>
+        <h2 id="h-history">Version history <small>last 20 kept</small></h2>
         <ol class="history" id="history"></ol>
       </section>
     </div>
 
     <div class="col">
       <section class="panel" aria-labelledby="h-why">
-        <h2 id="h-why">Почему</h2>
+        <h2 id="h-why">Why</h2>
         <form class="why" id="why-form">
-          <input id="why-q" placeholder="имя, адрес или ссылка" aria-label="Имя, адрес или ссылка" autocomplete="off">
-          <button class="btn" type="submit">Узнать</button>
+          <input id="why-q" placeholder="name, address or link" aria-label="Name, address or link" autocomplete="off">
+          <button class="btn" type="submit">Explain</button>
         </form>
         <div class="answer" id="why-answer" aria-live="polite"></div>
       </section>
 
       <section class="panel" aria-labelledby="h-exits">
-        <h2 id="h-exits">Выходы <small>что сообщает прошивка</small></h2>
+        <h2 id="h-exits">Exits <small>as reported by the firmware</small></h2>
         <div class="tunnels" id="tunnels"></div>
       </section>
 
       <section class="panel" aria-labelledby="h-obs">
-        <h2 id="h-obs">Последние DNS-ответы <small>что пришло и куда пошло</small></h2>
+        <h2 id="h-obs">Recent DNS answers <small>what came in and where it went</small></h2>
         <div class="tablewrap">
           <table class="obs">
-            <thead><tr><th>Время</th><th>Имя и устройство</th><th>Путь</th></tr></thead>
+            <thead><tr><th>Time</th><th>Name and device</th><th>Path</th></tr></thead>
             <tbody id="obs"></tbody>
           </table>
         </div>
-        <p class="note" id="obs-empty" hidden>Ответов пока нет.</p>
+        <p class="note" id="obs-empty" hidden>No answers yet.</p>
       </section>
     </div>
   </div>
@@ -82,10 +82,10 @@
 <div class="login-back" id="login" hidden>
   <form class="login" id="login-form">
     <h2>trassa</h2>
-    <p>Вход логином и паролем администратора роутера. Пароль не уходит ни в trassa, ни в сеть: браузер отправляет только ответ на одноразовый вызов роутера.</p>
-    <label for="login-user">Логин<input id="login-user" value="admin" autocomplete="username"></label>
-    <label for="login-pass">Пароль<input id="login-pass" type="password" autocomplete="current-password"></label>
-    <button class="btn primary" type="submit" id="login-go">Войти</button>
+    <p>Sign in with the router administrator’s login and password. The password is never sent to trassa or over the network: the browser sends only a response to a one-time router challenge.</p>
+    <label for="login-user">Login<input id="login-user" value="admin" autocomplete="username"></label>
+    <label for="login-pass">Password<input id="login-pass" type="password" autocomplete="current-password"></label>
+    <button class="btn primary" type="submit" id="login-go">Sign in</button>
     <span class="status-line" id="login-status" aria-live="polite"></span>
   </form>
 </div>

@@ -28,21 +28,21 @@ func config(t *testing.T, s string) *rules.Config {
 	t.Helper()
 	cfg, ps := rules.Load(s, nil)
 	if rules.HasErrors(ps) {
-		t.Fatalf("правила: %v", ps)
+		t.Fatalf("rules: %v", ps)
 	}
 	return cfg
 }
 
 type fakeSink struct {
 	got     []string
-	rebuilt []string // снимок, переданный последнему Rebuild
+	rebuilt []string // snapshot passed to the last Rebuild
 	builds  int
 	fail    bool
 }
 
 func (f *fakeSink) Apply(changes []claims.Change) error {
 	if f.fail {
-		return errors.New("списки недоступны")
+		return errors.New("sets unavailable")
 	}
 	for _, c := range changes {
 		f.got = append(f.got, c.Addr.String()+" "+show(c.Old)+" => "+show(c.New))
@@ -57,7 +57,7 @@ func (f *fakeSink) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 		f.rebuilt = append(f.rebuilt, e.Addr.String()+" "+e.Action.String())
 	}
 	if f.fail {
-		return errors.New("списки недоступны")
+		return errors.New("sets unavailable")
 	}
 	return nil
 }
@@ -104,7 +104,7 @@ func a(name string, ttl uint32, ip string) rr {
 	return rr{name, 1, ttl, x[:]}
 }
 
-// ipv4 собирает пакет UDP от роутера клиенту 192.168.1.94.
+// ipv4 builds a UDP packet from the router to client 192.168.1.94.
 func ipv4(sport uint16, payload []byte) []byte {
 	b := make([]byte, 28+len(payload))
 	b[0], b[8], b[9] = 0x45, 64, 17
@@ -149,15 +149,15 @@ func TestAnswerUnderRuleReachesSink(t *testing.T) {
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1", "2.2.2.2"))
 	want := "1.1.1.1 - => vpn strict\n2.2.2.2 - => vpn strict"
 	if got := strings.Join(sink.got, "\n"); got != want {
-		t.Errorf("изменения:\n%s\nожидалось:\n%s", got, want)
+		t.Errorf("changes:\n%s\nwant:\n%s", got, want)
 	}
 	if s := e.Stats(); s.Packets != 1 || s.Answers != 1 || s.Claimed != 1 || s.Changes != 2 {
-		t.Errorf("счётчики: %+v", s)
+		t.Errorf("counters: %+v", s)
 	}
-	// Тот же ответ ещё раз: списки не меняются.
+	// The same answer again: the sets do not change.
 	e.HandlePacket(t0.Add(time.Minute), answer("video.example", "1.1.1.1", "2.2.2.2"))
 	if len(sink.got) != 2 || e.Stats().Changes != 2 {
-		t.Errorf("повторный ответ изменил списки: %v", sink.got)
+		t.Errorf("a repeated answer changed the sets: %v", sink.got)
 	}
 }
 
@@ -166,10 +166,10 @@ func TestDefaultNameChangesNothing(t *testing.T) {
 	e, _ := newEngine(t, sink)
 	e.HandlePacket(t0, answer("unknown.example", "1.1.1.1"))
 	if len(sink.got) != 0 {
-		t.Errorf("имя по default изменило списки: %v", sink.got)
+		t.Errorf("a name under the default changed the sets: %v", sink.got)
 	}
 	if s := e.Stats(); s.Answers != 1 || s.Claimed != 0 {
-		t.Errorf("счётчики: %+v", s)
+		t.Errorf("counters: %+v", s)
 	}
 }
 
@@ -181,7 +181,7 @@ func TestMixedCaseCNAMEAndIPv6Transport(t *testing.T) {
 		a("edge.video.example", 60, "3.3.3.3"))
 	e.HandlePacket(t0, ipv6(53, pkt))
 	if got := strings.Join(sink.got, "\n"); got != "3.3.3.3 - => vpn strict" {
-		t.Errorf("изменения: %q", got)
+		t.Errorf("changes: %q", got)
 	}
 }
 
@@ -197,28 +197,28 @@ func TestIgnoresWhatIsNotAnAnswer(t *testing.T) {
 		pkt   []byte
 		count func(Stats) uint64
 	}{
-		{"пусто", nil, func(s Stats) uint64 { return s.NotDNS }},
-		{"не IP", []byte("это не пакет, а просто строка"), func(s Stats) uint64 { return s.NotDNS }},
+		{"empty", nil, func(s Stats) uint64 { return s.NotDNS }},
+		{"not IP", []byte("this is not a packet, just a string"), func(s Stats) uint64 { return s.NotDNS }},
 		{"TCP", tcp, func(s Stats) uint64 { return s.NotDNS }},
-		{"фрагмент", frag, func(s Stats) uint64 { return s.NotDNS }},
-		{"порт источника не 53", ipv4(5353, ok), func(s Stats) uint64 { return s.NotDNS }},
-		{"мусор на порту 53", ipv4(53, []byte{1, 2, 3}), func(s Stats) uint64 { return s.Malformed }},
-		{"обрезанный DNS", ipv4(53, ok[:len(ok)-3]), func(s Stats) uint64 { return s.Malformed }},
-		{"запрос, а не ответ", ipv4(53, dns("video.example", 0x0100)), func(s Stats) uint64 { return s.Skipped }},
+		{"fragment", frag, func(s Stats) uint64 { return s.NotDNS }},
+		{"source port is not 53", ipv4(5353, ok), func(s Stats) uint64 { return s.NotDNS }},
+		{"garbage on port 53", ipv4(53, []byte{1, 2, 3}), func(s Stats) uint64 { return s.Malformed }},
+		{"truncated DNS", ipv4(53, ok[:len(ok)-3]), func(s Stats) uint64 { return s.Malformed }},
+		{"query, not an answer", ipv4(53, dns("video.example", 0x0100)), func(s Stats) uint64 { return s.Skipped }},
 		{"NXDOMAIN", ipv4(53, dns("video.example", 0x8183)), func(s Stats) uint64 { return s.Skipped }},
-		{"усечённый ответ", ipv4(53, dns("video.example", 0x8380, a("video.example", 60, "1.1.1.1"))), func(s Stats) uint64 { return s.Skipped }},
-		{"только AAAA", ipv4(53, aaaa), func(s Stats) uint64 { return s.Skipped }},
-		{"имя с недопустимым символом", ipv4(53, dns("vi deo.example", 0x8180, a("vi deo.example", 60, "1.1.1.1"))), func(s Stats) uint64 { return s.BadName }},
+		{"answer with TC set", ipv4(53, dns("video.example", 0x8380, a("video.example", 60, "1.1.1.1"))), func(s Stats) uint64 { return s.Skipped }},
+		{"AAAA only", ipv4(53, aaaa), func(s Stats) uint64 { return s.Skipped }},
+		{"name with an invalid character", ipv4(53, dns("vi deo.example", 0x8180, a("vi deo.example", 60, "1.1.1.1"))), func(s Stats) uint64 { return s.BadName }},
 	}
 	for _, c := range cases {
 		sink := &fakeSink{}
 		e, _ := newEngine(t, sink)
 		e.HandlePacket(t0, c.pkt)
 		if len(sink.got) != 0 {
-			t.Errorf("%s: списки изменились: %v", c.name, sink.got)
+			t.Errorf("%s: the sets changed: %v", c.name, sink.got)
 		}
 		if s := e.Stats(); c.count(s) != 1 || s.Packets != 1 {
-			t.Errorf("%s: счётчики %+v", c.name, s)
+			t.Errorf("%s: counters %+v", c.name, s)
 		}
 	}
 }
@@ -231,7 +231,7 @@ func TestTickExpires(t *testing.T) {
 	e.Tick(t0.Add(61 * time.Minute))
 	want := "1.1.1.1 - => vpn strict\n1.1.1.1 vpn strict => -"
 	if got := strings.Join(sink.got, "\n"); got != want {
-		t.Errorf("изменения:\n%s\nожидалось:\n%s", got, want)
+		t.Errorf("changes:\n%s\nwant:\n%s", got, want)
 	}
 }
 
@@ -241,7 +241,7 @@ func TestHugeTTLIsCapped(t *testing.T) {
 	e.HandlePacket(t0, ipv4(53, dns("video.example", 0x8180, a("video.example", 0xffffffff, "1.1.1.1"))))
 	e.Tick(t0.Add(25 * time.Hour))
 	if len(sink.got) != 2 {
-		t.Errorf("претензия с огромным TTL не истекла за сутки: %v", sink.got)
+		t.Errorf("a claim with a huge TTL did not expire within a day: %v", sink.got)
 	}
 }
 
@@ -251,23 +251,23 @@ func TestReload(t *testing.T) {
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	e.HandlePacket(t0, answer("yandex.ru", "5.5.5.5"))
 	e.Reload(config(t, "exit vpn = W\ndefault direct\nvideo.example -> vpn\n"))
-	// Списки строятся заново целиком: адреса правила, которого больше нет, в снимок не попадают.
+	// The sets are rebuilt in full: addresses of a rule that no longer exists are left out of the snapshot.
 	if sink.builds != 1 || strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn" {
-		t.Errorf("построений %d, снимок %q", sink.builds, sink.rebuilt)
+		t.Errorf("builds %d, snapshot %q", sink.builds, sink.rebuilt)
 	}
 	if len(sink.got) != 2 {
-		t.Errorf("смена правил прошла через Apply: %v", sink.got)
+		t.Errorf("the rule change went through Apply: %v", sink.got)
 	}
-	if !strings.Contains(strings.Join(l.lines, "\n"), "правила изменены") {
-		t.Errorf("смена правил не отражена в журнале: %q", l.lines)
+	if !strings.Contains(strings.Join(l.lines, "\n"), "rules changed") {
+		t.Errorf("the rule change is not in the log: %q", l.lines)
 	}
-	// Новые ответы решаются уже по новым правилам.
+	// New answers are decided by the new rules.
 	e.HandlePacket(t0, answer("yandex.ru", "6.6.6.6"))
 	if len(sink.got) != 2 {
-		t.Errorf("правило, которого больше нет, сработало: %v", sink.got)
+		t.Errorf("a rule that no longer exists matched: %v", sink.got)
 	}
 	if e.Config().Rules[0].Action.Strict {
-		t.Error("Config возвращает прежние правила")
+		t.Error("Config returns the old rules")
 	}
 }
 
@@ -279,15 +279,15 @@ func TestResync(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict\n2.2.2.2 vpn strict" {
-		t.Errorf("снимок: %q", sink.rebuilt)
+		t.Errorf("snapshot: %q", sink.rebuilt)
 	}
 	sink.fail = true
 	if err := e.Resync(); err == nil || e.Stats().ApplyErrors != 1 {
-		t.Errorf("сбой построения: ошибка %v, счётчик %d", err, e.Stats().ApplyErrors)
+		t.Errorf("build failure: error %v, counter %d", err, e.Stats().ApplyErrors)
 	}
 	observe, _ := newEngine(t, nil)
 	if err := observe.Resync(); err != nil {
-		t.Errorf("в режиме наблюдения строить нечего: %v", err)
+		t.Errorf("observe mode has nothing to build: %v", err)
 	}
 }
 
@@ -301,39 +301,39 @@ func TestStateSurvivesRestart(t *testing.T) {
 	sink := &fakeSink{}
 	fresh, _ := newEngine(t, sink)
 	if n := fresh.LoadState(&buf, t0.Add(10*time.Minute)); n != 1 {
-		t.Fatalf("восстановлено %d претензий", n)
+		t.Fatalf("restored %d claims", n)
 	}
 	fresh.Resync()
 	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict" {
-		t.Errorf("после перезапуска снимок: %q", sink.rebuilt)
+		t.Errorf("snapshot after restart: %q", sink.rebuilt)
 	}
-	if text, _ := fresh.Why("1.1.1.1", t0.Add(10*time.Minute)); !strings.Contains(text, "претензия: video.example") {
-		t.Errorf("восстановленная претензия не видна:\n%s", text)
+	if text, _ := fresh.Why("1.1.1.1", t0.Add(10*time.Minute)); !strings.Contains(text, "claim: video.example") {
+		t.Errorf("the restored claim is not visible:\n%s", text)
 	}
 }
 
 func TestExitsInWhyAndStatus(t *testing.T) {
 	e, _ := newEngine(t, &fakeSink{})
 	text, _ := e.Why("video.example", t0)
-	if strings.Contains(text, "сейчас") {
-		t.Errorf("о выходах ещё ничего не известно:\n%s", text)
+	if strings.Contains(text, "now via") {
+		t.Errorf("nothing is known about exits yet:\n%s", text)
 	}
 	e.SetExits(map[string]string{"vpn": "Wireguard2"})
-	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "выход vpn: сейчас через Wireguard2") {
-		t.Errorf("живой туннель:\n%s", text)
+	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "exit vpn: now via Wireguard2") {
+		t.Errorf("live tunnel:\n%s", text)
 	}
-	if !strings.Contains(e.Status(t0), "выходы: vpn → Wireguard2") {
-		t.Errorf("состояние:\n%s", e.Status(t0))
+	if !strings.Contains(e.Status(t0), "exits: vpn → Wireguard2") {
+		t.Errorf("status:\n%s", e.Status(t0))
 	}
 	e.SetExits(map[string]string{"vpn": ""})
-	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "все туннели недоступны — трафик блокируется") {
-		t.Errorf("strict без туннелей:\n%s", text)
+	if text, _ = e.Why("video.example", t0); !strings.Contains(text, "all tunnels are down — traffic is blocked") {
+		t.Errorf("strict without tunnels:\n%s", text)
 	}
-	if text, _ = e.Why("10.9.0.5", t0); !strings.Contains(text, "все туннели недоступны — трафик идёт напрямую") {
-		t.Errorf("обычное правило без туннелей:\n%s", text)
+	if text, _ = e.Why("10.9.0.5", t0); !strings.Contains(text, "all tunnels are down — traffic goes direct") {
+		t.Errorf("plain rule without tunnels:\n%s", text)
 	}
-	if !strings.Contains(e.Status(t0), "выходы: vpn → нет живых туннелей") {
-		t.Errorf("состояние:\n%s", e.Status(t0))
+	if !strings.Contains(e.Status(t0), "exits: vpn → no live tunnels") {
+		t.Errorf("status:\n%s", e.Status(t0))
 	}
 }
 
@@ -342,18 +342,18 @@ func TestObserveModeOnlyLogs(t *testing.T) {
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	if len(l.lines) != 1 || !strings.Contains(l.lines[0], "192.168.1.94") ||
 		!strings.Contains(l.lines[0], "video.example") || !strings.Contains(l.lines[0], "1.1.1.1 - → vpn strict") {
-		t.Errorf("журнал: %q", l.lines)
+		t.Errorf("log: %q", l.lines)
 	}
 	if e.Stats().ApplyErrors != 0 {
-		t.Error("в режиме наблюдения применять нечего, ошибок быть не должно")
+		t.Error("observe mode has nothing to apply, there must be no errors")
 	}
 }
 
 func TestSinkFailureIsCountedNotFatal(t *testing.T) {
 	e, l := newEngine(t, &fakeSink{fail: true})
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
-	if e.Stats().ApplyErrors != 1 || !strings.Contains(strings.Join(l.lines, "\n"), "списки недоступны") {
-		t.Errorf("счётчики %+v, журнал %q", e.Stats(), l.lines)
+	if e.Stats().ApplyErrors != 1 || !strings.Contains(strings.Join(l.lines, "\n"), "sets unavailable") {
+		t.Errorf("counters %+v, log %q", e.Stats(), l.lines)
 	}
 }
 
@@ -366,9 +366,9 @@ func TestWhy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"video.example → vpn strict", "строка 3", "адресов по этому имени в памяти: 3", "1.1.1.1", "10 мин назад", "192.168.1.94"} {
+	for _, want := range []string{"video.example → vpn strict", "rule, line 3", "addresses for this name in memory: 3", "1.1.1.1", "10m ago", "192.168.1.94"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("why по имени: нет %q в\n%s", want, text)
+			t.Errorf("why by name: no %q in\n%s", want, text)
 		}
 	}
 
@@ -376,26 +376,26 @@ func TestWhy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"1.1.1.1 → direct", "ни одно правило не подошло", "претензия: video.example", "строка 3", "в динамическом списке: vpn strict"} {
+	for _, want := range []string{"1.1.1.1 → direct", "no rule matched", "claim: video.example", "line 3", "in the dynamic set: vpn strict"} {
 		if !strings.Contains(text, want) {
-			t.Errorf("why по адресу: нет %q в\n%s", want, text)
+			t.Errorf("why by address: no %q in\n%s", want, text)
 		}
 	}
 
 	text, _ = e.Why("10.9.0.5", t0)
-	if !strings.Contains(text, "10.9.0.5 → vpn") || !strings.Contains(text, "претензия: video.example") {
-		t.Errorf("why по адресу из подсети:\n%s", text)
+	if !strings.Contains(text, "10.9.0.5 → vpn") || !strings.Contains(text, "claim: video.example") {
+		t.Errorf("why by an address from a subnet:\n%s", text)
 	}
 
 	text, _ = e.Why("8.8.8.8", t0)
-	if !strings.Contains(text, "в DNS-ответах этот адрес не встречался") {
-		t.Errorf("why по незнакомому адресу:\n%s", text)
+	if !strings.Contains(text, "this address has not been seen in DNS answers") {
+		t.Errorf("why by an unknown address:\n%s", text)
 	}
-	if text, _ = e.Why("never.seen.example", t0); !strings.Contains(text, "DNS-ответов для этого имени ещё не было") {
-		t.Errorf("why по незнакомому имени:\n%s", text)
+	if text, _ = e.Why("never.seen.example", t0); !strings.Contains(text, "no DNS answers for this name yet") {
+		t.Errorf("why by an unknown name:\n%s", text)
 	}
 	if _, err := e.Why("149.154.167", t0); err == nil {
-		t.Error("недописанный адрес должен быть ошибкой")
+		t.Error("an incomplete address must be an error")
 	}
 }
 
@@ -403,20 +403,20 @@ func TestStatus(t *testing.T) {
 	e, _ := newEngine(t, nil)
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	e.HandlePacket(t0, answer("unknown.example", "9.9.9.9"))
-	e.HandlePacket(t0, []byte("мусор"))
+	e.HandlePacket(t0, []byte("garbage"))
 	text := e.Status(t0.Add(90 * time.Minute))
 	for _, want := range []string{
-		"режим наблюдения", "работает 1ч30м", "правил: 3", "адресов в памяти: 1",
-		"пакетов: 3", "ответов с адресами: 2", "под правила: 1", "изменений: 1", "не DNS: 1",
-		"192.168.1.94 video.example → vpn strict (строка 3)", "192.168.1.94 unknown.example → direct (default)",
+		"observe mode", "uptime 1h30m", "rules: 3", "addresses in memory: 1",
+		"packets: 3", "answers with addresses: 2", "matched rules: 1", "changes: 1", "not DNS: 1",
+		"192.168.1.94 video.example → vpn strict (line 3)", "192.168.1.94 unknown.example → direct (default)",
 	} {
 		if !strings.Contains(text, want) {
-			t.Errorf("в состоянии нет %q:\n%s", want, text)
+			t.Errorf("status has no %q:\n%s", want, text)
 		}
 	}
 	routed, _ := newEngine(t, &fakeSink{})
-	if !strings.Contains(routed.Status(t0), "режим маршрутизации") {
-		t.Error("с приёмником изменений режим должен называться маршрутизацией")
+	if !strings.Contains(routed.Status(t0), "routing mode") {
+		t.Error("with a sink the mode must be called routing")
 	}
 }
 
@@ -429,11 +429,11 @@ func TestManyAddressesAreCapped(t *testing.T) {
 	}
 	e.HandlePacket(t0, ipv4(53, dns("video.example", 0x8180, rrs...)))
 	if len(sink.got) != maxAnswerAddrs {
-		t.Errorf("из 40 адресов учтено %d, предел %d", len(sink.got), maxAnswerAddrs)
+		t.Errorf("%d of 40 addresses taken, limit %d", len(sink.got), maxAnswerAddrs)
 	}
-	// Строка журнала не растёт вместе с ответом.
-	if len(l.lines) != 1 || len(l.lines[0]) > 600 || !strings.Contains(l.lines[0], "… ещё 24") {
-		t.Errorf("журнал: %d строк, длина первой %d: %q", len(l.lines), len(l.lines[0]), l.lines)
+	// The log line does not grow with the answer.
+	if len(l.lines) != 1 || len(l.lines[0]) > 600 || !strings.Contains(l.lines[0], "… 24 more") {
+		t.Errorf("log: %d lines, first is %d long: %q", len(l.lines), len(l.lines[0]), l.lines)
 	}
 }
 
@@ -454,18 +454,18 @@ func chain(q string, hops int, last string, ip string) []byte {
 func TestLongCNAMEChainIsCut(t *testing.T) {
 	sink := &fakeSink{}
 	e, _ := newEngine(t, sink)
-	// Правило — на третьем имени цепочки: учитывается.
+	// The rule is on the third name of the chain: it counts.
 	e.HandlePacket(t0, chain("www.other.example", 2, "edge.video.example", "1.1.1.1"))
 	if len(sink.got) != 1 {
-		t.Fatalf("короткая цепочка: %v", sink.got)
+		t.Fatalf("short chain: %v", sink.got)
 	}
-	// Правило — на двенадцатом имени: цепочка обрезана до maxChain имён, совпадения нет.
+	// The rule is on the twelfth name: the chain is cut to maxChain names, so no match.
 	e.HandlePacket(t0, chain("www.far.example", 11, "edge.video.example", "2.2.2.2"))
 	if len(sink.got) != 1 {
-		t.Errorf("слишком длинная цепочка всё равно учтена: %v", sink.got)
+		t.Errorf("a chain that is too long was still counted: %v", sink.got)
 	}
-	if text, _ := e.Why("2.2.2.2", t0); !strings.Contains(text, "не встречался") {
-		t.Errorf("адрес из обрезанной цепочки попал в память:\n%s", text)
+	if text, _ := e.Why("2.2.2.2", t0); !strings.Contains(text, "has not been seen") {
+		t.Errorf("an address from a cut chain got into memory:\n%s", text)
 	}
 }
 
@@ -475,10 +475,10 @@ func TestStoreLimitIsReported(t *testing.T) {
 		e.HandlePacket(t0, answer(fmt.Sprintf("n%d.video.example", i), "1.1.1.1"))
 	}
 	if s := e.Stats(); s.Dropped != 5 {
-		t.Errorf("отброшено %d, ожидалось 5", s.Dropped)
+		t.Errorf("dropped %d, want 5", s.Dropped)
 	}
-	if !strings.Contains(e.Status(t0), "сверх предела: 5") || !strings.Contains(e.Status(t0), "претензий: 16") {
-		t.Errorf("состояние:\n%s", e.Status(t0))
+	if !strings.Contains(e.Status(t0), "over limit: 5") || !strings.Contains(e.Status(t0), "claims: 16") {
+		t.Errorf("status:\n%s", e.Status(t0))
 	}
 }
 
@@ -486,53 +486,53 @@ func TestFailuresAskForResync(t *testing.T) {
 	sink := &fakeSink{}
 	e, _ := newEngine(t, sink)
 	if e.NeedsResync() {
-		t.Error("исправному демону перестроение не нужно")
+		t.Error("a healthy daemon needs no rebuild")
 	}
 	sink.fail = true
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	if !e.NeedsResync() {
-		t.Error("после сбоя Apply списки расходятся с памятью: нужно перестроение")
+		t.Error("after an Apply failure the sets differ from memory: a rebuild is needed")
 	}
 	if err := e.Resync(); err == nil || !e.NeedsResync() {
-		t.Errorf("неудачное перестроение: ошибка %v, флаг %v", err, e.NeedsResync())
+		t.Errorf("failed rebuild: error %v, flag %v", err, e.NeedsResync())
 	}
 	sink.fail = false
 	if err := e.Resync(); err != nil || e.NeedsResync() {
-		t.Errorf("удачное перестроение: ошибка %v, флаг %v", err, e.NeedsResync())
+		t.Errorf("successful rebuild: error %v, flag %v", err, e.NeedsResync())
 	}
 	if strings.Join(sink.rebuilt, "\n") != "1.1.1.1 vpn strict" {
-		t.Errorf("после перестроения адрес, потерянный при сбое, не вернулся: %q", sink.rebuilt)
+		t.Errorf("after the rebuild, the address lost in the failure did not come back: %q", sink.rebuilt)
 	}
 
 	sink.fail = true
 	if err := e.Reload(config(t, "exit vpn = W\ndefault direct\nvideo.example -> vpn\n")); err == nil || !e.NeedsResync() {
-		t.Errorf("Reload должен сообщить о сбое построения: ошибка %v, флаг %v", err, e.NeedsResync())
+		t.Errorf("Reload must report the build failure: error %v, flag %v", err, e.NeedsResync())
 	}
 }
 
 func TestState(t *testing.T) {
 	e, _ := newEngine(t, nil)
 	if st := e.State(); st.Mode != "observe" || st.Rules != 3 || len(st.Exits) != 1 || st.Exits[0].Known || st.Recent == nil {
-		t.Errorf("пустое состояние: %+v", st)
+		t.Errorf("empty state: %+v", st)
 	}
 	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
 	e.HandlePacket(t0.Add(time.Second), answer("unknown.example", "9.9.9.9"))
 	e.SetExits(map[string]string{"vpn": "Wireguard2"})
 	st := e.State()
 	if !st.Started.Equal(t0) || st.Addrs != 1 || st.Claims != 1 || st.Stats.Answers != 2 || st.Stats.Claimed != 1 {
-		t.Errorf("счётчики: %+v", st)
+		t.Errorf("counters: %+v", st)
 	}
 	if st.Exits[0] != (ctl.ExitState{Name: "vpn", Via: "Wireguard2", Known: true}) {
-		t.Errorf("выходы: %+v", st.Exits)
+		t.Errorf("exits: %+v", st.Exits)
 	}
 	want := []ctl.Observation{
 		{At: t0.Add(time.Second), Client: "192.168.1.94", Name: "unknown.example", Action: "direct"},
 		{At: t0, Client: "192.168.1.94", Name: "video.example", Action: "vpn strict", Line: 3},
 	}
 	if len(st.Recent) != 2 || st.Recent[0] != want[0] || st.Recent[1] != want[1] {
-		t.Errorf("наблюдения (новые первыми): %+v", st.Recent)
+		t.Errorf("observations (newest first): %+v", st.Recent)
 	}
 	if routed, _ := newEngine(t, &fakeSink{}); routed.State().Mode != "route" {
-		t.Error("с приёмником изменений режим — route")
+		t.Error("with a sink the mode is route")
 	}
 }

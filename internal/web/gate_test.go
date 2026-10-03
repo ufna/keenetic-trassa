@@ -14,22 +14,22 @@ func TestSessionsAreLimited(t *testing.T) {
 		g.newSession(g0.Add(time.Duration(i) * time.Second))
 	}
 	if len(g.sessions) != maxSessions {
-		t.Errorf("сеансов %d", len(g.sessions))
+		t.Errorf("sessions: %d", len(g.sessions))
 	}
 	if g.valid(first, g0.Add(time.Minute)) {
-		t.Error("самый старый сеанс должен быть вытеснен")
+		t.Error("the oldest session must be evicted")
 	}
 }
 
 func TestSessionExpires(t *testing.T) {
 	var g gate
 	tok := g.newSession(g0)
-	if !g.valid(tok, g0.Add(sessionTTL-time.Second)) || g.valid(tok, g0.Add(sessionTTL)) || g.valid("чужой", g0) {
-		t.Error("срок сеанса")
+	if !g.valid(tok, g0.Add(sessionTTL-time.Second)) || g.valid(tok, g0.Add(sessionTTL)) || g.valid("someone-else", g0) {
+		t.Error("session lifetime")
 	}
 	g.drop(tok)
 	if g.valid(tok, g0) {
-		t.Error("сеанс после выхода")
+		t.Error("session after sign-out")
 	}
 }
 
@@ -37,18 +37,18 @@ func TestPendingIsSingleUseAndLimited(t *testing.T) {
 	var g gate
 	id, stale := g.addPending(&Challenge{Nonce: "n"}, g0)
 	if len(stale) != 0 {
-		t.Errorf("лишние устаревшие: %d", len(stale))
+		t.Errorf("unexpected stale challenges: %d", len(stale))
 	}
 	if ch, fresh := g.takePending(id, g0); !fresh || ch.Nonce != "n" {
-		t.Error("вызов не выдан")
+		t.Error("challenge not handed out")
 	}
 	if ch, _ := g.takePending(id, g0); ch != nil {
-		t.Error("вызов выдан дважды")
+		t.Error("challenge handed out twice")
 	}
 	id, _ = g.addPending(&Challenge{Nonce: "old"}, g0)
-	// Устаревший вызов не годится для входа, но отдаётся — чтобы закрыть его сеанс у прошивки.
+	// An expired challenge is no good for sign-in but is still returned so its firmware session can be closed.
 	if ch, fresh := g.takePending(id, g0.Add(pendingTTL)); fresh || ch == nil || ch.Nonce != "old" {
-		t.Errorf("устаревший вызов: %v, %v", ch, fresh)
+		t.Errorf("expired challenge: %v, %v", ch, fresh)
 	}
 	dropped := 0
 	for i := 0; i < maxPending+5; i++ {
@@ -56,10 +56,10 @@ func TestPendingIsSingleUseAndLimited(t *testing.T) {
 		dropped += len(stale)
 	}
 	if len(g.pending) != maxPending || dropped != 5 {
-		t.Errorf("вызовов %d, вытеснено %d", len(g.pending), dropped)
+		t.Errorf("challenges %d, evicted %d", len(g.pending), dropped)
 	}
 	if _, stale := g.addPending(&Challenge{}, g0.Add(pendingTTL)); len(stale) != maxPending {
-		t.Errorf("просроченные при добавлении: %d", len(stale))
+		t.Errorf("expired on add: %d", len(stale))
 	}
 }
 
@@ -69,15 +69,15 @@ func TestLockout(t *testing.T) {
 		g.fail(g0.Add(time.Duration(i) * time.Minute))
 	}
 	if _, locked := g.locked(g0.Add(10 * time.Minute)); locked {
-		t.Fatal("закрыто раньше времени")
+		t.Fatal("locked too early")
 	}
 	g.fail(g0.Add(10 * time.Minute))
-	// Ждать — пока самая старая неудача не выйдет из окна.
+	// The wait lasts until the oldest failure leaves the window.
 	if wait, locked := g.locked(g0.Add(10 * time.Minute)); !locked || wait != failWindow-10*time.Minute {
-		t.Errorf("после %d неудач: %v, %v", maxFailures, wait, locked)
+		t.Errorf("after %d failures: %v, %v", maxFailures, wait, locked)
 	}
 	if _, locked := g.locked(g0.Add(failWindow)); locked {
-		t.Error("старейшая неудача вышла из окна — вход должен открыться")
+		t.Error("the oldest failure left the window — sign-in must reopen")
 	}
 }
 
@@ -89,22 +89,22 @@ func TestSuccessResetsFailures(t *testing.T) {
 	g.newSession(g0)
 	g.fail(g0)
 	if _, locked := g.locked(g0); locked {
-		t.Error("после удачного входа счёт неудач начинается заново")
+		t.Error("after a successful sign-in the failure count starts over")
 	}
 }
 
-// Каждый вызов открывает сеанс у прошивки: выдавать их часто нельзя.
+// Each challenge opens a firmware session, so they must not be issued often.
 func TestChallengeRate(t *testing.T) {
 	var g gate
 	for i := 0; i < challengeBurst; i++ {
 		if !g.allowChallenge(g0) {
-			t.Fatalf("вызов %d отклонён", i+1)
+			t.Fatalf("challenge %d refused", i+1)
 		}
 	}
 	if g.allowChallenge(g0) {
-		t.Error("сверх запаса — без паузы")
+		t.Error("beyond the allowance without a pause")
 	}
 	if !g.allowChallenge(g0.Add(challengeEvery)) || g.allowChallenge(g0.Add(challengeEvery)) {
-		t.Error("за паузу добавляется ровно один вызов")
+		t.Error("a pause adds exactly one challenge")
 	}
 }

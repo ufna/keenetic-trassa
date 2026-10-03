@@ -15,31 +15,31 @@ import (
 )
 
 const (
-	// Rebuild и Apply вызываются под замком пути пакета: они должны уложиться в предел
-	// простоя цикла приёма (5 с), иначе демон сочтёт себя зависшим.
+	// Rebuild and Apply are called under the packet path lock: they must fit within the
+	// receive loop's idle limit (5 s), or the daemon will consider itself hung.
 	buildTimeout = 4 * time.Second
 	applyTimeout = 2 * time.Second
 )
 
-// ErrMissing — правил маршрутизации нет на месте: прошивка переписала таблицу.
-var ErrMissing = errors.New("правила маршрутизации trassa отсутствуют")
+// ErrMissing means the routing rules are gone: the firmware rewrote the table.
+var ErrMissing = errors.New("trassa routing rules are missing")
 
-// Router держит в ядре списки адресов, цепочку меток, правила и таблицы маршрутов.
+// Router maintains the address sets, mark chain, rules and routing tables in the kernel.
 type Router struct {
 	run    InputRunner
 	lan    string
-	source netip.Addr // если задан — маршрутизируются только пакеты от этого адреса
+	source netip.Addr // if set, only packets from this address are routed
 
 	mu     sync.Mutex
 	layout *Layout
-	active map[string]string // выход → системное имя живого интерфейса; пусто — живых нет
+	active map[string]string // exit → system name of the live interface; empty means none is live
 }
 
 func NewRouter(run InputRunner, lan string, source netip.Addr) *Router {
 	return &Router{run: run, lan: lan, source: source, active: map[string]string{}}
 }
 
-// jump — условие прыжка в цепочку: аргументы для -C/-A и строка, которой его печатает «-S».
+// jump is the condition of the jump into the chain: arguments for -C/-A and the line "-S" prints for it.
 func (r *Router) jump() (args []string, printed string) {
 	if r.source.IsValid() {
 		args = append(args, "-s", r.source.String())
@@ -49,14 +49,14 @@ func (r *Router) jump() (args []string, printed string) {
 	return args, "-A PREROUTING " + printed + "-i " + r.lan + " -j " + routeChain
 }
 
-// Rebuild строит всё заново по правилам cfg и снимку entries и убирает оставшееся от прежней раскладки.
+// Rebuild builds everything from scratch from the cfg rules and the entries snapshot, and removes leftovers of the previous layout.
 func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 	defer cancel()
-	// Пока построение не завершилось успехом, раскладки нет: Apply по прежней раскладке
-	// положил бы адрес в список чужого выхода.
+	// Until the build succeeds there is no layout: Apply with the previous layout
+	// would put an address into another exit's set.
 	r.layout = nil
 	l, err := NewLayout(cfg)
 	if err != nil {
@@ -68,7 +68,7 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	if _, err := r.run.RunInput(ctx, l.chainScript(), "iptables-restore", "-n"); err != nil {
 		return err
 	}
-	// Сначала правила и маршруты, потом прыжок: метки начинают ставиться, когда для них уже есть путь.
+	// Rules and routes first, then the jump: marks start being set once there is a path for them.
 	if err := r.syncRules(ctx, l); err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 		return err
 	}
 	r.layout = l
-	// Лишние списки удаляются последними: до замены цепочки на них ещё ссылались правила.
+	// Stale sets are removed last: until the chain was replaced, rules still referenced them.
 	names, _ := r.run.Run(ctx, "ipset", "list", "-n")
 	for _, name := range strings.Fields(names) {
 		if strings.HasPrefix(name, setPrefix) && !l.hasSet(name) {
@@ -89,7 +89,7 @@ func (r *Router) Rebuild(cfg *rules.Config, entries []claims.Entry) error {
 	return nil
 }
 
-// syncJump оставляет в PREROUTING ровно один прыжок — с нынешним условием, в конце цепочки.
+// syncJump leaves exactly one jump in PREROUTING, with the current condition, at the end of the chain.
 func (r *Router) syncJump(ctx context.Context) error {
 	args, printed := r.jump()
 	have := false
@@ -103,7 +103,7 @@ func (r *Router) syncJump(ctx context.Context) error {
 			have = true
 			continue
 		}
-		// Прыжок с прежним условием (сменился наблюдаемый источник).
+		// A jump with an old condition (the observed source changed).
 		r.run.Run(ctx, "iptables", mangle(append([]string{"-D"}, strings.Fields(line)[1:]...)...)...)
 	}
 	if have {
@@ -112,12 +112,12 @@ func (r *Router) syncJump(ctx context.Context) error {
 	if _, err := r.run.Run(ctx, "iptables", mangle(append([]string{"-C", "PREROUTING"}, args...)...)...); err == nil {
 		return nil
 	}
-	// В конец цепочки: прошивка должна успеть поставить свои метки раньше.
+	// At the end of the chain: the firmware must get to set its marks first.
 	_, err := r.run.Run(ctx, "iptables", mangle(append([]string{"-A", "PREROUTING"}, args...)...)...)
 	return err
 }
 
-// syncRules добавляет недостающие правила маршрутизации и удаляет свои лишние.
+// syncRules adds missing routing rules and removes our own stale ones.
 func (r *Router) syncRules(ctx context.Context, l *Layout) error {
 	out, err := r.run.Run(ctx, "ip", "rule", "list")
 	if err != nil {
@@ -141,8 +141,8 @@ func (r *Router) syncRules(ctx context.Context, l *Layout) error {
 	return nil
 }
 
-// dropRule удаляет своё правило маршрутизации и очищает его таблицу — но только если это
-// таблица из диапазона trassa: чужую таблицу не трогаем, что бы ни стояло в правиле.
+// dropRule deletes one of our routing rules and flushes its table, but only if the table
+// is in the trassa range: someone else's table is never touched, whatever the rule says.
 func dropRule(ctx context.Context, run Runner, own ownRule) {
 	run.Run(ctx, "ip", "rule", "del", "pref", own.pref)
 	if t, err := strconv.Atoi(own.table); err == nil && t > tableBase && t < tableBase+2*rules.MaxExits+2 {
@@ -152,7 +152,7 @@ func dropRule(ctx context.Context, run Runner, own ownRule) {
 
 type ownRule struct{ pref, table string }
 
-// ownRules находит в выводе «ip rule list» правила с метками trassa.
+// ownRules finds rules with trassa marks in "ip rule list" output.
 func ownRules(list string) []ownRule {
 	var out []ownRule
 	for _, line := range strings.Split(list, "\n") {
@@ -168,7 +168,7 @@ func ownRules(list string) []ownRule {
 	return out
 }
 
-// syncRoutes приводит маршрут в таблице каждой пары к состоянию её выхода.
+// syncRoutes brings the route in each slot's table in line with the state of its exit.
 func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	var first error
 	note := func(err error) {
@@ -178,9 +178,9 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	}
 	for _, s := range l.Slots[1:] {
 		if s.Strict {
-			// Постоянная «чёрная дыра» с низким приоритетом: когда интерфейс туннеля выключают,
-			// ядро само удаляет маршрут через него, и без неё таблица на несколько секунд
-			// оставалась бы пустой — трафик уходил бы через провайдера.
+			// A permanent low-priority blackhole: when the tunnel interface goes down, the kernel
+			// removes the route through it, and without the blackhole the table would be empty
+			// for a few seconds, so traffic would leak through the ISP.
 			_, err := r.run.Run(ctx, "ip", "route", "replace", "blackhole", "default", "table", s.Table(), "metric", "1000")
 			note(err)
 		}
@@ -189,10 +189,10 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 		case dev != "":
 			_, err = r.run.Run(ctx, "ip", "route", "replace", "default", "dev", dev, "table", s.Table())
 		case s.Strict:
-			// Защита от утечки: без туннеля трафик этой пары никуда не идёт.
+			// Leak protection: without the tunnel, this slot's traffic goes nowhere.
 			_, err = r.run.Run(ctx, "ip", "route", "replace", "blackhole", "default", "table", s.Table())
 		default:
-			// Таблица пуста — пакет идёт по основной, то есть через провайдера.
+			// The table is empty, so the packet follows the main table, i.e. through the ISP.
 			_, err = r.run.Run(ctx, "ip", "route", "flush", "table", s.Table())
 		}
 		note(err)
@@ -200,18 +200,18 @@ func (r *Router) syncRoutes(ctx context.Context, l *Layout) error {
 	return first
 }
 
-// Apply правит динамические списки. Все изменения — одной командой.
+// Apply updates the dynamic sets. All changes go in a single command.
 func (r *Router) Apply(changes []claims.Change) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.layout == nil {
-		return errors.New("списки адресов ещё не построены")
+		return errors.New("address sets are not built yet")
 	}
 	var b strings.Builder
 	line := func(op string, a rules.Action, addr netip.Addr) error {
 		slot, ok := r.layout.Slot(a)
 		if !ok {
-			return fmt.Errorf("выхода %q нет в построенной раскладке", a.Exit)
+			return fmt.Errorf("exit %q is not in the built layout", a.Exit)
 		}
 		fmt.Fprintf(&b, "%s %s %s -exist\n", op, slot.Set(), addr)
 		return nil
@@ -234,7 +234,7 @@ func (r *Router) Apply(changes []claims.Change) error {
 	return err
 }
 
-// SetExits запоминает, через какой интерфейс идёт каждый выход, и меняет маршруты.
+// SetExits records which interface each exit goes through and updates the routes.
 func (r *Router) SetExits(active map[string]string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -247,10 +247,10 @@ func (r *Router) SetExits(active map[string]string) error {
 	return r.syncRoutes(ctx, r.layout)
 }
 
-// Reconcile сверяет построенное с ядром. Прошивка переписывает таблицу mangle целиком, поэтому
-// отсутствие прыжка означает, что нет и цепочки: возвращается ErrMissing, и вызывающий строит
-// всё заново. Правила и маршруты ставятся повторно при каждой сверке: ядро удаляет маршрут,
-// когда интерфейс выключают, и узнать об этом иначе неоткуда.
+// Reconcile checks what was built against the kernel. The firmware rewrites the mangle table
+// as a whole, so a missing jump means the chain is gone too: ErrMissing is returned and the
+// caller rebuilds everything. Rules and routes are reapplied on every reconcile: the kernel
+// removes a route when its interface goes down, and there is no other way to learn about it.
 func (r *Router) Reconcile(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -267,8 +267,8 @@ func (r *Router) Reconcile(ctx context.Context) error {
 	return r.syncRoutes(ctx, r.layout)
 }
 
-// Teardown удаляет всё, что trassa построил для маршрутизации, не зная раскладки:
-// по именам и меткам. Отсутствие объектов ошибкой не считается.
+// Teardown removes everything trassa built for routing without knowing the layout:
+// by names and marks. Missing objects are not an error.
 func Teardown(ctx context.Context, run Runner) {
 	out, _ := run.Run(ctx, "iptables", mangle("-S", "PREROUTING")...)
 	for _, line := range strings.Split(out, "\n") {

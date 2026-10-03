@@ -1,4 +1,4 @@
-// Package ctl — локальный сокет, через который утилита trassa и веб-страница разговаривают с демоном.
+// Package ctl is the local control socket through which the trassa utility and the web page talk to the daemon.
 package ctl
 
 import (
@@ -11,19 +11,19 @@ import (
 	"time"
 )
 
-// Handler выполняет команду. Текст возвращается клиенту и при ошибке.
+// Handler executes a command. The text is returned to the client even on error.
 type Handler func(cmd, arg string) (text string, err error)
 
 var (
-	// ErrNoDaemon — к сокету не подключиться: демон не запущен.
-	ErrNoDaemon = errors.New("демон trassa не запущен")
-	// ErrNoReply — демон принял команду, но не ответил вовремя: чем она кончилась, неизвестно.
-	ErrNoReply = errors.New("демон trassa не ответил")
-	// ErrPartial — команда выполнена не полностью: например, правила приняты, а списки ещё не построены.
-	ErrPartial = errors.New("выполнено не полностью")
+	// ErrNoDaemon means the socket cannot be reached: the daemon is not running.
+	ErrNoDaemon = errors.New("trassa daemon is not running")
+	// ErrNoReply means the daemon accepted the command but did not reply in time: its outcome is unknown.
+	ErrNoReply = errors.New("trassa daemon did not reply")
+	// ErrPartial means the command was only partly done: e.g. the rules were accepted, but the address sets are not built yet.
+	ErrPartial = errors.New("partially done")
 )
 
-// replyTimeout — срок на чтение команды и, отдельно, на отправку ответа.
+// replyTimeout is the deadline for reading a command and, separately, for sending the reply.
 var replyTimeout = 10 * time.Second
 
 type request struct {
@@ -37,7 +37,7 @@ type response struct {
 	Partial bool   `json:"partial,omitempty"`
 }
 
-// remoteError — ошибка, которую вернул демон.
+// remoteError is an error returned by the daemon.
 type remoteError struct {
 	msg     string
 	partial bool
@@ -52,13 +52,13 @@ func (e *remoteError) Unwrap() error {
 	return nil
 }
 
-// Serve начинает слушать сокет. Возвращённый Closer останавливает приём и удаляет файл сокета.
+// Serve starts listening on the socket. The returned Closer stops accepting and removes the socket file.
 func Serve(path string, h Handler) (io.Closer, error) {
 	if c, err := net.DialTimeout("unix", path, time.Second); err == nil {
 		c.Close()
-		return nil, fmt.Errorf("trassa уже запущен: сокет %s отвечает", path)
+		return nil, fmt.Errorf("trassa is already running: socket %s responds", path)
 	}
-	os.Remove(path) // файл остался после аварийного завершения
+	os.Remove(path) // file left over after a crash
 	l, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, err
@@ -91,12 +91,12 @@ func serve(c net.Conn, h Handler) {
 	if err != nil {
 		rs.Err, rs.Partial = err.Error(), errors.Is(err, ErrPartial)
 	}
-	// Команда могла выполняться долго: на ответ — свой срок.
+	// The command may have taken a long time: the reply gets its own deadline.
 	c.SetDeadline(time.Now().Add(replyTimeout))
 	json.NewEncoder(c).Encode(rs)
 }
 
-// Call отправляет команду демону и возвращает текст ответа.
+// Call sends a command to the daemon and returns the reply text.
 func Call(path, cmd, arg string, timeout time.Duration) (string, error) {
 	c, err := net.DialTimeout("unix", path, timeout)
 	if err != nil {

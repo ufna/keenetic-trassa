@@ -1,4 +1,4 @@
-// Package engine ведёт пакет из очереди до решения: IP → DNS → правила → претензии.
+// Package engine carries a packet from the queue to a decision: IP → DNS → rules → claims.
 package engine
 
 import (
@@ -16,37 +16,37 @@ import (
 	"trassa/internal/rules"
 )
 
-// Пределы защищают роутер от устройства домашней сети, которое засыпает его «ответами»:
-// всё, что хранится и пишется в журнал, ограничено независимо от содержимого пакетов.
+// Limits protect the router from a home-network device that floods it with "answers":
+// everything stored or logged is bounded regardless of what the packets contain.
 const (
 	minTTL         = time.Hour
 	maxTTL         = 24 * time.Hour
-	maxClaims      = 20000 // претензий в памяти всего
-	maxPerAddr     = 16    // претензий на один адрес
-	maxChain       = 8     // имён в цепочке CNAME; настоящие цепочки короче
-	maxAnswerAddrs = 32    // адресов из одного ответа
-	logChanges     = 8     // изменений в одной строке журнала
+	maxClaims      = 20000 // claims held in memory in total
+	maxPerAddr     = 16    // claims per address
+	maxChain       = 8     // names in a CNAME chain; real chains are shorter
+	maxAnswerAddrs = 32    // addresses taken from one answer
+	logChanges     = 8     // changes shown in one log line
 	recentSize     = 200
 	statusRows     = 10
 	stateRows      = 30
 )
 
-// Sink исполняет решения в ядре. nil — режим наблюдения: изменения только журналируются.
+// Sink carries out decisions in the kernel. nil means observe mode: changes are only logged.
 type Sink interface {
-	// Apply правит динамические списки адресов.
+	// Apply edits the dynamic address sets.
 	Apply(changes []claims.Change) error
-	// Rebuild строит всё заново по правилам и снимку адресов.
+	// Rebuild builds everything from scratch from the rules and an address snapshot.
 	Rebuild(cfg *rules.Config, entries []claims.Entry) error
 }
 
-// Stats — счётчики демона; описание полей — в ctl.Stats.
+// Stats are the daemon counters; the fields are described in ctl.Stats.
 type Stats = ctl.Stats
 
 type observation struct {
 	at     time.Time
 	client netip.Addr
 	name   string
-	line   int // 0 — сработал default
+	line   int // 0 means the default applied
 	action rules.Action
 }
 
@@ -59,8 +59,8 @@ type Engine struct {
 	started time.Time
 	stats   Stats
 	recent  []observation
-	exits   map[string]string // выход → имя живого интерфейса; nil — сведений нет
-	dirty   bool              // списки в ядре могли разойтись с памятью: нужно перестроение
+	exits   map[string]string // exit → name of the live interface; nil means unknown
+	dirty   bool              // kernel sets may have drifted from memory: a rebuild is needed
 }
 
 func New(cfg *rules.Config, sink Sink, logf func(format string, args ...any), now time.Time) *Engine {
@@ -81,7 +81,7 @@ func (e *Engine) snapshot() Stats {
 	return s
 }
 
-// HandlePacket учитывает один пакет из очереди. raw начинается с заголовка IP.
+// HandlePacket processes one packet from the queue. raw starts with the IP header.
 func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -111,7 +111,7 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	if len(addrs) > maxAnswerAddrs {
 		addrs = addrs[:maxAnswerAddrs]
 	}
-	// Имена из пакета приводятся так же, как имена в правилах; что не приводится — не доменное имя.
+	// Names from the packet are normalized like names in the rules; whatever fails is not a domain name.
 	names := make([]string, 0, len(wire))
 	for i, w := range wire {
 		n, err := rules.NormalizeName(w)
@@ -139,37 +139,37 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	if life > maxTTL {
 		life = maxTTL
 	}
-	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s спросил %s", u.Dst, names[0]))
+	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", u.Dst, names[0]))
 }
 
-// Tick снимает претензии с истёкшим сроком.
+// Tick drops claims that have expired.
 func (e *Engine) Tick(now time.Time) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.apply(e.store.Expire(now), "срок истёк")
+	e.apply(e.store.Expire(now), "expired")
 }
 
-// Reload переводит демон на новые правила, не теряя накопленных наблюдений.
-// Списки строятся заново целиком: при смене правил номера пар «выход + режим» сдвигаются.
-// Новые правила действуют и тогда, когда построить списки не удалось: возвращается ошибка,
-// а построение повторяется, пока не получится (см. NeedsResync).
+// Reload switches the daemon to new rules without losing the observations gathered so far.
+// The sets are rebuilt in full: when the rules change, the numbers of "exit + mode" pairs shift.
+// The new rules take effect even if the sets could not be built: an error is returned,
+// and the build is retried until it succeeds (see NeedsResync).
 func (e *Engine) Reload(cfg *rules.Config) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.cfg = cfg
-	e.note(e.store.SetConfig(cfg), "правила изменены")
+	e.note(e.store.SetConfig(cfg), "rules changed")
 	return e.rebuild()
 }
 
-// NeedsResync сообщает, что последнее обращение к спискам не удалось и их нужно построить заново.
+// NeedsResync reports that the last update of the sets failed and they must be rebuilt.
 func (e *Engine) NeedsResync() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.dirty
 }
 
-// Resync строит всё заново по текущим правилам и памяти: при старте и после того,
-// как прошивка стёрла правила.
+// Resync rebuilds everything from the current rules and memory: at startup and after
+// the firmware has wiped the rules.
 func (e *Engine) Resync() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -184,40 +184,40 @@ func (e *Engine) rebuild() error {
 	e.dirty = err != nil
 	if err != nil {
 		e.stats.ApplyErrors++
-		e.logf("не удалось построить списки и маршруты: %v", err)
+		e.logf("could not build address sets and routes: %v", err)
 	}
 	return err
 }
 
-// Config возвращает действующие правила.
+// Config returns the rules in effect.
 func (e *Engine) Config() *rules.Config {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.cfg
 }
 
-// SaveState записывает накопленные претензии, чтобы пережить перезапуск.
+// SaveState writes the accumulated claims so they survive a restart.
 func (e *Engine) SaveState(w io.Writer) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.store.Save(w)
 }
 
-// LoadState читает претензии, записанные SaveState. Списки после этого строит Resync.
+// LoadState reads claims written by SaveState. Resync builds the sets afterwards.
 func (e *Engine) LoadState(r io.Reader, now time.Time) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.store.Load(r, now)
 }
 
-// SetExits сообщает, через какой интерфейс сейчас идёт каждый выход (пусто — живых нет).
+// SetExits records which interface each exit currently goes through (empty means none is live).
 func (e *Engine) SetExits(active map[string]string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.exits = active
 }
 
-// note записывает изменения в журнал и счётчики.
+// note records changes in the log and the counters.
 func (e *Engine) note(changes []claims.Change, why string) {
 	if len(changes) == 0 {
 		return
@@ -232,7 +232,7 @@ func (e *Engine) note(changes []claims.Change, why string) {
 		parts[i] = fmt.Sprintf("%s %s → %s", c.Addr, show(c.Old), show(c.New))
 	}
 	if more := len(changes) - len(shown); more > 0 {
-		parts = append(parts, fmt.Sprintf("… ещё %d", more))
+		parts = append(parts, fmt.Sprintf("… %d more", more))
 	}
 	e.logf("%s: %s", why, strings.Join(parts, "; "))
 }
@@ -243,26 +243,26 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 		return
 	}
 	if err := e.sink.Apply(changes); err != nil {
-		// Память уже учла изменение, а список в ядре — нет: повторного изменения для этого
-		// адреса не будет, поэтому расхождение устраняет только перестроение.
+		// Memory already reflects the change but the kernel set does not: there will be no repeat
+		// change for this address, so only a rebuild fixes the mismatch.
 		e.dirty = true
 		e.stats.ApplyErrors++
-		e.logf("не удалось применить изменения: %v", err)
+		e.logf("could not apply changes: %v", err)
 	}
 }
 
-// exitLine описывает нынешнее состояние выхода действия; пусто, если сказать нечего.
+// exitLine describes the current state of the action's exit; empty if there is nothing to say.
 func (e *Engine) exitLine(a rules.Action) string {
 	if a.Exit == rules.Direct || e.exits == nil {
 		return ""
 	}
 	if dev := e.exits[a.Exit]; dev != "" {
-		return fmt.Sprintf("выход %s: сейчас через %s\n", a.Exit, dev)
+		return fmt.Sprintf("exit %s: now via %s\n", a.Exit, dev)
 	}
 	if a.Strict {
-		return fmt.Sprintf("выход %s: все туннели недоступны — трафик блокируется (strict)\n", a.Exit)
+		return fmt.Sprintf("exit %s: all tunnels are down — traffic is blocked (strict)\n", a.Exit)
 	}
-	return fmt.Sprintf("выход %s: все туннели недоступны — трафик идёт напрямую\n", a.Exit)
+	return fmt.Sprintf("exit %s: all tunnels are down — traffic goes direct\n", a.Exit)
 }
 
 func show(a *rules.Action) string {
@@ -286,7 +286,7 @@ func (e *Engine) lineOf(index int) int {
 	return e.cfg.DefaultLine
 }
 
-// Why объясняет, куда пойдёт имя или адрес, и показывает, что о нём известно из DNS.
+// Why explains where a name or address will go and shows what is known about it from DNS.
 func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -297,30 +297,30 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s → %s\n", subj, d.Action)
 	if d.Rule != nil {
-		fmt.Fprintf(&b, "правило, строка %d: %s\n", d.Rule.Line, d.Rule.Text)
+		fmt.Fprintf(&b, "rule, line %d: %s\n", d.Rule.Line, d.Rule.Text)
 	} else {
-		fmt.Fprintf(&b, "ни одно правило не подошло, действует default (строка %d)\n", e.cfg.DefaultLine)
+		fmt.Fprintf(&b, "no rule matched; default applies (line %d)\n", e.cfg.DefaultLine)
 	}
 	b.WriteString(e.exitLine(d.Action))
 	if addr, err := netip.ParseAddr(subj); err == nil {
 		cs := e.store.Claims(addr)
 		if len(cs) == 0 {
-			b.WriteString("в DNS-ответах этот адрес не встречался\n")
+			b.WriteString("this address has not been seen in DNS answers\n")
 			return b.String(), nil
 		}
 		for _, c := range cs {
-			fmt.Fprintf(&b, "претензия: %s → %s (строка %d, ещё %s)\n",
+			fmt.Fprintf(&b, "claim: %s → %s (line %d, %s left)\n",
 				strings.Join(c.Names, " → "), c.Action, e.lineOf(c.Index), ago(c.Expires.Sub(now)))
 		}
 		if eff := e.store.Effective(addr); eff != nil {
-			fmt.Fprintf(&b, "в динамическом списке: %s\n", *eff)
+			fmt.Fprintf(&b, "in the dynamic set: %s\n", *eff)
 		} else {
-			b.WriteString("в динамическом списке нет: адрес входит в подсеть более раннего правила\n")
+			b.WriteString("not in the dynamic set: the address is in a subnet of an earlier rule\n")
 		}
 		return b.String(), nil
 	}
 	addrs := e.store.AddrsOf(subj)
-	fmt.Fprintf(&b, "адресов по этому имени в памяти: %d", len(addrs))
+	fmt.Fprintf(&b, "addresses for this name in memory: %d", len(addrs))
 	for i, a := range addrs {
 		if i == 8 {
 			b.WriteString(", …")
@@ -336,58 +336,58 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	b.WriteString("\n")
 	for i := len(e.recent) - 1; i >= 0; i-- {
 		if o := e.recent[i]; o.name == subj {
-			fmt.Fprintf(&b, "последний DNS-ответ: %s назад, устройство %s\n", ago(now.Sub(o.at)), o.client)
+			fmt.Fprintf(&b, "last DNS answer: %s ago, device %s\n", ago(now.Sub(o.at)), o.client)
 			return b.String(), nil
 		}
 	}
-	b.WriteString("DNS-ответов для этого имени ещё не было\n")
+	b.WriteString("no DNS answers for this name yet\n")
 	return b.String(), nil
 }
 
-// Status — краткое состояние демона для человека.
+// Status is a brief human-readable daemon status.
 func (e *Engine) Status(now time.Time) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var b strings.Builder
 	if e.sink == nil {
-		b.WriteString("trassa: режим наблюдения — списки адресов и маршруты не меняются\n")
+		b.WriteString("trassa: observe mode — address sets and routes are not changed\n")
 	} else {
-		b.WriteString("trassa: режим маршрутизации\n")
+		b.WriteString("trassa: routing mode\n")
 	}
 	s := e.snapshot()
-	fmt.Fprintf(&b, "работает %s, правил: %d, адресов в памяти: %d, претензий: %d\n",
+	fmt.Fprintf(&b, "uptime %s, rules: %d, addresses in memory: %d, claims: %d\n",
 		uptime(now.Sub(e.started)), len(e.cfg.Rules), e.store.Len(), e.store.Total())
-	fmt.Fprintf(&b, "пакетов: %d, ответов с адресами: %d, под правила: %d, изменений: %d\n", s.Packets, s.Answers, s.Claimed, s.Changes)
-	fmt.Fprintf(&b, "пропущено — не DNS: %d, повреждённых: %d, прочих: %d, неверных имён: %d, сверх предела: %d; ошибок применения: %d\n",
+	fmt.Fprintf(&b, "packets: %d, answers with addresses: %d, matched rules: %d, changes: %d\n", s.Packets, s.Answers, s.Claimed, s.Changes)
+	fmt.Fprintf(&b, "skipped — not DNS: %d, malformed: %d, other: %d, bad names: %d, over limit: %d; apply errors: %d\n",
 		s.NotDNS, s.Malformed, s.Skipped, s.BadName, s.Dropped, s.ApplyErrors)
 	if e.exits != nil {
 		parts := make([]string, 0, len(e.cfg.Exits))
 		for _, x := range e.cfg.Exits {
 			dev := e.exits[x.Name]
 			if dev == "" {
-				dev = "нет живых туннелей"
+				dev = "no live tunnels"
 			}
 			parts = append(parts, x.Name+" → "+dev)
 		}
-		fmt.Fprintf(&b, "выходы: %s\n", strings.Join(parts, "; "))
+		fmt.Fprintf(&b, "exits: %s\n", strings.Join(parts, "; "))
 	}
 	if len(e.recent) == 0 {
-		b.WriteString("наблюдений пока нет\n")
+		b.WriteString("no observations yet\n")
 		return b.String()
 	}
-	b.WriteString("последние наблюдения:\n")
+	b.WriteString("recent observations:\n")
 	from := max(0, len(e.recent)-statusRows)
 	for _, o := range e.recent[from:] {
 		where := "default"
 		if o.line != 0 {
-			where = fmt.Sprintf("строка %d", o.line)
+			where = fmt.Sprintf("line %d", o.line)
 		}
 		fmt.Fprintf(&b, "  %s %s %s → %s (%s)\n", o.at.Format("15:04:05"), o.client, o.name, o.action, where)
 	}
 	return b.String()
 }
 
-// State — состояние для веб-страницы: новые наблюдения первыми.
+// State is the state for the web page, newest observations first.
 func (e *Engine) State() ctl.State {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -407,21 +407,21 @@ func (e *Engine) State() ctl.State {
 	return st
 }
 
-// ago пишет промежуток коротко: «45 с», «10 мин», «3 ч».
+// ago writes a duration briefly: "45s", "10m", "3h".
 func ago(d time.Duration) string {
 	switch {
 	case d < time.Minute:
-		return fmt.Sprintf("%d с", int(d.Seconds()))
+		return fmt.Sprintf("%ds", int(d.Seconds()))
 	case d < time.Hour:
-		return fmt.Sprintf("%d мин", int(d.Minutes()))
+		return fmt.Sprintf("%dm", int(d.Minutes()))
 	}
-	return fmt.Sprintf("%d ч", int(d.Hours()))
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
 func uptime(d time.Duration) string {
 	h, m := int(d.Hours()), int(d.Minutes())%60
 	if h == 0 {
-		return fmt.Sprintf("%dм", m)
+		return fmt.Sprintf("%dm", m)
 	}
-	return fmt.Sprintf("%dч%02dм", h, m)
+	return fmt.Sprintf("%dh%02dm", h, m)
 }

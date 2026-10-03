@@ -29,14 +29,14 @@ import (
 	"trassa/internal/rules"
 )
 
-// reloader возвращает функцию, перечитывающую файл правил. При ошибках правила остаются прежними.
-// validate, если задана, проверяет выходы новых правил на роутере.
+// reloader returns a function that rereads the rules file. On errors the old rules stay.
+// validate, if set, checks the exits of the new rules on the router.
 func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []rules.Problem) func() (string, error) {
 	return func() (string, error) {
 		var readErr bytes.Buffer
 		cfg, ps, ok := load(path, &readErr)
 		if !ok {
-			return "", errors.New(strings.TrimSpace(readErr.String()) + "; оставлены прежние правила")
+			return "", errors.New(strings.TrimSpace(readErr.String()) + "; the previous rules remain")
 		}
 		if validate != nil && !rules.HasErrors(ps) {
 			ps = append(ps, validate(cfg)...)
@@ -44,20 +44,20 @@ func reloader(path string, eng *engine.Engine, validate func(*rules.Config) []ru
 		var b strings.Builder
 		printProblems(&b, ps)
 		if rules.HasErrors(ps) {
-			return b.String(), errors.New("в файле правил ошибки; оставлены прежние правила")
+			return b.String(), errors.New("the rules file has errors; the previous rules remain")
 		}
 		if err := eng.Reload(cfg); err != nil {
-			// Правила приняты, но в ядре пока прежнее состояние: об успехе сообщать нельзя,
-			// а о провале — тоже: прежние правила уже не действуют.
-			return b.String(), fmt.Errorf("%w: правила приняты, но списки и маршруты построить не удалось: %v; попытка повторится в течение 30 секунд", ctl.ErrPartial, err)
+			// The rules are accepted, but the kernel still holds the old state: this is not a success,
+			// and not a failure either, since the old rules are no longer in effect.
+			return b.String(), fmt.Errorf("%w: rules accepted, but building the address sets and routes failed: %v; it will be retried within 30 seconds", ctl.ErrPartial, err)
 		}
-		fmt.Fprintf(&b, "правила перечитаны: правил %d, выходов %d\n", len(cfg.Rules), len(cfg.Exits))
+		fmt.Fprintf(&b, "rules reloaded: rules %d, exits %d\n", len(cfg.Rules), len(cfg.Exits))
 		return b.String(), nil
 	}
 }
 
-// saveState записывает состояние во временный файл и подменяет им прежний: при сбое
-// посреди записи прежний файл остаётся целым.
+// saveState writes the state to a temporary file and replaces the old one with it: if writing
+// fails halfway, the old file stays intact.
 func saveState(path string, eng *engine.Engine) error {
 	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
 	if err != nil {
@@ -75,7 +75,7 @@ func saveState(path string, eng *engine.Engine) error {
 	return os.Rename(f.Name(), path)
 }
 
-// sameExits сравнивает два состояния выходов.
+// sameExits compares two exit states.
 func sameExits(a, b map[string]exits.Choice) bool {
 	if len(a) != len(b) {
 		return false
@@ -88,7 +88,7 @@ func sameExits(a, b map[string]exits.Choice) bool {
 	return true
 }
 
-// handler исполняет команды, пришедшие по сокету управления.
+// handler executes commands that arrive over the control socket.
 func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
 	return func(cmd, arg string) (string, error) {
 		switch cmd {
@@ -102,16 +102,17 @@ func handler(eng *engine.Engine, reload func() (string, error)) ctl.Handler {
 		case "reload":
 			return reload()
 		}
-		return "", fmt.Errorf("неизвестная команда %q", cmd)
+		return "", fmt.Errorf("unknown command %q", cmd)
 	}
 }
 
-// stallLimit — сколько цикл приёма пакетов может молчать. Он получает управление не реже раза
-// в секунду, поэтому несколько секунд тишины означают, что он застрял с пакетом на руках.
+// stallLimit is how long the packet loop may stay silent. It gets control at least once a
+// second, so several seconds of silence mean it is stuck holding a packet.
 const stallLimit = 5 * time.Second
 
-// watchStall вызывает fail, если цикл приёма не отмечался дольше limit. Завершается по закрытию stop.
-// idle возвращает простой по монотонным часам: перевод системного времени сторожа не обманывает.
+// watchStall calls fail if the packet loop has not checked in for longer than limit. It returns
+// when stop is closed. idle measures by the monotonic clock, so changing the system time cannot
+// fool the watchdog.
 func watchStall(idle func() time.Duration, limit, every time.Duration, stop <-chan struct{}, fail func(idle time.Duration)) {
 	t := time.NewTicker(every)
 	defer t.Stop()
@@ -128,21 +129,22 @@ func watchStall(idle func() time.Duration, limit, every time.Duration, stop <-ch
 	}
 }
 
-// packetQueue — то, что циклу приёма нужно от очереди пакетов.
+// packetQueue is what the packet loop needs from the packet queue.
 type packetQueue interface {
 	Recv() (nfq.Packet, error)
 	Accept(id uint32) error
 }
 
-// maxQueueErrors — сколько сбоев очереди подряд означают, что она не работает.
+// maxQueueErrors is how many consecutive queue failures mean the queue is broken.
 const maxQueueErrors = 20
 
-// pumpErrorPause — пауза после сбоя чтения; тесты её обнуляют.
+// pumpErrorPause is the pause after a read failure; tests set it to zero.
 var pumpErrorPause = 200 * time.Millisecond
 
-// pump читает пакеты из очереди и на каждый выдаёт вердикт, что бы ни случилось в handle.
-// Возвращает nil по сигналу остановки и ошибку, если очередь перестала работать: тогда
-// демону лучше выйти — ядро начнёт пропускать пакеты само, а присмотр запустит его заново.
+// pump reads packets from the queue and issues a verdict for each, whatever happens in handle.
+// It returns nil when asked to stop and an error if the queue stopped working: then the daemon
+// is better off exiting — the kernel starts passing packets by itself and the supervisor
+// restarts the daemon.
 func pump(q packetQueue, handle func(raw []byte), beat func(), stopping func() bool, logf func(string, ...any)) error {
 	failures := 0
 	for !stopping() {
@@ -153,9 +155,9 @@ func pump(q packetQueue, handle func(raw []byte), beat func(), stopping func() b
 		}
 		if err != nil {
 			failures++
-			logf("очередь: %v", err)
+			logf("queue: %v", err)
 			if failures >= maxQueueErrors {
-				return fmt.Errorf("очередь пакетов не работает: %w", err)
+				return fmt.Errorf("the packet queue is not working: %w", err)
 			}
 			time.Sleep(pumpErrorPause)
 			continue
@@ -163,9 +165,9 @@ func pump(q packetQueue, handle func(raw []byte), beat func(), stopping func() b
 		safely(handle, p.Payload, logf)
 		if err := q.Accept(p.ID); err != nil {
 			failures++
-			logf("вердикт: %v", err)
+			logf("verdict: %v", err)
 			if failures >= maxQueueErrors {
-				return fmt.Errorf("ядро не принимает вердикты: %w", err)
+				return fmt.Errorf("the kernel does not accept verdicts: %w", err)
 			}
 			continue
 		}
@@ -174,25 +176,25 @@ func pump(q packetQueue, handle func(raw []byte), beat func(), stopping func() b
 	return nil
 }
 
-// safely вызывает handle и переживает его сбой: пакет после этого всё равно будет отпущен.
+// safely calls handle and survives its panic: the packet is still released afterwards.
 func safely(handle func(raw []byte), raw []byte, logf func(string, ...any)) {
 	defer func() {
 		if r := recover(); r != nil {
-			logf("сбой при разборе пакета: %v", r)
+			logf("panic while parsing a packet: %v", r)
 		}
 	}()
 	handle(raw)
 }
 
-// parseOffset разбирает смещение от UTC в виде, который печатает «date +%z»: +0300, -0530.
+// parseOffset parses a UTC offset in the form printed by "date +%z": +0300, -0530.
 func parseOffset(s string) (*time.Location, error) {
 	if len(s) != 5 || s[0] != '+' && s[0] != '-' {
-		return nil, fmt.Errorf("непонятное смещение времени %q", s)
+		return nil, fmt.Errorf("cannot parse time offset %q", s)
 	}
 	h, err1 := strconv.Atoi(s[1:3])
 	m, err2 := strconv.Atoi(s[3:5])
 	if err1 != nil || err2 != nil || h > 14 || m > 59 {
-		return nil, fmt.Errorf("непонятное смещение времени %q", s)
+		return nil, fmt.Errorf("cannot parse time offset %q", s)
 	}
 	off := h*3600 + m*60
 	if s[0] == '-' {
@@ -201,8 +203,8 @@ func parseOffset(s string) (*time.Location, error) {
 	return time.FixedZone(s, off), nil
 }
 
-// useLocalTime переводит время в журнале и в ответах на местное. На роутере нет базы часовых
-// поясов, поэтому смещение спрашивается у системной утилиты; не получилось — остаётся UTC.
+// useLocalTime switches times in the log and in answers to local time. The router has no time
+// zone database, so the offset is taken from the system utility; if that fails, UTC stays.
 func useLocalTime() {
 	out, err := osexec.Command("date", "+%z").Output()
 	if err != nil {
@@ -238,14 +240,14 @@ func cmdRun(args []string, errw io.Writer) int {
 		return 2
 	}
 	if *queue > 65535 {
-		fmt.Fprintln(errw, "-queue: номер очереди от 0 до 65535")
+		fmt.Fprintln(errw, "-queue: queue number from 0 to 65535")
 		return 2
 	}
 	tap := dataplane.DNSTap{LAN: *lan, Queue: uint16(*queue)}
 	if *only != "" {
 		a, err := netip.ParseAddr(*only)
 		if err != nil || !a.Is4() {
-			fmt.Fprintln(errw, "-only: нужен адрес IPv4, например 192.168.1.94")
+			fmt.Fprintln(errw, "-only: an IPv4 address is needed, for example 192.168.1.94")
 			return 2
 		}
 		tap.Only = a
@@ -254,7 +256,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	if *source != "" {
 		a, err := netip.ParseAddr(*source)
 		if err != nil || !a.Is4() || !*route {
-			fmt.Fprintln(errw, "-source: нужен адрес IPv4, и только вместе с -route")
+			fmt.Fprintln(errw, "-source: an IPv4 address is needed, and only together with -route")
 			return 2
 		}
 		sourceAddr = a
@@ -268,18 +270,18 @@ func cmdRun(args []string, errw io.Writer) int {
 	}
 	if rules.HasErrors(ps) {
 		printProblems(errw, ps)
-		fmt.Fprintln(errw, "в файле правил ошибки, демон не запущен")
+		fmt.Fprintln(errw, "the rules file has errors, the daemon is not started")
 		return 1
 	}
 	var router *dataplane.Router
 	var sink engine.Sink
 	var validate func(*rules.Config) []rules.Problem
 	var src exits.Source
-	mode := "режим наблюдения"
+	mode := "observe mode"
 	if *route {
-		mode = "режим маршрутизации"
+		mode = "routing mode"
 		if sourceAddr.IsValid() {
-			mode += " для " + sourceAddr.String()
+			mode += " for " + sourceAddr.String()
 		}
 		src = exits.RCI{Base: *rci, Client: &http.Client{Timeout: 3 * time.Second}}
 		validate = func(c *rules.Config) []rules.Problem {
@@ -289,7 +291,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 		if ps := validate(cfg); rules.HasErrors(ps) {
 			printProblems(errw, ps)
-			fmt.Fprintln(errw, "выходы не прошли проверку на роутере, демон не запущен")
+			fmt.Fprintln(errw, "exits failed the check on the router, the daemon is not started")
 			return 1
 		}
 		router = dataplane.NewRouter(dataplane.Exec{}, *lan, sourceAddr)
@@ -298,7 +300,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	eng := engine.New(cfg, sink, logger.Printf, time.Now())
 	reload := reloader(*rulesPath, eng, validate)
 
-	// refreshExits спрашивает прошивку о туннелях и, если что-то изменилось, меняет маршруты.
+	// refreshExits asks the firmware about the tunnels and changes the routes if anything changed.
 	var current map[string]exits.Choice
 	refreshExits := func() {
 		if router == nil {
@@ -308,7 +310,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		defer cancel()
 		active, err := exits.Active(ctx, eng.Config(), src, current)
 		if err != nil {
-			logger.Printf("состояние туннелей неизвестно, маршруты не меняются: %v", err)
+			logger.Printf("tunnel state unknown, routes are not changed: %v", err)
 			return
 		}
 		if sameExits(active, current) {
@@ -319,24 +321,24 @@ func cmdRun(args []string, errw io.Writer) int {
 			systems[exit], names[exit] = c.System, c.Interface
 			if old, known := current[exit]; !known || old != c {
 				if c.System == "" {
-					logger.Printf("выход %s: живых туннелей нет", exit)
+					logger.Printf("exit %s: no live tunnels", exit)
 				} else {
-					logger.Printf("выход %s: идёт через %s", exit, c.Interface)
+					logger.Printf("exit %s: goes via %s", exit, c.Interface)
 				}
 			}
 		}
 		eng.SetExits(names)
 		if err := router.SetExits(systems); err != nil {
-			// Прежнее состояние не забываем: на следующем шаге попытка повторится.
-			logger.Printf("маршруты выходов: %v", err)
+			// Keep the previous state: the next round retries.
+			logger.Printf("exit routes: %v", err)
 			return
 		}
 		current = active
 	}
 
-	// Сокет первым: он же проверяет, что другой экземпляр не запущен.
-	// После перечитывания правил по сокету туннели перепроверяются сразу: новый выход иначе
-	// считался бы недоступным до следующего опроса.
+	// The socket goes first: it also checks that no other instance is running.
+	// After a reload over the socket the tunnels are rechecked at once: otherwise a new exit would
+	// count as unavailable until the next poll.
 	kick := make(chan struct{}, 1)
 	reloadAndKick := func() (string, error) {
 		text, err := reload()
@@ -348,7 +350,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	}
 	srv, err := ctl.Serve(sockPath(), handler(eng, reloadAndKick))
 	if err != nil {
-		logger.Printf("сокет управления: %v", err)
+		logger.Printf("control socket: %v", err)
 		return 1
 	}
 	defer srv.Close()
@@ -358,21 +360,21 @@ func cmdRun(args []string, errw io.Writer) int {
 		if f, err := os.Open(*statePath); err == nil {
 			n := eng.LoadState(f, time.Now())
 			f.Close()
-			logger.Printf("из сохранённого состояния восстановлено претензий: %d", n)
+			logger.Printf("claims restored from the saved state: %d", n)
 		}
 		if err := eng.Resync(); err != nil {
-			// Строка об ошибке уже в журнале. Без списков и маршрутов режим маршрутизации не работает.
+			// The error is already logged. Routing mode does not work without address sets and routes.
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			dataplane.Teardown(ctx, dataplane.Exec{})
 			cancel()
-			fmt.Fprintln(errw, "списки и маршруты не построены, демон не запущен")
+			fmt.Fprintln(errw, "address sets and routes were not built, the daemon is not started")
 			return 1
 		}
 	}
 
 	q, err := nfq.Open(tap.Queue)
 	if err != nil {
-		logger.Printf("очередь пакетов %d: %v", tap.Queue, err)
+		logger.Printf("packet queue %d: %v", tap.Queue, err)
 		if router != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			dataplane.Teardown(ctx, dataplane.Exec{})
@@ -381,17 +383,17 @@ func cmdRun(args []string, errw io.Writer) int {
 		return 1
 	}
 
-	// Цикл приёма и сторож запускаются до правила перехвата: с момента, когда правило
-	// появилось, очередь уже кто-то читает.
+	// The packet loop and the watchdog start before the DNS tap rule: from the moment the rule
+	// appears, someone is already reading the queue.
 	started := time.Now()
 	var stopping atomic.Bool
-	var beat atomic.Int64 // когда цикл приёма последний раз получал управление, от started
+	var beat atomic.Int64 // when the packet loop last got control, relative to started
 	stopWatch := make(chan struct{})
 	go watchStall(func() time.Duration { return time.Since(started) - time.Duration(beat.Load()) }, stallLimit, time.Second, stopWatch,
 		func(idle time.Duration) {
-			// Выход закрывает сокет очереди, и ядро начинает пропускать DNS-ответы без демона.
-			// Запись в журнал — в отдельном потоке: если застрял сам журнал, выход это не задержит.
-			go logger.Printf("цикл приёма пакетов молчит %s — аварийное завершение", idle.Round(time.Second))
+			// Exiting closes the queue socket, and the kernel starts passing DNS answers without the
+			// daemon. Logging runs in its own goroutine: if the log itself is stuck, exit is not delayed.
+			go logger.Printf("packet loop silent for %s — emergency exit", idle.Round(time.Second))
 			time.Sleep(100 * time.Millisecond)
 			os.Exit(3)
 		})
@@ -411,21 +413,21 @@ func cmdRun(args []string, errw io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		if err := tap.Ensure(ctx, runner); err != nil {
-			logger.Printf("правило перехвата DNS: %v", err)
+			logger.Printf("DNS tap rule: %v", err)
 		}
 	}
 	ensure()
 	if *pidPath != "" {
 		os.WriteFile(*pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 	}
-	logger.Printf("trassa запущен: %s, правил %d, очередь %d", mode, len(cfg.Rules), tap.Queue)
+	logger.Printf("trassa started: %s, rules %d, queue %d", mode, len(cfg.Rules), tap.Queue)
 
-	// shutdown снимает правило, дожидается цикла приёма и закрывает очередь — в этом порядке:
-	// пакеты не должны ждать вердикта, которого не будет.
+	// shutdown removes the rule, waits for the packet loop and closes the queue — in this order:
+	// packets must not wait for a verdict that will never come.
 	shutdown := func() {
 		if router != nil {
 			if err := saveState(*statePath, eng); err != nil {
-				logger.Printf("состояние не сохранено: %v", err)
+				logger.Printf("state not saved: %v", err)
 			}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -448,7 +450,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		}
 	}
 
-	// checkRoutes восстанавливает списки и маршруты, если прошивка их стёрла.
+	// checkRoutes restores the address sets and routes if the firmware wiped them.
 	checkRoutes := func() {
 		if router == nil {
 			return
@@ -456,16 +458,16 @@ func cmdRun(args []string, errw io.Writer) int {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if eng.NeedsResync() {
-			logger.Print("списки расходятся с памятью после сбоя — строю заново")
+			logger.Print("address sets diverged from memory after a failure — rebuilding")
 			eng.Resync()
 			return
 		}
 		switch err := router.Reconcile(ctx); {
 		case errors.Is(err, dataplane.ErrMissing):
-			logger.Printf("%v — строю заново", err)
+			logger.Printf("%v — rebuilding", err)
 			eng.Resync()
 		case err != nil:
-			logger.Printf("сверка правил и маршрутов: %v", err)
+			logger.Printf("reconciling rules and routes: %v", err)
 		}
 	}
 
@@ -480,7 +482,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	for {
 		select {
 		case err := <-failed:
-			logger.Printf("%v — завершение", err)
+			logger.Printf("%v — exiting", err)
 			shutdown()
 			return 4
 		case <-tick.C:
@@ -494,7 +496,7 @@ func cmdRun(args []string, errw io.Writer) int {
 		case <-stateTick.C:
 			if router != nil {
 				if err := saveState(*statePath, eng); err != nil {
-					logger.Printf("состояние не сохранено: %v", err)
+					logger.Printf("state not saved: %v", err)
 				}
 			}
 		case s := <-sig:
@@ -506,14 +508,14 @@ func cmdRun(args []string, errw io.Writer) int {
 				refreshExits()
 			case syscall.SIGHUP:
 				if text, err := reload(); err != nil {
-					logger.Printf("перечитывание правил: %v\n%s", err, text)
+					logger.Printf("reloading rules: %v\n%s", err, text)
 				} else {
 					logger.Print(strings.TrimSpace(text))
 					refreshExits()
 				}
 			default:
 				shutdown()
-				logger.Print("trassa остановлен")
+				logger.Print("trassa stopped")
 				return 0
 			}
 		}

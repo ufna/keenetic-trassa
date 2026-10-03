@@ -1,4 +1,4 @@
-// Package nfq работает с очередью пакетов ядра (nfnetlink_queue) без сторонних библиотек.
+// Package nfq works with the kernel packet queue (nfnetlink_queue) without third-party libraries.
 package nfq
 
 import (
@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	nlHdrLen    = 16 // заголовок netlink
-	nfgenLen    = 4  // заголовок nfnetlink
+	nlHdrLen    = 16 // netlink header
+	nfgenLen    = 4  // nfnetlink header
 	nlMsgError  = 2
 	nlFRequest  = 0x01
 	nlFAck      = 0x04
@@ -31,16 +31,16 @@ const (
 	attrVerdictHdr = 2
 	attrPayload    = 10
 
-	copyPacket   = 2 // копировать содержимое пакета
-	flagFailOpen = 1 // при переполнении очереди пропускать пакеты, а не терять
+	copyPacket   = 2 // copy the packet contents
+	flagFailOpen = 1 // when the queue overflows, let packets through instead of dropping them
 
 	verdictAccept = 1
 	afInet        = 2
 )
 
-var errMalformed = errors.New("nfq: повреждённое сообщение ядра")
+var errMalformed = errors.New("nfq: malformed kernel message")
 
-// Packet — пакет, ожидающий вердикта. Payload начинается с заголовка IP.
+// Packet is a packet awaiting a verdict. Payload starts with the IP header.
 type Packet struct {
 	ID      uint32
 	Payload []byte
@@ -96,15 +96,15 @@ func verdict(queue uint16, id uint32, v uint32) []byte {
 	return message(msgVerdict, nlFRequest, 0, queue, attr(attrVerdictHdr, append(be32(v), be32(id)...)))
 }
 
-// reply — одно сообщение ядра: пакет в очереди либо подтверждение запроса.
+// reply is a single kernel message: a queued packet or a request acknowledgement.
 type reply struct {
 	packet *Packet
 	ack    bool
 	seq    uint32
-	errno  int32 // 0 — успех, иначе код ошибки со знаком минус
+	errno  int32 // 0 on success, otherwise the negated error code
 }
 
-// parse разбирает порцию данных из сокета: в ней может быть несколько сообщений.
+// parse parses a chunk of data read from the socket: it may hold several messages.
 func parse(b []byte) ([]reply, error) {
 	var out []reply
 	for len(b) > 0 {
@@ -148,7 +148,7 @@ func parsePacket(body []byte) (*Packet, error) {
 			return nil, errMalformed
 		}
 		value := a[4:l]
-		switch binary.LittleEndian.Uint16(a[2:]) & 0x3fff { // старшие два бита — служебные признаки
+		switch binary.LittleEndian.Uint16(a[2:]) & 0x3fff { // the top two bits are flags
 		case attrPacketHdr:
 			if len(value) < 4 {
 				return nil, errMalformed

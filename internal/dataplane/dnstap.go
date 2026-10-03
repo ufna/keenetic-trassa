@@ -8,14 +8,14 @@ import (
 
 const tapChain = "TRASSA_DNS"
 
-// maxJumps — сколько одинаковых прыжков снимается за раз: больше одного бывает только после сбоя.
+// maxJumps is how many identical jumps are removed at once: more than one only happens after a failure.
 const maxJumps = 4
 
-// DNSTap — правило, направляющее DNS-ответы домашней сети в очередь trassa.
+// DNSTap is the rule that sends DNS answers on the home network to the trassa queue.
 type DNSTap struct {
-	LAN   string     // интерфейс домашней сети
-	Queue uint16     // номер очереди
-	Only  netip.Addr // если задан — наблюдать ответы только этому адресу IPv4
+	LAN   string     // home network interface
+	Queue uint16     // queue number
+	Only  netip.Addr // if set, observe answers only to this IPv4 address
 }
 
 func mangle(args ...string) []string { return append([]string{"-w", "-t", "mangle"}, args...) }
@@ -29,7 +29,7 @@ func (t DNSTap) spec(only netip.Addr) []string {
 		"-j", "NFQUEUE", "--queue-num", strconv.Itoa(int(t.Queue)), "--queue-bypass")
 }
 
-// Ensure приводит правила к нужному виду. Если всё на месте, ничего не меняет.
+// Ensure brings the rules to the desired state. If everything is in place, it changes nothing.
 func (t DNSTap) Ensure(ctx context.Context, r Runner) error {
 	if err := t.ensure(ctx, r, "iptables", t.Only); err != nil {
 		return err
@@ -57,7 +57,7 @@ func (t DNSTap) ensure(ctx context.Context, r Runner, bin string, only netip.Add
 		}
 	}
 	if _, err := r.Run(ctx, bin, mangle("-C", "POSTROUTING", "-j", tapChain)...); err != nil {
-		// В конец цепочки: вердикт из очереди обходит правила, стоящие после нашего.
+		// At the end of the chain: the queue verdict skips rules that come after ours.
 		if _, err := r.Run(ctx, bin, mangle("-A", "POSTROUTING", "-j", tapChain)...); err != nil {
 			return err
 		}
@@ -65,7 +65,7 @@ func (t DNSTap) ensure(ctx context.Context, r Runner, bin string, only netip.Add
 	return nil
 }
 
-// Remove снимает правила перехвата в обеих таблицах. Отсутствие правил ошибкой не считается.
+// Remove deletes the tap rules in both tables. Missing rules are not an error.
 func (DNSTap) Remove(ctx context.Context, r Runner) {
 	remove(ctx, r, "iptables")
 	remove(ctx, r, "ip6tables")

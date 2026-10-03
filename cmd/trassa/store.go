@@ -19,12 +19,13 @@ import (
 const (
 	defaultDir = "/opt/etc/trassa"
 	defaultRCI = "http://127.0.0.1:79"
-	// reloadTimeout — сколько ждать демона, перечитывающего правила: проверка выходов у прошивки
-	// и перестроение списков вместе укладываются в полминуты.
+	// reloadTimeout is how long to wait for the daemon to reload the rules: checking exits with
+	// the firmware and rebuilding the address sets together fit into half a minute.
 	reloadTimeout = 40 * time.Second
 )
 
-// newStore — каталог правил на роутере: выходы проверяются у прошивки, применяет демон.
+// newStore returns the rules directory on the router: exits are checked with the firmware and
+// the daemon applies the rules.
 func newStore(dir, rci string) *store.Store {
 	src := exits.RCI{Base: rci, Client: &http.Client{Timeout: 3 * time.Second}}
 	return &store.Store{
@@ -38,7 +39,7 @@ func newStore(dir, rci string) *store.Store {
 	}
 }
 
-// applyViaDaemon просит демон перечитать файл правил и переводит ответ в исход для store.
+// applyViaDaemon asks the daemon to reload the rules file and maps its answer to a store outcome.
 func applyViaDaemon() (store.Applied, string) {
 	text, err := ctl.Call(sockPath(), "reload", "", reloadTimeout)
 	switch {
@@ -54,25 +55,25 @@ func applyViaDaemon() (store.Applied, string) {
 	return store.Rejected, strings.TrimSpace(text + "\n" + err.Error())
 }
 
-// printResult печатает исход возврата версии. Код 0 — правила действуют или вступят в силу
-// при запуске демона.
+// printResult prints the outcome of restoring a version. Exit code 0 means the rules are in effect
+// or will take effect when the daemon starts.
 func printResult(out io.Writer, res store.Result) int {
 	warnings := printProblems(out, res.Problems)
 	switch {
 	case rules.HasErrors(res.Problems):
-		fmt.Fprintf(out, "ошибок: %d — версия не возвращена\n", len(res.Problems)-warnings)
+		fmt.Fprintf(out, "errors: %d — version not restored\n", len(res.Problems)-warnings)
 		return 1
 	case res.NeedConfirm:
-		fmt.Fprintln(out, "есть предупреждения — версия не возвращена; вернуть всё равно: trassa rollback -y")
+		fmt.Fprintln(out, "there are warnings — version not restored; to restore it anyway: trassa rollback -y")
 		return 1
 	case res.Unchanged:
-		fmt.Fprintln(out, "эта версия уже действует")
+		fmt.Fprintln(out, "this version is already in effect")
 		return 0
 	case !res.Saved:
-		fmt.Fprintf(out, "версия не возвращена: %s\n", res.Message)
+		fmt.Fprintf(out, "version not restored: %s\n", res.Message)
 		return 1
 	}
-	fmt.Fprintf(out, "возвращена версия: правил %d, выходов %d, ожиданий %d\n%s\n", res.Rules, res.Exits, res.Tests, res.Message)
+	fmt.Fprintf(out, "version restored: rules %d, exits %d, expectations %d\n%s\n", res.Rules, res.Exits, res.Tests, res.Message)
 	if res.Applied == store.Running || res.Applied == store.NotRunning {
 		return 0
 	}

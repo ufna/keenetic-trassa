@@ -32,7 +32,7 @@ func config(t *testing.T, s string) *rules.Config {
 	t.Helper()
 	cfg, ps := rules.Load(s, nil)
 	if rules.HasErrors(ps) {
-		t.Fatalf("правила: %v", ps)
+		t.Fatalf("rules: %v", ps)
 	}
 	return cfg
 }
@@ -51,11 +51,11 @@ func wantChanges(t *testing.T, got []Change, want ...string) {
 		s = append(s, c.Addr.String()+" "+show(c.Old)+" => "+show(c.New))
 	}
 	if len(s) != len(want) {
-		t.Fatalf("изменения %v, ожидалось %v", s, want)
+		t.Fatalf("changes %v, want %v", s, want)
 	}
 	for i := range s {
 		if s[i] != want[i] {
-			t.Fatalf("изменения %v, ожидалось %v", s, want)
+			t.Fatalf("changes %v, want %v", s, want)
 		}
 	}
 }
@@ -68,10 +68,10 @@ func TestObserveAddsAndRefreshes(t *testing.T) {
 	got = s.Observe(t0.Add(time.Minute), []string{"video.example"}, []netip.Addr{ip1}, 5*time.Minute)
 	wantChanges(t, got)
 	if cs := s.Claims(ip1); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(time.Minute+hour)) {
-		t.Errorf("претензия не продлена: %+v", cs)
+		t.Errorf("claim not extended: %+v", cs)
 	}
 	if s.Len() != 2 {
-		t.Errorf("Len = %d, ожидалось 2", s.Len())
+		t.Errorf("Len = %d, want 2", s.Len())
 	}
 }
 
@@ -79,7 +79,7 @@ func TestDefaultMakesNoClaim(t *testing.T) {
 	s := New(config(t, src), hour)
 	wantChanges(t, s.Observe(t0, []string{"unknown.example"}, []netip.Addr{ip1}, hour))
 	if s.Len() != 0 || s.Effective(ip1) != nil {
-		t.Error("имя по default создало претензию")
+		t.Error("a name matched by default created a claim")
 	}
 	wantChanges(t, s.Observe(t0, nil, []netip.Addr{ip1}, hour))
 }
@@ -95,7 +95,7 @@ func TestMinTTL(t *testing.T) {
 	wantChanges(t, s.Expire(t0.Add(30*time.Minute)))
 	wantChanges(t, s.Expire(t0.Add(61*time.Minute)), "1.1.1.1 vpn strict => -")
 	if s.Len() != 0 {
-		t.Errorf("Len = %d после истечения", s.Len())
+		t.Errorf("Len = %d after expiry", s.Len())
 	}
 }
 
@@ -110,10 +110,10 @@ func TestEarlierRuleWins(t *testing.T) {
 	s := New(config(t, src), hour)
 	wantChanges(t, s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, hour), "1.1.1.1 - => alt")
 	wantChanges(t, s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, hour), "1.1.1.1 alt => vpn strict")
-	// Наблюдение по более позднему правилу победителя не меняет.
+	// An observation for a later rule does not change the winner.
 	wantChanges(t, s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, hour))
 	if len(s.Claims(ip1)) != 2 {
-		t.Errorf("претензий %d, ожидалось 2", len(s.Claims(ip1)))
+		t.Errorf("%d claims, want 2", len(s.Claims(ip1)))
 	}
 }
 
@@ -127,15 +127,15 @@ func TestExpireFallsBackToOtherClaim(t *testing.T) {
 
 func TestStaticSubnetOrder(t *testing.T) {
 	s := New(config(t, src), hour)
-	early := netip.MustParseAddr("10.9.1.1") // подсеть правила, стоящего раньше video.example
-	late := netip.MustParseAddr("10.8.1.1")  // подсеть правила, стоящего позже
+	early := netip.MustParseAddr("10.9.1.1") // subnet of a rule placed before video.example
+	late := netip.MustParseAddr("10.8.1.1")  // subnet of a rule placed after it
 	wantChanges(t, s.Observe(t0, []string{"video.example"}, []netip.Addr{early, late}, hour),
 		"10.8.1.1 - => vpn strict")
 	if s.Effective(early) != nil {
-		t.Error("адрес из более ранней подсети попал в динамический список")
+		t.Error("an address from an earlier subnet ended up in a dynamic set")
 	}
 	if len(s.Claims(early)) != 1 {
-		t.Error("претензия на адрес из ранней подсети должна сохраняться для команды «почему»")
+		t.Error("a claim on an address from an earlier subnet must be kept for the \"why\" command")
 	}
 }
 
@@ -147,9 +147,9 @@ func TestSetConfig(t *testing.T) {
 	changed := "exit vpn = W\nexit alt = W\ndefault direct\nvideo.example -> alt\n"
 	wantChanges(t, s.SetConfig(config(t, changed)), "1.1.1.1 vpn strict => alt", "2.2.2.2 alt => -")
 	if s.Len() != 1 {
-		t.Errorf("Len = %d, ожидалось 1", s.Len())
+		t.Errorf("Len = %d, want 1", s.Len())
 	}
-	// Новые наблюдения идут уже по новым правилам.
+	// New observations already follow the new rules.
 	wantChanges(t, s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip2}, hour))
 }
 
@@ -164,7 +164,7 @@ func TestObserveNeverShortensClaim(t *testing.T) {
 	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, 24*hour)
 	s.Observe(t0.Add(time.Minute), []string{"video.example"}, []netip.Addr{ip1}, time.Minute)
 	if cs := s.Claims(ip1); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(24*hour)) {
-		t.Errorf("новый ответ с коротким сроком укоротил претензию: %+v", cs)
+		t.Errorf("a new answer with a short TTL shortened the claim: %+v", cs)
 	}
 }
 
@@ -173,13 +173,13 @@ func TestStoreDoesNotAliasCallerSlices(t *testing.T) {
 	names := []string{"video.example"}
 	s.Observe(t0, names, []netip.Addr{ip1}, hour)
 	names[0] = "unknown.example"
-	wantChanges(t, s.SetConfig(config(t, src))) // правила те же — изменений быть не должно
+	wantChanges(t, s.SetConfig(config(t, src))) // same rules, so there must be no changes
 
 	s.Observe(t0, []string{"cdn.example"}, []netip.Addr{ip1}, 3*hour)
 	got := s.Claims(ip1)
 	s.Expire(t0.Add(2 * hour))
 	if len(got) != 2 || got[0].Names[0] != "video.example" {
-		t.Errorf("срез, полученный из Claims(), изменился задним числом: %+v", got)
+		t.Errorf("a slice returned by Claims() changed after the fact: %+v", got)
 	}
 }
 
@@ -191,13 +191,13 @@ func TestAddrsOf(t *testing.T) {
 
 	got := s.AddrsOf("video.example")
 	if len(got) != 2 || got[0] != ip1 || got[1] != ip2 {
-		t.Errorf("AddrsOf(video.example) = %v, ожидалось [1.1.1.1 2.2.2.2]", got)
+		t.Errorf("AddrsOf(video.example) = %v, want [1.1.1.1 2.2.2.2]", got)
 	}
 	if got := s.AddrsOf("www.other.example"); len(got) != 1 {
-		t.Errorf("AddrsOf по запрошенному имени цепочки = %v", got)
+		t.Errorf("AddrsOf for the queried name of a chain = %v", got)
 	}
 	if got := s.AddrsOf("edge.video.example"); len(got) != 0 {
-		t.Errorf("AddrsOf по CNAME-цели должен быть пуст: %v", got)
+		t.Errorf("AddrsOf for a CNAME target must be empty: %v", got)
 	}
 	if got := s.AddrsOf("nobody.example"); len(got) != 0 {
 		t.Errorf("AddrsOf(nobody.example) = %v", got)
@@ -206,45 +206,45 @@ func TestAddrsOf(t *testing.T) {
 
 func TestLimits(t *testing.T) {
 	s := New(config(t, src), hour)
-	s.SetLimits(3, 2) // всего три претензии, на один адрес — не больше двух
+	s.SetLimits(3, 2) // three claims in total, at most two per address
 	ip3 := netip.MustParseAddr("3.3.3.3")
 
-	// На адрес — не больше двух: третья претензия по тому же правилу отбрасывается.
+	// At most two per address: a third claim from the same rule is dropped.
 	s.Observe(t0, []string{"a.cdn.example"}, []netip.Addr{ip1}, hour)
 	s.Observe(t0, []string{"b.cdn.example"}, []netip.Addr{ip1}, hour)
 	s.Observe(t0, []string{"c.cdn.example"}, []netip.Addr{ip1}, hour)
 	if len(s.Claims(ip1)) != 2 || s.Dropped() != 1 || s.Total() != 2 {
-		t.Fatalf("предел на адрес: претензий %d, отброшено %d, всего %d", len(s.Claims(ip1)), s.Dropped(), s.Total())
+		t.Fatalf("per-address cap: %d claims, %d dropped, %d total", len(s.Claims(ip1)), s.Dropped(), s.Total())
 	}
-	// Претензия по более раннему правилу вытесняет худшую, а не отбрасывается.
+	// A claim from an earlier rule evicts the worst one instead of being dropped.
 	wantChanges(t, s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, hour), "1.1.1.1 alt => vpn strict")
 	if len(s.Claims(ip1)) != 2 || s.Total() != 2 {
-		t.Fatalf("вытеснение: претензий %d, всего %d", len(s.Claims(ip1)), s.Total())
+		t.Fatalf("eviction: %d claims, %d total", len(s.Claims(ip1)), s.Total())
 	}
 
-	// Общий предел: третья претензия проходит, четвёртая — нет.
+	// Total cap: the third claim gets in, the fourth does not.
 	s.Observe(t0, []string{"x.cdn.example"}, []netip.Addr{ip2}, hour)
 	wantChanges(t, s.Observe(t0, []string{"y.cdn.example"}, []netip.Addr{ip3}, hour))
 	if s.Total() != 3 || s.Len() != 2 || s.Dropped() != 2 {
-		t.Fatalf("общий предел: всего %d, адресов %d, отброшено %d", s.Total(), s.Len(), s.Dropped())
+		t.Fatalf("total cap: %d total, %d addresses, %d dropped", s.Total(), s.Len(), s.Dropped())
 	}
-	// Продление уже существующей претензии проходит и при заполненном хранилище.
+	// Extending an existing claim works even when the store is full.
 	s.Observe(t0.Add(30*time.Minute), []string{"x.cdn.example"}, []netip.Addr{ip2}, hour)
 	if cs := s.Claims(ip2); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(90*time.Minute)) {
-		t.Errorf("продление при заполненном хранилище: %+v", cs)
+		t.Errorf("extension with a full store: %+v", cs)
 	}
-	// Истечение освобождает место.
+	// Expiry frees up room.
 	s.Expire(t0.Add(61 * time.Minute))
 	if s.Total() != 1 {
-		t.Errorf("после истечения всего %d, ожидалась 1", s.Total())
+		t.Errorf("after expiry %d total, want 1", s.Total())
 	}
 	if got := s.Observe(t0.Add(62*time.Minute), []string{"y.cdn.example"}, []netip.Addr{ip3}, hour); len(got) != 1 {
-		t.Errorf("после освобождения места претензия не принята: %v", got)
+		t.Errorf("claim not accepted after room was freed: %v", got)
 	}
-	// Смена правил тоже пересчитывает общее число.
+	// Changing the rules also recounts the total.
 	s.SetConfig(config(t, "exit vpn = W\nexit alt = W\ndefault direct\n"))
 	if s.Total() != 0 || s.Len() != 0 {
-		t.Errorf("после смены правил всего %d, адресов %d", s.Total(), s.Len())
+		t.Errorf("after a rules change %d total, %d addresses", s.Total(), s.Len())
 	}
 }
 
@@ -253,10 +253,10 @@ func TestEntries(t *testing.T) {
 	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip2, netip.MustParseAddr("10.9.1.1")}, hour)
 	s.Observe(t0, []string{"yandex.ru"}, []netip.Addr{ip1}, hour)
 	got := s.Entries()
-	// 10.9.1.1 входит в подсеть более раннего правила — в динамических списках его нет.
+	// 10.9.1.1 is in the subnet of an earlier rule, so it is not in the dynamic sets.
 	want := []Entry{{ip1, rules.Action{Exit: "direct"}}, {ip2, rules.Action{Exit: "vpn", Strict: true}}}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("Entries = %+v, ожидалось %+v", got, want)
+		t.Errorf("Entries = %+v, want %+v", got, want)
 	}
 }
 
@@ -269,32 +269,32 @@ func TestSaveLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Перезапуск через полтора часа: претензия cdn.example (срок час) истекла, видео — нет.
+	// Restart an hour and a half later: the cdn.example claim (one-hour TTL) has expired, the video one has not.
 	fresh := New(config(t, src), hour)
 	if n := fresh.Load(bytes.NewReader(buf.Bytes()), t0.Add(90*time.Minute)); n != 1 {
-		t.Errorf("принято претензий %d, ожидалась 1", n)
+		t.Errorf("%d claims accepted, want 1", n)
 	}
 	cs := fresh.Claims(ip1)
 	if len(cs) != 1 || cs[0].Names[1] != "edge.video.example" || cs[0].Action.Exit != "vpn" || !cs[0].Expires.Equal(t0.Add(3*hour)) {
-		t.Errorf("восстановленная претензия: %+v", cs)
+		t.Errorf("restored claim: %+v", cs)
 	}
 	if fresh.Total() != 1 || len(fresh.Entries()) != 1 {
-		t.Errorf("всего %d, в списках %d", fresh.Total(), len(fresh.Entries()))
+		t.Errorf("%d total, %d in sets", fresh.Total(), len(fresh.Entries()))
 	}
 
-	// Правила с тех пор изменились: претензия решается заново по новым.
+	// The rules have changed since: the claim is decided again by the new ones.
 	changed := New(config(t, "exit vpn = W\nexit alt = W\ndefault direct\nother.example -> alt\n"), hour)
 	changed.Load(bytes.NewReader(buf.Bytes()), t0)
 	if cs := changed.Claims(ip1); len(cs) != 1 || cs[0].Action.Exit != "alt" || cs[0].Index != 0 {
-		t.Errorf("после смены правил: %+v", cs)
+		t.Errorf("after a rules change: %+v", cs)
 	}
 }
 
 func TestLoadIgnoresGarbage(t *testing.T) {
 	far := t0.Add(1000 * hour).Unix()
 	lines := []string{
-		"не JSON вовсе",
-		`{"a":"не-адрес","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
+		"not JSON at all",
+		`{"a":"not-an-address","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
 		`{"a":"2001:db8::1","n":["video.example"],"e":` + fmt.Sprint(far) + `}`,
 		`{"a":"1.1.1.1","n":[],"e":` + fmt.Sprint(far) + `}`,
 		`{"a":"1.1.1.1","n":["video.example"],"e":1}`,
@@ -303,17 +303,17 @@ func TestLoadIgnoresGarbage(t *testing.T) {
 	}
 	s := New(config(t, src), hour)
 	if n := s.Load(strings.NewReader(strings.Join(lines, "\n")), t0); n != 1 {
-		t.Errorf("принято %d, ожидалась 1", n)
+		t.Errorf("%d accepted, want 1", n)
 	}
-	// Срок из файла ограничен сутками от текущего времени.
+	// An expiry read from the file is capped at one day from now.
 	if cs := s.Claims(ip2); len(cs) != 1 || !cs[0].Expires.Equal(t0.Add(24*hour)) {
-		t.Errorf("срок не ограничен: %+v", cs)
+		t.Errorf("expiry not capped: %+v", cs)
 	}
 }
 
 func TestUnusableAddressesAreIgnored(t *testing.T) {
-	// Блокирующие DNS-серверы отвечают 0.0.0.0; список адресов ядра такой адрес не принимает,
-	// и одна такая запись ломала бы всё перестроение списков.
+	// Blocking DNS servers answer with 0.0.0.0; the kernel address set rejects such an address,
+	// and a single such entry would break the whole set rebuild.
 	bad := []string{"0.0.0.0", "0.1.2.3", "127.0.0.1", "169.254.1.1", "224.0.0.1", "240.0.0.1", "255.255.255.255"}
 	var addrs []netip.Addr
 	for _, a := range bad {
@@ -323,7 +323,7 @@ func TestUnusableAddressesAreIgnored(t *testing.T) {
 	s := New(config(t, src), hour)
 	wantChanges(t, s.Observe(t0, []string{"video.example"}, addrs, hour), "1.1.1.1 - => vpn strict")
 	if s.Len() != 1 || s.Total() != 1 {
-		t.Errorf("адресов %d, претензий %d — служебные адреса попали в память", s.Len(), s.Total())
+		t.Errorf("%d addresses, %d claims: special addresses were stored", s.Len(), s.Total())
 	}
 	far := fmt.Sprint(t0.Add(10 * hour).Unix())
 	var file strings.Builder
@@ -332,6 +332,6 @@ func TestUnusableAddressesAreIgnored(t *testing.T) {
 	}
 	fresh := New(config(t, src), hour)
 	if n := fresh.Load(strings.NewReader(file.String()), t0); n != 1 || fresh.Len() != 1 {
-		t.Errorf("из файла принято %d претензий, адресов %d; ожидалась одна — 2.2.2.2", n, fresh.Len())
+		t.Errorf("%d claims accepted from the file, %d addresses; want one, 2.2.2.2", n, fresh.Len())
 	}
 }

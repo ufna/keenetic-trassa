@@ -1,4 +1,4 @@
-// Команда trassa: проверка файла правил и объяснение решений.
+// Command trassa is the flexible-routing daemon for the home router and its command-line tool.
 package main
 
 import (
@@ -12,26 +12,26 @@ import (
 	"trassa/internal/store"
 )
 
-const usage = `trassa — гибкая маршрутизация для домашнего роутера
+const usage = `trassa — flexible routing for the home router
 
-Использование:
-  trassa check <файл правил>                   проверить файл правил
-  trassa why -f <файл правил> <имя или адрес>   решение по файлу правил, без демона
-  trassa why <имя, адрес или ссылка>            решение и сведения из DNS у работающего демона
-  trassa status                                 состояние демона
-  trassa reload                                 перечитать правила без остановки
-  trassa rollback [-y] [-dir каталог]           вернуть предыдущую версию правил из истории
-  trassa run [-rules файл] [-only адрес]        запустить демон в режиме наблюдения
-  trassa run -route [-source адрес]             запустить демон в режиме маршрутизации
-  trassa web [-listen адрес] [-dir каталог]     веб-страница для правки правил (192.168.1.1:8090)
-  trassa cleanup                                снять правила перехвата DNS и маршрутизации
+Usage:
+  trassa check <rules file>                     check a rules file
+  trassa why -f <rules file> <name or address>  decision by a rules file, without the daemon
+  trassa why <name, address or link>            decision and DNS details from the running daemon
+  trassa status                                 daemon state
+  trassa reload                                 reload the rules without stopping
+  trassa rollback [-y] [-dir directory]         restore the previous rules version from history
+  trassa run [-rules file] [-only address]      run the daemon in observe mode
+  trassa run -route [-source address]           run the daemon in routing mode
+  trassa web [-listen address] [-dir directory] web page for editing the rules (192.168.1.1:8090)
+  trassa cleanup                                remove the DNS tap and routing rules
 `
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
 const defaultSock = "/tmp/trassa.sock"
 
-// sockPath — путь сокета управления; переменная окружения нужна тестам.
+// sockPath is the control socket path; the environment variable is for tests.
 func sockPath() string {
 	if p := os.Getenv("TRASSA_SOCK"); p != "" {
 		return p
@@ -65,9 +65,9 @@ func run(args []string, out, errw io.Writer) int {
 	return 2
 }
 
-// cmdLive передаёт команду работающему демону.
+// cmdLive passes a command to the running daemon.
 func cmdLive(cmd, arg string, out, errw io.Writer) int {
-	// Короткое ожидание: по этой же команде сторож судит, жив ли демон.
+	// A short wait: the watchdog uses this same command to judge whether the daemon is alive.
 	text, err := ctl.Call(sockPath(), cmd, arg, 3*time.Second)
 	fmt.Fprint(out, text)
 	if err != nil {
@@ -77,11 +77,11 @@ func cmdLive(cmd, arg string, out, errw io.Writer) int {
 	return 0
 }
 
-// load читает файл правил; файлы условий @путь — только из его каталога.
+// load reads a rules file; @path includes are read only from its directory.
 func load(path string, errw io.Writer) (*rules.Config, []rules.Problem, bool) {
 	cfg, ps, err := store.LoadFile(path)
 	if err != nil {
-		fmt.Fprintf(errw, "не могу прочитать %s: %v\n", path, err)
+		fmt.Fprintf(errw, "cannot read %s: %v\n", path, err)
 		return nil, nil, false
 	}
 	return cfg, ps, true
@@ -104,10 +104,10 @@ func cmdCheck(path string, out, errw io.Writer) int {
 	}
 	warnings := printProblems(out, ps)
 	if rules.HasErrors(ps) {
-		fmt.Fprintf(out, "ошибок: %d — правила применять нельзя\n", len(ps)-warnings)
+		fmt.Fprintf(out, "errors: %d — the rules cannot be applied\n", len(ps)-warnings)
 		return 1
 	}
-	fmt.Fprintf(out, "правил: %d, выходов: %d, ожиданий: %d, предупреждений: %d — ошибок нет\n",
+	fmt.Fprintf(out, "rules: %d, exits: %d, expectations: %d, warnings: %d — no errors\n",
 		len(cfg.Rules), len(cfg.Exits), len(cfg.Tests), warnings)
 	return 0
 }

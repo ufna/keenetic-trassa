@@ -17,7 +17,7 @@ func udp(sport, dport uint16, payload []byte) []byte {
 	return b
 }
 
-// v4 собирает пакет IPv4 с заголовком длиной ihl 32-битных слов.
+// v4 builds an IPv4 packet with a header of ihl 32-bit words.
 func v4(src, dst string, proto byte, ihl int, body []byte) []byte {
 	b := make([]byte, ihl*4+len(body))
 	b[0] = 0x40 | byte(ihl)
@@ -70,16 +70,16 @@ func TestParseUDPIgnoresTrailingBytes(t *testing.T) {
 	pkt := append(v4("1.1.1.1", "2.2.2.2", 17, 5, udp(53, 1, []byte("abc"))), 0xEE, 0xEE)
 	u, err := ParseUDP(pkt)
 	if err != nil || !bytes.Equal(u.Payload, []byte("abc")) {
-		t.Errorf("хвост после пакета: %+v, %v", u, err)
+		t.Errorf("trailing bytes after the packet: %+v, %v", u, err)
 	}
 }
 
 func TestParseUDPRejects(t *testing.T) {
 	good := v4("1.1.1.1", "2.2.2.2", 17, 5, udp(53, 1, []byte("abc")))
 	frag := append([]byte{}, good...)
-	binary.BigEndian.PutUint16(frag[6:], 0x2000) // есть продолжение
+	binary.BigEndian.PutUint16(frag[6:], 0x2000) // more fragments
 	frag2 := append([]byte{}, good...)
-	binary.BigEndian.PutUint16(frag2[6:], 0x0010) // не первый фрагмент
+	binary.BigEndian.PutUint16(frag2[6:], 0x0010) // not the first fragment
 	badUDPLen := append([]byte{}, good...)
 	binary.BigEndian.PutUint16(badUDPLen[24:], 200)
 	badTotal := append([]byte{}, good...)
@@ -92,23 +92,23 @@ func TestParseUDPRejects(t *testing.T) {
 		pkt  []byte
 		want error
 	}{
-		{"пусто", nil, ErrTruncated},
-		{"короче заголовка", good[:19], ErrTruncated},
+		{"empty", nil, ErrTruncated},
+		{"shorter than the header", good[:19], ErrTruncated},
 		{"TCP", v4("1.1.1.1", "2.2.2.2", 6, 5, udp(53, 1, nil)), ErrNotUDP},
-		{"не IP", []byte{0x00, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}, ErrNotUDP},
-		{"фрагмент с продолжением", frag, ErrFragment},
-		{"не первый фрагмент", frag2, ErrFragment},
-		{"длина UDP больше пакета", badUDPLen, ErrTruncated},
-		{"общая длина больше пакета", badTotal, ErrTruncated},
-		{"заголовок короче 20 байт", lowIHL, ErrTruncated},
-		{"обрезан заголовок UDP", good[:24], ErrTruncated},
-		{"IPv6 короче заголовка", v6("::1", "::2", 17, udp(53, 1, nil))[:39], ErrTruncated},
-		{"IPv6 не UDP", v6("::1", "::2", 6, udp(53, 1, nil)), ErrNotUDP},
-		{"IPv6 длина больше пакета", v6("::1", "::2", 17, udp(53, 1, []byte("abc")))[:45], ErrTruncated},
+		{"not IP", []byte{0x00, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}, ErrNotUDP},
+		{"fragment with more to follow", frag, ErrFragment},
+		{"not the first fragment", frag2, ErrFragment},
+		{"UDP length exceeds the packet", badUDPLen, ErrTruncated},
+		{"total length exceeds the packet", badTotal, ErrTruncated},
+		{"header shorter than 20 bytes", lowIHL, ErrTruncated},
+		{"truncated UDP header", good[:24], ErrTruncated},
+		{"IPv6 shorter than the header", v6("::1", "::2", 17, udp(53, 1, nil))[:39], ErrTruncated},
+		{"IPv6 not UDP", v6("::1", "::2", 6, udp(53, 1, nil)), ErrNotUDP},
+		{"IPv6 length exceeds the packet", v6("::1", "::2", 17, udp(53, 1, []byte("abc")))[:45], ErrTruncated},
 	}
 	for _, c := range cases {
 		if _, err := ParseUDP(c.pkt); !errors.Is(err, c.want) {
-			t.Errorf("%s: ошибка %v, ожидалась %v", c.name, err, c.want)
+			t.Errorf("%s: error %v, expected %v", c.name, err, c.want)
 		}
 	}
 }

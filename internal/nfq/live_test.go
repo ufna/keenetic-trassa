@@ -6,13 +6,13 @@ import (
 	"time"
 )
 
-// TestLiveFailOpen проверяет на настоящем ядре, что переполненная очередь пропускает пакеты,
-// а не теряет их. Запускается вручную на роутере от имени root: очередь 5354 открывается
-// с длиной 8 и двенадцать секунд не читается. Пакеты в неё направляет отдельное правило,
-// которое ставит и снимает тот, кто проводит проверку (см. docs/observe-rollout-2026-10.md).
+// TestLiveFailOpen checks on a real kernel that an overflowing queue lets packets through
+// instead of dropping them. It is run by hand on the router as root: queue 5354 is opened
+// with length 8 and not read for twelve seconds. Packets are steered into it by a separate rule
+// that whoever runs the check adds and removes (see docs/observe-rollout-2026-10.md).
 func TestLiveFailOpen(t *testing.T) {
 	if os.Getenv("TRASSA_NFQ_LIVE") == "" {
-		t.Skip("проверка на живом ядре: только на роутере, с TRASSA_NFQ_LIVE=1")
+		t.Skip("live kernel check: only on the router, with TRASSA_NFQ_LIVE=1")
 	}
 	const num = 5354
 	q, err := Open(num)
@@ -23,8 +23,8 @@ func TestLiveFailOpen(t *testing.T) {
 	if err := q.request(func(s uint32) []byte { return configMaxLen(num, 8, s) }); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("очередь 5354 открыта, длина 8; двенадцать секунд пакеты не читаются")
+	t.Log("queue 5354 open, length 8; not reading packets for twelve seconds")
 	time.Sleep(12 * time.Second)
 	stats, _ := os.ReadFile("/proc/net/netfilter/nfnetlink_queue")
-	t.Logf("очереди ядра (номер, получатель, ждут, режим, копия, потеряно, потеряно при передаче, всего, …):\n%s", stats)
+	t.Logf("kernel queues (number, peer, waiting, mode, copy range, dropped, user dropped, total, …):\n%s", stats)
 }

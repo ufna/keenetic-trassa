@@ -12,7 +12,7 @@ import (
 	"trassa/internal/store"
 )
 
-// fakeRCI отвечает на вопрос о любом интерфейсе как о живом туннеле WireGuard.
+// fakeRCI answers a question about any interface as if it were a live WireGuard tunnel.
 func fakeRCI(t *testing.T) string {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -34,11 +34,11 @@ func TestRollbackCommand(t *testing.T) {
 		t.Fatalf("%+v, %v", res, err)
 	}
 	code, out, errOut := exec("rollback", "-dir", dir, "-rci", fakeRCI(t))
-	if code != 0 || !strings.Contains(out, "возвращена версия") || !strings.Contains(out, "демон не запущен") {
-		t.Errorf("код %d, вывод %q, stderr %q", code, out, errOut)
+	if code != 0 || !strings.Contains(out, "version restored") || !strings.Contains(out, "daemon is not running") {
+		t.Errorf("code %d, output %q, stderr %q", code, out, errOut)
 	}
 	if b, _ := os.ReadFile(path); string(b) != live {
-		t.Errorf("файл правил: %q", b)
+		t.Errorf("rules file: %q", b)
 	}
 }
 
@@ -52,13 +52,13 @@ func TestRollbackNeedsConfirmForWarnings(t *testing.T) {
 	}
 	code, out, _ := exec("rollback", "-dir", dir, "-rci", fakeRCI(t))
 	if code != 1 || !strings.Contains(out, "trassa rollback -y") {
-		t.Errorf("без подтверждения: код %d, вывод %q", code, out)
+		t.Errorf("without confirmation: code %d, output %q", code, out)
 	}
 	if code, out, _ = exec("rollback", "-y", "-dir", dir, "-rci", fakeRCI(t)); code != 0 {
-		t.Errorf("с подтверждением: код %d, вывод %q", code, out)
+		t.Errorf("with confirmation: code %d, output %q", code, out)
 	}
 	if b, _ := os.ReadFile(path); string(b) != warn {
-		t.Errorf("файл правил: %q", b)
+		t.Errorf("rules file: %q", b)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestRollbackWithoutHistory(t *testing.T) {
 	noDaemon(t)
 	path := write(t, map[string]string{"rules.conf": live})
 	code, _, errOut := exec("rollback", "-dir", filepath.Dir(path), "-rci", fakeRCI(t))
-	if code != 1 || !strings.Contains(errOut, "в истории нет версии") {
-		t.Errorf("код %d, stderr %q", code, errOut)
+	if code != 1 || !strings.Contains(errOut, "history has no version") {
+		t.Errorf("code %d, stderr %q", code, errOut)
 	}
 }

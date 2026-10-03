@@ -1,5 +1,5 @@
-// Package claims помнит, какие правила претендуют на какой адрес, и вычисляет,
-// в каком динамическом списке адресов ядра адрес должен находиться.
+// Package claims remembers which rules claim which address and computes which
+// dynamic kernel address set an address belongs in.
 package claims
 
 import (
@@ -13,41 +13,41 @@ import (
 	"trassa/internal/rules"
 )
 
-// Claim — претензия правила на адрес, возникшая из DNS-ответа.
+// Claim is a rule's claim on an address, created from a DNS answer.
 type Claim struct {
-	Names   []string // запрошенное имя и его CNAME-цели
-	Index   int      // номер правила; меньше — старше
+	Names   []string // the queried name and its CNAME targets
+	Index   int      // rule number; lower means older
 	Action  rules.Action
 	Expires time.Time
 }
 
-// Change — изменение динамических списков. nil означает «адреса нет ни в одном списке».
+// Change is a change to the dynamic sets. nil means "the address is in no set".
 type Change struct {
 	Addr     netip.Addr
 	Old, New *rules.Action
 }
 
-// Store не потокобезопасен: вызывающий обеспечивает последовательный доступ.
+// Store is not safe for concurrent use: the caller serializes access.
 type Store struct {
 	cfg    *rules.Config
 	minTTL time.Duration
 	byAddr map[netip.Addr][]Claim
 
-	total   int    // претензий всего, по всем адресам
-	limit   int    // предел total; 0 — без предела
-	perAddr int    // предел претензий на один адрес; 0 — без предела
-	dropped uint64 // претензий, не принятых из-за пределов
+	total   int    // claims in total, across all addresses
+	limit   int    // cap on total; 0 means no cap
+	perAddr int    // cap on claims per address; 0 means no cap
+	dropped uint64 // claims rejected because of the caps
 }
 
-// SetLimits ограничивает память хранилища: всего претензий и претензий на один адрес.
-// Устройство в домашней сети может прислать сколько угодно «ответов», и без пределов
-// хранилище росло бы вместе с ними.
+// SetLimits bounds the store's memory: total claims and claims per address.
+// A device on the home network can send any number of "answers", and without caps
+// the store would grow along with them.
 func (s *Store) SetLimits(total, perAddr int) { s.limit, s.perAddr = total, perAddr }
 
-// Total возвращает число претензий по всем адресам.
+// Total returns the number of claims across all addresses.
 func (s *Store) Total() int { return s.total }
 
-// Dropped возвращает число претензий, не принятых из-за пределов.
+// Dropped returns the number of claims rejected because of the caps.
 func (s *Store) Dropped() uint64 { return s.dropped }
 
 func New(cfg *rules.Config, minTTL time.Duration) *Store {
@@ -56,10 +56,10 @@ func New(cfg *rules.Config, minTTL time.Duration) *Store {
 
 func (s *Store) Len() int { return len(s.byAddr) }
 
-// Claims возвращает копию претензий на адрес: хранилище переписывает свои срезы на месте.
+// Claims returns a copy of the claims on an address: the store rewrites its slices in place.
 func (s *Store) Claims(addr netip.Addr) []Claim { return append([]Claim(nil), s.byAddr[addr]...) }
 
-// AddrsOf возвращает адреса, на которые претендует запрошенное имя name, по возрастанию.
+// AddrsOf returns the addresses claimed by the queried name, in ascending order.
 func (s *Store) AddrsOf(name string) []netip.Addr {
 	var out []netip.Addr
 	for a, cs := range s.byAddr {
@@ -74,7 +74,7 @@ func (s *Store) AddrsOf(name string) []netip.Addr {
 	return out
 }
 
-// Effective возвращает действие, с которым адрес должен быть в динамическом списке, или nil.
+// Effective returns the action with which the address belongs in a dynamic set, or nil.
 func (s *Store) Effective(addr netip.Addr) *rules.Action {
 	cs := s.byAddr[addr]
 	if len(cs) == 0 {
@@ -86,7 +86,7 @@ func (s *Store) Effective(addr netip.Addr) *rules.Action {
 			best = c
 		}
 	}
-	// Подсеть более раннего правила старше: адрес обслуживает её статический список.
+	// A subnet of an earlier rule is older: its static set serves the address.
 	if st := s.cfg.MatchAddr(addr); st.Rule != nil && st.Index < best.Index {
 		return nil
 	}
@@ -94,7 +94,7 @@ func (s *Store) Effective(addr netip.Addr) *rules.Action {
 	return &a
 }
 
-// Observe учитывает DNS-ответ: names — запрошенное имя и его CNAME-цели, addrs — адреса из ответа.
+// Observe records a DNS answer: names are the queried name and its CNAME targets, addrs the answer's addresses.
 func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl time.Duration) []Change {
 	d := s.cfg.MatchChain(names)
 	if d.Rule == nil {
@@ -103,7 +103,7 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	if ttl < s.minTTL {
 		ttl = s.minTTL
 	}
-	// Копия: срез вызывающего хранится долго и не должен меняться у нас под руками.
+	// Copy: we keep the caller's slice for a long time, and it must not change under us.
 	names = append([]string(nil), names...)
 	c := Claim{Names: names, Index: d.Index, Action: d.Action, Expires: now.Add(ttl)}
 	var out []Change
@@ -118,7 +118,7 @@ func (s *Store) Observe(now time.Time, names []string, addrs []netip.Addr, ttl t
 	return out
 }
 
-// Expire удаляет претензии, срок которых вышел к моменту now.
+// Expire removes the claims that have expired by now.
 func (s *Store) Expire(now time.Time) []Change {
 	var out []Change
 	for a, cs := range s.byAddr {
@@ -137,7 +137,7 @@ func (s *Store) Expire(now time.Time) []Change {
 	return out
 }
 
-// SetConfig переводит хранилище на новые правила: каждая претензия заново решается по своей цепочке имён.
+// SetConfig switches the store to new rules: every claim is decided again from its name chain.
 func (s *Store) SetConfig(cfg *rules.Config) []Change {
 	old := make(map[netip.Addr]*rules.Action, len(s.byAddr))
 	for a := range s.byAddr {
@@ -171,8 +171,8 @@ func (s *Store) put(a netip.Addr, cs []Claim) {
 	s.byAddr[a] = cs
 }
 
-// add заменяет претензию того же запрошенного имени или добавляет новую, соблюдая пределы.
-// Срок при замене не укорачивается: новый ответ может только продлить претензию.
+// add replaces the claim for the same queried name or adds a new one, respecting the caps.
+// A replacement never shortens the expiry: a new answer can only extend a claim.
 func (s *Store) add(a netip.Addr, c Claim) {
 	cs := s.byAddr[a]
 	for i := range cs {
@@ -185,7 +185,7 @@ func (s *Store) add(a netip.Addr, c Claim) {
 		}
 	}
 	if s.perAddr > 0 && len(cs) >= s.perAddr {
-		// Адрес заполнен: новая претензия вытесняет худшую, только если сама старше её.
+		// The address is full: a new claim evicts the worst one only if it is older than it.
 		worst := 0
 		for i := range cs {
 			if cs[i].Index > cs[worst].Index {
@@ -218,9 +218,9 @@ func sortChanges(cs []Change) {
 	sort.Slice(cs, func(i, j int) bool { return cs[i].Addr.Less(cs[j].Addr) })
 }
 
-// usable сообщает, что адрес может быть назначением обычного трафика. Нулевой адрес (им
-// отвечают блокирующие DNS-серверы) список адресов ядра не принимает вовсе, и одна такая
-// запись срывала бы всё перестроение списков; остальные служебные адреса маршрутизировать незачем.
+// usable reports whether the address can be a destination of ordinary traffic. The kernel
+// address set rejects the zero address (blocking DNS servers answer with it) outright, and a
+// single such entry would break the whole set rebuild; other special addresses need no routing.
 func usable(a netip.Addr) bool {
 	if !a.Is4() {
 		return false
@@ -229,13 +229,13 @@ func usable(a netip.Addr) bool {
 	return b[0] != 0 && b[0] != 127 && b[0] < 224 && !(b[0] == 169 && b[1] == 254)
 }
 
-// Entry — адрес и действие, с которым он должен быть в динамическом списке.
+// Entry is an address and the action with which it belongs in a dynamic set.
 type Entry struct {
 	Addr   netip.Addr
 	Action rules.Action
 }
 
-// Entries возвращает всё, что должно быть в динамических списках, по возрастанию адреса.
+// Entries returns everything that belongs in the dynamic sets, by ascending address.
 func (s *Store) Entries() []Entry {
 	out := make([]Entry, 0, len(s.byAddr))
 	for a := range s.byAddr {
@@ -247,7 +247,7 @@ func (s *Store) Entries() []Entry {
 	return out
 }
 
-// maxKeep — на сколько вперёд может смотреть срок претензии, прочитанной из файла.
+// maxKeep is how far ahead the expiry of a claim read from a file may reach.
 const maxKeep = 24 * time.Hour
 
 type saved struct {
@@ -256,8 +256,8 @@ type saved struct {
 	Expires int64    `json:"e"`
 }
 
-// Save записывает претензии, по одной в строке. Решения не сохраняются: при чтении
-// каждая претензия решается заново по тем правилам, которые действуют тогда.
+// Save writes the claims, one per line. Decisions are not saved: on load every
+// claim is decided again by the rules in effect at that time.
 func (s *Store) Save(w io.Writer) error {
 	enc := json.NewEncoder(w)
 	for a, cs := range s.byAddr {
@@ -270,7 +270,7 @@ func (s *Store) Save(w io.Writer) error {
 	return nil
 }
 
-// Load читает претензии, записанные Save, и возвращает число принятых.
+// Load reads claims written by Save and returns the number accepted.
 func (s *Store) Load(r io.Reader, now time.Time) int {
 	n := 0
 	sc := bufio.NewScanner(r)

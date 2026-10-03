@@ -17,12 +17,12 @@ func node(t *testing.T) string {
 	t.Helper()
 	p, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("нет node: проверка сценариев страницы пропущена")
+		t.Skip("no node: page script checks skipped")
 	}
 	return p
 }
 
-// Хеши на JavaScript должны совпадать с Go: иначе страница не войдёт ни с каким паролем.
+// The JavaScript hashes must match Go, or the page cannot sign in with any password.
 func TestHashScript(t *testing.T) {
 	src, err := staticFiles.ReadFile("static/hash.js")
 	if err != nil {
@@ -52,7 +52,7 @@ process.stdout.write(JSON.stringify(out));`
 		}
 	}
 	if want := answer("admin", "пароль", "Netcraze Giga", "ABCDEF"); got[len(inputs)][0] != want {
-		t.Errorf("ответ на вызов: %s, ожидался %s", got[len(inputs)][0], want)
+		t.Errorf("challenge response: %s, want %s", got[len(inputs)][0], want)
 	}
 }
 
@@ -71,7 +71,7 @@ func TestPageScriptsParse(t *testing.T) {
 	}
 }
 
-// Всё, на что ссылается страница, встроено; внешних ресурсов, innerHTML и встроенных стилей нет.
+// Everything the page references is embedded; there are no external resources, innerHTML or inline styles.
 func TestPageIsSelfContained(t *testing.T) {
 	page, err := staticFiles.ReadFile("static/index.html")
 	if err != nil {
@@ -79,15 +79,15 @@ func TestPageIsSelfContained(t *testing.T) {
 	}
 	refs := regexp.MustCompile(`(?:src|href)="([^"]+)"`).FindAllStringSubmatch(string(page), -1)
 	if len(refs) < 3 {
-		t.Fatalf("ссылок на файлы страницы: %d", len(refs))
+		t.Fatalf("references to page files: %d", len(refs))
 	}
 	for _, ref := range refs {
 		if strings.Contains(ref[1], "//") {
-			t.Errorf("внешний ресурс: %s", ref[1])
+			t.Errorf("external resource: %s", ref[1])
 			continue
 		}
 		if _, err := staticFiles.ReadFile("static/" + ref[1]); err != nil {
-			t.Errorf("нет файла %s", ref[1])
+			t.Errorf("missing file %s", ref[1])
 		}
 	}
 	for _, name := range []string{"index.html", "app.js"} {
@@ -100,7 +100,7 @@ func TestPageIsSelfContained(t *testing.T) {
 	}
 }
 
-// Повторный вход (истёк сеанс, перезапустилась страница) не должен стирать несохранённую правку.
+// Signing in again (session expired, page reloaded) must not wipe an unsaved edit.
 func TestLogicAdoptKeepsUnsavedEdit(t *testing.T) {
 	src, err := staticFiles.ReadFile("static/logic.js")
 	if err != nil {
@@ -108,11 +108,11 @@ func TestLogicAdoptKeepsUnsavedEdit(t *testing.T) {
 	}
 	type tc struct{ Editor, Saved, Server, WantEditor, WantSaved, Note string }
 	cases := []tc{
-		{"", "", "A", "A", "A", ""},   // первая загрузка
-		{"A", "A", "B", "B", "B", ""}, // правки нет — берём текст с роутера
-		{"A+правка", "A", "A", "A+правка", "A", "осталась"},   // правка цела
-		{"A+правка", "A", "B", "A+правка", "B", "изменились"}, // правка цела, роутер сменил текст
-		{"B", "A", "B", "B", "B", ""}, // набранное совпало с текстом роутера
+		{"", "", "A", "A", "A", ""},                                        // first load
+		{"A", "A", "B", "B", "B", ""},                                      // no edit: take the router text
+		{"A+edit", "A", "A", "A+edit", "A", "kept in the editor"},          // the edit is intact
+		{"A+edit", "A", "B", "A+edit", "B", "changed while you were away"}, // the edit is intact, the router text changed
+		{"B", "A", "B", "B", "B", ""},                                      // what was typed matches the router text
 	}
 	in, _ := json.Marshal(cases)
 	script := string(src) + `
@@ -129,7 +129,7 @@ process.stdout.write(JSON.stringify(cases.map(c => TrassaLogic.adopt(c.Editor, c
 	for i, c := range cases {
 		g := got[i]
 		if g.Editor != c.WantEditor || g.Saved != c.WantSaved || (c.Note == "") != (g.Note == "") || !strings.Contains(g.Note, c.Note) {
-			t.Errorf("%+v: получено %+v", c, g)
+			t.Errorf("%+v: got %+v", c, g)
 		}
 	}
 }

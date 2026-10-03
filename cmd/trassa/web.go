@@ -49,10 +49,10 @@ func cmdWeb(args []string, errw io.Writer) int {
 	}
 	l, err := net.Listen("tcp", *listen)
 	if err != nil {
-		logger.Printf("веб-страница: %v", err)
+		logger.Printf("web page: %v", err)
 		return 1
 	}
-	// Сохранение правил ждёт демона до 40 секунд — срок записи ответа больше.
+	// Saving rules waits up to 40 seconds for the daemon, so the write timeout is longer.
 	hs := &http.Server{Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
 		WriteTimeout: 90 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 64 << 10, ErrorLog: logger}
 	sig := make(chan os.Signal, 1)
@@ -63,11 +63,11 @@ func cmdWeb(args []string, errw io.Writer) int {
 		defer cancel()
 		hs.Shutdown(ctx)
 	}()
-	logger.Printf("веб-страница trassa: http://%s/", *listen)
+	logger.Printf("trassa web page: http://%s/", *listen)
 	if err := hs.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Printf("веб-страница: %v", err)
+		logger.Printf("web page: %v", err)
 		return 1
 	}
-	logger.Print("веб-страница остановлена")
+	logger.Print("web page stopped")
 	return 0
 }

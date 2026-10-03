@@ -1,4 +1,4 @@
-// Package ippkt достаёт полезную нагрузку UDP из пакета IPv4 или IPv6.
+// Package ippkt extracts the UDP payload from an IPv4 or IPv6 packet.
 package ippkt
 
 import (
@@ -8,9 +8,9 @@ import (
 )
 
 var (
-	ErrNotUDP    = errors.New("не UDP поверх IP")
-	ErrFragment  = errors.New("фрагмент IP-пакета")
-	ErrTruncated = errors.New("обрезанный пакет")
+	ErrNotUDP    = errors.New("not UDP over IP")
+	ErrFragment  = errors.New("IP packet fragment")
+	ErrTruncated = errors.New("truncated packet")
 )
 
 const protoUDP = 17
@@ -18,10 +18,10 @@ const protoUDP = 17
 type UDP struct {
 	Src, Dst         netip.Addr
 	SrcPort, DstPort uint16
-	Payload          []byte // ссылается на исходный буфер
+	Payload          []byte // points into the original buffer
 }
 
-// ParseUDP разбирает пакет, начинающийся с заголовка IP. Заголовки расширения IPv6 не поддерживаются.
+// ParseUDP parses a packet that starts with an IP header. IPv6 extension headers are not supported.
 func ParseUDP(b []byte) (UDP, error) {
 	if len(b) < 20 {
 		return UDP{}, ErrTruncated
@@ -38,7 +38,7 @@ func ParseUDP(b []byte) (UDP, error) {
 		if ihl < 20 || total < ihl || total > len(b) {
 			return UDP{}, ErrTruncated
 		}
-		// Бит «есть продолжение» или ненулевое смещение: это фрагмент, UDP-заголовка в нём может не быть.
+		// The "more fragments" bit or a non-zero offset: this is a fragment and may lack the UDP header.
 		if binary.BigEndian.Uint16(b[6:])&0x3fff != 0 {
 			return UDP{}, ErrFragment
 		}

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// Load разбирает правила и, если разбор прошёл без ошибок, проверяет ожидания и выдаёт предупреждения.
+// Load parses the rules and, if parsing succeeded without errors, checks expectations and reports warnings.
 func Load(src string, read ReadFile) (*Config, []Problem) {
 	cfg, ps := Parse(src, read)
 	if HasErrors(ps) {
@@ -15,28 +15,28 @@ func Load(src string, read ReadFile) (*Config, []Problem) {
 	return cfg, append(ps, Check(cfg)...)
 }
 
-// Check проверяет ожидания test и ищет подозрительные правила.
+// Check verifies test expectations and looks for suspicious rules.
 func Check(c *Config) []Problem {
 	var ps []Problem
 	if len(c.Exits) > MaxExits {
 		ps = append(ps, Problem{c.Exits[MaxExits].Line, Error,
-			fmt.Sprintf("выходов %d: поддерживается не больше %d", len(c.Exits), MaxExits)})
+			fmt.Sprintf("%d exits: at most %d are supported", len(c.Exits), MaxExits)})
 	}
 	if c.Default.Strict {
 		ps = append(ps, Problem{c.DefaultLine, Warning,
-			"strict в default: при падении всех туннелей выхода пропадёт весь интернет, кроме правил direct"})
+			"strict in default: if all of the exit's tunnels go down, the whole internet is lost except for direct rules"})
 	}
 	for i := range c.Rules {
 		r := &c.Rules[i]
-		// Только отрицание: под правило попадает почти весь интернет. Отрицание рядом с обычными
-		// условиями лишь сужает правило, и предупреждать о нём — приучать подтверждать не глядя.
+		// Negation only: almost the whole internet falls under the rule. A negation next to ordinary
+		// conditions only narrows the rule, and warning about it would teach people to confirm without looking.
 		if r.Action.Strict && len(r.Neg) > 0 && len(r.Pos) == 0 && len(r.Nets) == 0 {
 			ps = append(ps, Problem{r.Line, Warning,
-				"strict на правиле с отрицанием: при падении всех туннелей выхода пропадёт почти весь интернет"})
+				"strict on a negation rule: if all of the exit's tunnels go down, almost the whole internet is lost"})
 		}
 		if by := c.shadowedBy(i); by != "" {
 			ps = append(ps, Problem{r.Line, Warning,
-				"правило никогда не сработает: его условия перекрыты более ранними правилами (" + by + ")"})
+				"rule can never match: its conditions are covered by earlier rules (" + by + ")"})
 		}
 	}
 	for _, t := range c.Tests {
@@ -48,8 +48,8 @@ func Check(c *Config) []Problem {
 	return ps
 }
 
-// takes сообщает, что правило заведомо забирает все имена, подходящие под условие b:
-// b перекрыто одним из обычных условий (или обычных условий нет) и не пересекается ни с одним отрицанием.
+// takes reports that the rule certainly takes every name matching condition b:
+// b is covered by one of the ordinary conditions (or there are none) and overlaps none of the negations.
 func (r *Rule) takes(b Cond) bool {
 	if len(r.Pos) == 0 && len(r.Neg) == 0 {
 		return false
@@ -74,8 +74,9 @@ func (r *Rule) takes(b Cond) bool {
 	return true
 }
 
-// shadowedBy возвращает перечень строк более ранних правил, целиком перекрывающих правило i,
-// или пустую строку. Проверка осторожная: само правило с отрицанием и регулярные выражения не судятся.
+// shadowedBy returns the list of lines of earlier rules that fully cover rule i,
+// or an empty string. The check is conservative: rule i is not judged if it has negations,
+// and regular expressions are never judged.
 func (c *Config) shadowedBy(i int) string {
 	r := &c.Rules[i]
 	if len(r.Neg) > 0 {
@@ -116,7 +117,7 @@ func (c *Config) shadowedBy(i int) string {
 	sort.Ints(sorted)
 	parts := make([]string, len(sorted))
 	for k, l := range sorted {
-		parts[k] = fmt.Sprintf("строка %d", l)
+		parts[k] = fmt.Sprintf("line %d", l)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -129,10 +130,10 @@ func (c *Config) runTest(t Test) (Problem, bool) {
 	if d.Action.Exit == t.Want {
 		return Problem{}, false
 	}
-	where := "по default"
+	where := "by default"
 	if d.Rule != nil {
-		where = fmt.Sprintf("по правилу в строке %d", d.Rule.Line)
+		where = fmt.Sprintf("by the rule on line %d", d.Rule.Line)
 	}
-	return Problem{t.Line, Error, fmt.Sprintf("ожидание не выполнено: %s идёт в %s (%s), а ожидалось %s",
+	return Problem{t.Line, Error, fmt.Sprintf("expectation failed: %s goes to %s (%s), expected %s",
 		t.Subject, d.Action.Exit, where, t.Want)}, true
 }

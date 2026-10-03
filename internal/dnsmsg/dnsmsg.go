@@ -1,4 +1,4 @@
-// Package dnsmsg разбирает DNS-ответы: вопрос, записи A, AAAA и CNAME.
+// Package dnsmsg parses DNS responses: the question and A, AAAA and CNAME records.
 package dnsmsg
 
 import (
@@ -15,14 +15,14 @@ const (
 	TypeAAAA  uint16 = 28
 )
 
-var ErrMalformed = errors.New("повреждённое DNS-сообщение")
+var ErrMalformed = errors.New("malformed DNS message")
 
 type Answer struct {
 	Name   string
 	Type   uint16
 	TTL    uint32
-	Addr   netip.Addr // для A и AAAA
-	Target string     // для CNAME
+	Addr   netip.Addr // for A and AAAA
+	Target string     // for CNAME
 }
 
 type Message struct {
@@ -35,7 +35,7 @@ type Message struct {
 	Answers   []Answer
 }
 
-// Parse разбирает DNS-сообщение (полезную нагрузку UDP). Разделы после ответов не читаются.
+// Parse parses a DNS message (a UDP payload). Sections after the answers are not read.
 func Parse(b []byte) (*Message, error) {
 	if len(b) < 12 {
 		return nil, ErrMalformed
@@ -100,7 +100,7 @@ func Parse(b []byte) (*Message, error) {
 	return m, nil
 }
 
-// readName читает имя с учётом сжатия. Возвращает имя в нижнем регистре и позицию после него.
+// readName reads a name, following compression. It returns the lowercased name and the offset after it.
 func readName(b []byte, off int) (string, int, error) {
 	var sb strings.Builder
 	next, jumps := -1, 0
@@ -149,8 +149,8 @@ func readName(b []byte, off int) (string, int, error) {
 	}
 }
 
-// Resolve возвращает цепочку имён (запрошенное имя и его CNAME-цели по порядку),
-// IPv4-адреса последнего имени цепочки и наименьший TTL среди этих адресов.
+// Resolve returns the name chain (the queried name and its CNAME targets in order),
+// the IPv4 addresses of the last name in the chain, and the smallest TTL among those addresses.
 func (m *Message) Resolve() (names []string, addrs []netip.Addr, ttl uint32) {
 	names = []string{m.Question}
 	cur := m.Question

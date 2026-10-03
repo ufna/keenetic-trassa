@@ -14,7 +14,7 @@ import (
 
 type problemJSON struct {
 	Line     int    `json:"line"`
-	Severity string `json:"severity"` // error или warning
+	Severity string `json:"severity"` // error or warning
 	Msg      string `json:"msg"`
 }
 
@@ -55,7 +55,7 @@ func toResult(res store.Result) resultJSON {
 }
 
 type stateJSON struct {
-	Daemon      *ctl.State     `json:"daemon"` // nil — демон не отвечает
+	Daemon      *ctl.State     `json:"daemon"` // nil means the daemon is not answering
 	DaemonError string         `json:"daemonError,omitempty"`
 	Tunnels     []exits.Tunnel `json:"tunnels"`
 	Now         time.Time      `json:"now"`
@@ -88,7 +88,7 @@ func (s *Server) state(w http.ResponseWriter, r *http.Request) {
 func (s *Server) rulesText(w http.ResponseWriter, r *http.Request) {
 	text, err := s.Store.Current()
 	if err != nil {
-		writeError(w, http.StatusNotFound, "файл правил не прочитан: "+err.Error())
+		writeError(w, http.StatusNotFound, "cannot read the rules file: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"text": text})
@@ -119,11 +119,11 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := s.Store.Save(in.Text, in.Confirm)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "правила не сохранены: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "rules not saved: "+err.Error())
 		return
 	}
 	if res.Saved || res.Applied == store.Rejected {
-		s.logf("правила сохранены со страницы (%s): %s — %s", clientIP(r), res.Applied, res.Message)
+		s.logf("rules saved from the page (%s): %s — %s", clientIP(r), res.Applied, res.Message)
 	}
 	writeJSON(w, http.StatusOK, toResult(res))
 }
@@ -131,7 +131,7 @@ func (s *Server) save(w http.ResponseWriter, r *http.Request) {
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	h, err := s.Store.History()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "история не прочитана: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "cannot read the history: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, h)
@@ -162,7 +162,7 @@ func (s *Server) rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if res.Saved || res.Applied == store.Rejected {
-		s.logf("возврат версии %s со страницы (%s): %s — %s", in.ID, clientIP(r), res.Applied, res.Message)
+		s.logf("version %s restored from the page (%s): %s — %s", in.ID, clientIP(r), res.Applied, res.Message)
 	}
 	writeJSON(w, http.StatusOK, toResult(res))
 }
@@ -177,7 +177,7 @@ func (s *Server) why(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if in.Subject == "" || len(in.Subject) > 2048 {
-		writeError(w, http.StatusBadRequest, "введите имя, адрес или ссылку")
+		writeError(w, http.StatusBadRequest, "enter a name, address or link")
 		return
 	}
 	text, err := s.Daemon("why", in.Subject)
@@ -189,15 +189,15 @@ func (s *Server) why(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	// Демон не отвечает — ответ по одному файлу правил, без сведений из DNS.
+	// The daemon is not answering: answer from the rules file alone, without DNS data.
 	cur, err := s.Store.Current()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "файл правил не прочитан: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "cannot read the rules file: "+err.Error())
 		return
 	}
 	cfg, ps := store.Load(s.Store.Dir, cur)
 	if rules.HasErrors(ps) {
-		writeError(w, http.StatusConflict, "в файле правил ошибки — сначала исправьте их")
+		writeError(w, http.StatusConflict, "the rules file has errors — fix them first")
 		return
 	}
 	if text, err = cfg.Explain(in.Subject); err != nil {

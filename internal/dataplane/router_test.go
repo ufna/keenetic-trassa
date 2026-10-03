@@ -12,11 +12,11 @@ import (
 	"trassa/internal/rules"
 )
 
-// scripted запоминает команды вместе с тем, что им подано на вход, и отвечает по сценарию.
+// scripted records commands along with their input and answers from a script.
 type scripted struct {
 	calls []string
-	out   map[string]string // начало строки команды → её вывод
-	fail  []string          // команда, содержащая ключ, завершается ошибкой
+	out   map[string]string // command line prefix → its output
+	fail  []string          // a command containing a key fails
 }
 
 func (s *scripted) RunInput(_ context.Context, stdin, name string, args ...string) (string, error) {
@@ -27,7 +27,7 @@ func (s *scripted) RunInput(_ context.Context, stdin, name string, args ...strin
 	s.calls = append(s.calls, line)
 	for _, k := range s.fail {
 		if strings.Contains(line, k) {
-			return "", errors.New("сбой утилиты")
+			return "", errors.New("utility failure")
 		}
 	}
 	for k, v := range s.out {
@@ -42,7 +42,7 @@ func (s *scripted) Run(ctx context.Context, name string, args ...string) (string
 	return s.RunInput(ctx, "", name, args...)
 }
 
-// changed — команды, которые что-то меняют (без чтения состояния).
+// changed returns the commands that change something (no state reads).
 func (s *scripted) changed() []string {
 	var out []string
 	for _, c := range s.calls {
@@ -58,7 +58,7 @@ func cfgOf(t *testing.T, s string) *rules.Config {
 	t.Helper()
 	cfg, ps := rules.Load(s, nil)
 	if rules.HasErrors(ps) {
-		t.Fatalf("правила: %v", ps)
+		t.Fatalf("rules: %v", ps)
 	}
 	return cfg
 }
@@ -121,7 +121,7 @@ func TestRebuildFromScratch(t *testing.T) {
 		"ip route flush table 543",
 		"ip route replace blackhole default table 544 metric 1000",
 		"ip route replace blackhole default table 544",
-		// Прыжок — последним: метки начинают ставиться, когда правила и маршруты уже есть.
+		// The jump comes last: marks start being set once the rules and routes exist.
 		"iptables -w -t mangle -A PREROUTING -s 192.168.1.94 -i br0 -j TRASSA",
 	})
 }
@@ -139,7 +139,7 @@ func TestRebuildIsIdempotent(t *testing.T) {
 	}
 	for _, c := range run.changed() {
 		if strings.Contains(c, "ip rule add") || strings.Contains(c, "PREROUTING") || strings.Contains(c, "destroy") {
-			t.Errorf("лишняя команда при повторном построении: %s", c)
+			t.Errorf("unexpected command on rebuild: %s", c)
 		}
 	}
 }
@@ -168,12 +168,12 @@ func TestDefaultThroughTunnelSkipsLocalNetworks(t *testing.T) {
 		"-A TRASSA -m mark --mark 0x0 -m conntrack --ctstate NEW -j MARK --set-mark 0x54520001\n" +
 		"-A TRASSA -m mark --mark 0x54520000/0xffff0000 -j CONNMARK --save-mark\nCOMMIT\n"
 	if !strings.HasSuffix(tail, want) {
-		t.Errorf("хвост цепочки:\n%s\nожидалось окончание:\n%s", tail, want)
+		t.Errorf("chain tail:\n%s\nwant ending:\n%s", tail, want)
 	}
 }
 
 func TestRebuildAfterExitsChange(t *testing.T) {
-	// Прежняя раскладка оставила списки, правило и прыжок с другим источником.
+	// The previous layout left sets, a rule and a jump with a different source.
 	run := &scripted{out: map[string]string{
 		"ip rule list":                        "201:\tfrom all fwmark 0x54520001 lookup 541 \n205:\tfrom all fwmark 0x54520005 lookup 545 \n1150:\tfrom all fwmark 0xffffaaa lookup 4096 \n",
 		"iptables -w -t mangle -S PREROUTING": "-A PREROUTING -s 192.168.1.50/32 -i br0 -j TRASSA\n-A PREROUTING -i br0 -j TRASSA\n",
@@ -194,17 +194,17 @@ func TestRebuildAfterExitsChange(t *testing.T) {
 		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
 	} {
 		if !strings.Contains(got, want) {
-			t.Errorf("нет команды %q в\n%s", want, got)
+			t.Errorf("no command %q in\n%s", want, got)
 		}
 	}
 	for _, bad := range []string{"-A PREROUTING", "pref 1150", "_NDM_X", "destroy trassa_d1", "pref 201\n"} {
 		if strings.Contains(got, bad) {
-			t.Errorf("лишняя команда с %q в\n%s", bad, got)
+			t.Errorf("unexpected command with %q in\n%s", bad, got)
 		}
 	}
-	// Лишнее удаляется после того, как цепочка перестала на него ссылаться.
+	// Stale objects are removed after the chain stops referencing them.
 	if strings.Index(got, "ipset destroy") < strings.Index(got, "iptables-restore") {
-		t.Error("списки удаляются раньше, чем заменена цепочка")
+		t.Error("sets are removed before the chain is replaced")
 	}
 }
 
@@ -212,7 +212,7 @@ func TestApply(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.Addr{})
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1")}}); err == nil {
-		t.Error("изменение до построения списков должно быть ошибкой")
+		t.Error("a change before the sets are built must be an error")
 	}
 	r.Rebuild(cfgOf(t, twoExits), nil)
 	run.calls = nil
@@ -238,7 +238,7 @@ func TestApplyFailureIsReported(t *testing.T) {
 	run.fail = []string{"ipset restore"}
 	a := vpn(false)
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &a}}); err == nil {
-		t.Error("сбой утилиты должен вернуться ошибкой")
+		t.Error("a utility failure must be returned as an error")
 	}
 }
 
@@ -249,7 +249,7 @@ func TestRoutesFollowExits(t *testing.T) {
 	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
 
 	run.calls = nil
-	r.SetExits(map[string]string{"vpn": ""}) // все туннели упали
+	r.SetExits(map[string]string{"vpn": ""}) // all tunnels are down
 	equal(t, run.calls, []string{
 		"ip route flush table 541",
 		"ip route replace blackhole default table 542 metric 1000",
@@ -257,7 +257,7 @@ func TestRoutesFollowExits(t *testing.T) {
 	})
 
 	run.calls = nil
-	r.SetExits(map[string]string{"vpn": "nwg0"}) // поднялся запасной
+	r.SetExits(map[string]string{"vpn": "nwg0"}) // the backup came up
 	equal(t, run.calls, []string{
 		"ip route replace default dev nwg0 table 541",
 		"ip route replace blackhole default table 542 metric 1000",
@@ -269,15 +269,15 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 	run := &scripted{}
 	r := NewRouter(run, "br0", netip.MustParseAddr("192.168.1.94"))
 	if err := r.Reconcile(context.Background()); !errors.Is(err, ErrMissing) {
-		t.Errorf("до построения сверять нечего: %v", err)
+		t.Errorf("nothing to reconcile before the build: %v", err)
 	}
 	r.SetExits(map[string]string{"vpn": "nwg2"})
 	r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil)
 	run.calls = nil
 	if err := r.Reconcile(context.Background()); err != nil {
-		t.Errorf("прыжок на месте, а Reconcile вернул %v", err)
+		t.Errorf("the jump is in place, but Reconcile returned %v", err)
 	}
-	// Сверка заново ставит правила и маршруты: ядро удаляет маршрут, когда интерфейс выключают.
+	// Reconcile reapplies rules and routes: the kernel removes a route when its interface goes down.
 	equal(t, run.changed(), []string{
 		"ip rule add fwmark 0x54520001/0xffffffff lookup 541 pref 201",
 		"ip rule add fwmark 0x54520002/0xffffffff lookup 542 pref 202",
@@ -287,7 +287,7 @@ func TestCheckDetectsMissingJump(t *testing.T) {
 	})
 	run.fail = []string{" -C "}
 	if err := r.Reconcile(context.Background()); !errors.Is(err, ErrMissing) {
-		t.Errorf("пропавший прыжок не замечен: %v", err)
+		t.Errorf("missing jump not detected: %v", err)
 	}
 }
 
@@ -317,22 +317,22 @@ func TestFailedRebuildLeavesNoStaleLayout(t *testing.T) {
 	if err := r.Rebuild(cfgOf(t, "exit vpn = W\ndefault direct\nx.com -> vpn\n"), nil); err != nil {
 		t.Fatal(err)
 	}
-	// Новые правила с другим составом выходов; замена цепочки не удалась.
+	// New rules with a different set of exits; replacing the chain failed.
 	run.fail = []string{"iptables-restore"}
 	if err := r.Rebuild(cfgOf(t, twoExits), nil); err == nil {
-		t.Fatal("сбой iptables-restore должен вернуться ошибкой")
+		t.Fatal("an iptables-restore failure must be returned as an error")
 	}
-	// Прежняя раскладка больше не годится: по ней адрес попал бы в список чужого выхода.
+	// The previous layout is no longer valid: with it an address would land in another exit's set.
 	alt := rules.Action{Exit: "alt", Strict: true}
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &alt}}); err == nil {
-		t.Error("после неудачного построения изменения должны отклоняться, пока построение не повторят")
+		t.Error("after a failed build, changes must be rejected until the build is retried")
 	}
 	run.fail = nil
 	if err := r.Rebuild(cfgOf(t, twoExits), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &alt}}); err != nil {
-		t.Errorf("после удачного построения: %v", err)
+		t.Errorf("after a successful build: %v", err)
 	}
 }
 
@@ -343,32 +343,32 @@ func TestApplyRejectsUnknownExit(t *testing.T) {
 	run.calls = nil
 	ghost := rules.Action{Exit: "ghost"}
 	if err := r.Apply([]claims.Change{{Addr: netip.MustParseAddr("1.1.1.1"), New: &ghost}}); err == nil {
-		t.Error("действие с выходом, которого нет в раскладке, должно быть ошибкой")
+		t.Error("an action with an exit missing from the layout must be an error")
 	}
 	if len(run.calls) != 0 {
-		t.Errorf("при неизвестном выходе списки не трогаются: %v", run.calls)
+		t.Errorf("sets must not be touched for an unknown exit: %v", run.calls)
 	}
 }
 
 func TestTeardownFlushesOnlyOwnTables(t *testing.T) {
-	// Строка с меткой trassa, но чужой таблицей: правило удаляется, таблица main не очищается.
+	// A line with a trassa mark but a foreign table: the rule is deleted, the main table is not flushed.
 	run := &scripted{out: map[string]string{
 		"ip rule list": "201:\tfrom all fwmark 0x54520001 lookup main \n202:\tfrom all fwmark 0x54520002 lookup 542 \n",
 	}}
 	Teardown(context.Background(), run)
 	got := strings.Join(run.changed(), "\n")
 	if strings.Contains(got, "flush table main") || !strings.Contains(got, "ip route flush table 542") || !strings.Contains(got, "ip rule del pref 201") {
-		t.Errorf("команды:\n%s", got)
+		t.Errorf("commands:\n%s", got)
 	}
 }
 
 func TestExecHonoursTimeoutWithLingeringChild(t *testing.T) {
-	// Утилита завершилась по времени, но её дочерний процесс держит поток вывода.
+	// The utility timed out, but its child process holds the output stream.
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := Exec{}.Run(ctx, "sh", "-c", "sleep 5 & sleep 5")
 	if err == nil || time.Since(start) > 2*time.Second {
-		t.Errorf("ошибка %v, заняло %s — ожидался отказ не позже чем через две секунды", err, time.Since(start).Round(time.Millisecond))
+		t.Errorf("error %v, took %s; want a failure within two seconds", err, time.Since(start).Round(time.Millisecond))
 	}
 }

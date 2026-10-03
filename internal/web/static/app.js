@@ -1,20 +1,20 @@
-// Страница trassa: правка правил, «почему», состояние демона и история версий.
-// Данные вставляются только через textContent: имена из DNS и текст правил не становятся разметкой.
+// The trassa page: rule editing, "why", daemon status and version history.
+// Data is inserted only via textContent: names from DNS and the rules text never become markup.
 "use strict";
 
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var rulesEl = $("rules");
-  var saved = "";           // действующий текст правил
-  var marks = {};           // номер строки → "err" или "wrn"
-  var confirmAction = null; // что выполнить по кнопке «Применить с предупреждениями»
+  var saved = "";           // rules text in effect
+  var marks = {};           // line number → "err" or "wrn"
+  var confirmAction = null; // what to run on the "Apply with warnings" button
   var pollTimer = null;
   var signedIn = false;
 
   var KIND = {
-    page: "Правка со страницы",
-    rollback: "Возврат прежней версии",
-    outside: "Изменено не со страницы"
+    page: "Edited on this page",
+    rollback: "Restored an earlier version",
+    outside: "Changed outside this page"
   };
 
   function el(tag, cls, text) {
@@ -28,7 +28,7 @@
   function clock(d) { return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds()); }
   function day(d) { return pad2(d.getDate()) + "." + pad2(d.getMonth() + 1) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()); }
 
-  // api отправляет запрос к trassa и возвращает разобранный ответ. Ответ 401 — сеанса нет.
+  // api sends a request to trassa and returns the parsed response. A 401 response means there is no session.
   async function api(method, path, body) {
     var opt = { method: method, headers: { "X-Trassa": "1" }, credentials: "same-origin" };
     if (body !== undefined) {
@@ -39,20 +39,20 @@
     try {
       r = await fetch(path, opt);
     } catch (e) {
-      throw new Error("роутер не отвечает: " + e.message);
+      throw new Error("the router is not responding: " + e.message);
     }
     var data = null;
     try { data = await r.json(); } catch (e) { data = null; }
     if (r.status === 401 && path !== "/api/login") showLogin();
     if (!r.ok) {
-      var err = new Error((data && data.error) || ("ошибка " + r.status));
+      var err = new Error((data && data.error) || ("error " + r.status));
       err.status = r.status;
       throw err;
     }
     return data;
   }
 
-  /* ---- Редактор ---- */
+  /* ---- Editor ---- */
   function drawGutter() {
     var n = rulesEl.value.split("\n").length;
     var frag = document.createDocumentFragment();
@@ -84,14 +84,14 @@
       var kind = p.severity === "error" ? "err" : "wrn";
       if (p.line) marks[p.line] = marks[p.line] === "err" ? "err" : kind;
       var li = el("li", kind);
-      li.appendChild(el("span", "where", p.line ? "строка " + p.line : "файл"));
-      li.appendChild(el("span", "", (kind === "err" ? "ошибка: " : "предупреждение: ") + p.msg));
+      li.appendChild(el("span", "where", p.line ? "line " + p.line : "file"));
+      li.appendChild(el("span", "", (kind === "err" ? "error: " : "warning: ") + p.msg));
       ul.appendChild(li);
     });
     drawGutter();
   }
 
-  function counts(r) { return "правил " + r.rules + ", выходов " + r.exits + ", ожиданий " + r.tests; }
+  function counts(r) { return "rules: " + r.rules + ", exits: " + r.exits + ", expectations: " + r.tests; }
   function errorsIn(ps) { return ps.filter(function (p) { return p.severity === "error"; }).length; }
 
   async function check() {
@@ -99,33 +99,33 @@
       var r = await api("POST", "/api/check", { text: rulesEl.value });
       showProblems(r.problems);
       var errs = errorsIn(r.problems), warns = r.problems.length - errs;
-      if (errs) setStatus("Ошибок: " + errs + " — такие правила не применить", "bad");
-      else if (warns) setStatus("Ошибок нет, предупреждений: " + warns + "; " + counts(r), "warn");
-      else setStatus("Ошибок нет: " + counts(r), "ok");
+      if (errs) setStatus("Errors: " + errs + " — these rules cannot be applied", "bad");
+      else if (warns) setStatus("No errors, warnings: " + warns + "; " + counts(r), "warn");
+      else setStatus("No errors; " + counts(r), "ok");
     } catch (e) { if (e.status !== 401) setStatus(e.message, "bad"); }
   }
 
-  // showResult показывает исход сохранения или возврата версии; again повторяет действие с подтверждением.
+  // showResult shows the outcome of a save or a version restore; again repeats the action with confirmation.
   function showResult(r, again) {
     showProblems(r.problems);
     $("confirm").hidden = true;
     var errs = errorsIn(r.problems);
-    if (errs) { setStatus("Ошибок: " + errs + " — правила не сохранены, действуют прежние", "bad"); return; }
+    if (errs) { setStatus("Errors: " + errs + " — rules not saved; the previous ones remain in effect", "bad"); return; }
     if (r.needConfirm) {
-      $("confirm-text").textContent = "Предупреждений: " + r.problems.length +
-        ". Правила рабочие, но, скорее всего, делают не то, что задумано. Применить всё равно?";
+      $("confirm-text").textContent = "Warnings: " + r.problems.length +
+        ". The rules work, but most likely do not do what was intended. Apply anyway?";
       confirmAction = again;
       $("confirm").hidden = false;
-      setStatus("Нужно подтверждение", "warn");
+      setStatus("Confirmation needed", "warn");
       return;
     }
-    if (r.unchanged) { setStatus("Изменений нет: этот текст уже сохранён на роутере", ""); return; }
-    if (!r.saved) { setStatus("Демон не принял правила, действуют прежние: " + r.message, "bad"); return; }
+    if (r.unchanged) { setStatus("No changes: this text is already saved on the router", ""); return; }
+    if (!r.saved) { setStatus("The daemon rejected the rules; the previous ones remain in effect: " + r.message, "bad"); return; }
     var msg = {
-      "running": ["Сохранено и применено: " + counts(r), "ok"],
-      "partly": ["Сохранено, но списки и маршруты ещё не построены — демон повторит попытку. " + r.message, "warn"],
-      "not-running": ["Сохранено. Демон не запущен — правила вступят в силу при его запуске", "warn"],
-      "unknown": ["Сохранено, но демон не ответил вовремя — проверьте состояние вверху страницы", "warn"]
+      "running": ["Saved and applied; " + counts(r), "ok"],
+      "partly": ["Saved, but address sets and routes are not built yet — the daemon will retry. " + r.message, "warn"],
+      "not-running": ["Saved. The daemon is not running — the rules will take effect when it starts", "warn"],
+      "unknown": ["Saved, but the daemon did not reply in time — check the status at the top of the page", "warn"]
     }[r.applied] || [r.message, ""];
     setStatus(msg[0], msg[1]);
   }
@@ -133,7 +133,7 @@
   async function save(confirm) {
     var text = rulesEl.value;
     $("save").disabled = true;
-    setStatus("Сохраняю…", "");
+    setStatus("Saving…", "");
     try {
       var r = await api("POST", "/api/save", { text: text, confirm: confirm });
       if (r.saved || r.unchanged) saved = text;
@@ -147,8 +147,8 @@
     }
   }
 
-  // loadRules берёт действующий текст с роутера. force — заменить и несохранённую правку: после
-  // возврата версии, когда человек уже согласился её потерять.
+  // loadRules fetches the rules in effect from the router. force replaces even an unsaved edit: after
+  // a version restore, when the person has already agreed to lose it.
   async function loadRules(force) {
     var r = await api("GET", "/api/rules");
     var a = force ? { editor: r.text, saved: r.text, note: "" } : TrassaLogic.adopt(rulesEl.value, saved, r.text);
@@ -158,38 +158,38 @@
     if (a.note) setStatus(a.note, "warn");
   }
 
-  /* ---- История ---- */
+  /* ---- History ---- */
   async function loadHistory() {
     var list;
     try { list = await api("GET", "/api/history"); } catch (e) { return; }
     var ol = $("history");
     ol.replaceChildren();
     if (!list.length) {
-      ol.appendChild(el("li", "note", "Версий пока нет: первая появится при первом сохранении."));
+      ol.appendChild(el("li", "note", "No versions yet: the first one appears on the first save."));
       return;
     }
     list.forEach(function (v) {
       var li = el("li", v.current ? "current" : "");
       li.appendChild(el("span", "when", day(new Date(v.time))));
       var what = el("span", "what", KIND[v.kind] || v.kind);
-      what.appendChild(el("small", "", "правил " + v.rules + ", ожиданий " + v.tests));
+      what.appendChild(el("small", "", "rules: " + v.rules + ", expectations: " + v.tests));
       li.appendChild(what);
       var acts = el("span", "acts");
-      var open = el("button", "linkbtn", "Открыть");
+      var open = el("button", "linkbtn", "Open");
       open.type = "button";
       open.addEventListener("click", function () { openVersion(v); });
       acts.appendChild(open);
       if (v.current) {
-        acts.appendChild(el("span", "tag", "действует"));
+        acts.appendChild(el("span", "tag", "in effect"));
       } else {
-        var back = el("button", "linkbtn", "Вернуть");
+        var back = el("button", "linkbtn", "Restore");
         back.type = "button";
         back.addEventListener("click", function () {
           if (!back.dataset.armed) {
             back.dataset.armed = "1";
-            back.textContent = "Точно вернуть?";
-            // Подтверждение действует несколько секунд: случайный щелчок позже ничего не вернёт.
-            setTimeout(function () { delete back.dataset.armed; back.textContent = "Вернуть"; }, 5000);
+            back.textContent = "Restore? Click again";
+            // The confirmation lasts a few seconds: a stray click later restores nothing.
+            setTimeout(function () { delete back.dataset.armed; back.textContent = "Restore"; }, 5000);
             return;
           }
           rollback(v, false);
@@ -201,7 +201,7 @@
     });
   }
 
-  // putVersion кладёт текст версии в редактор; действующим он от этого не становится.
+  // putVersion puts a version's text into the editor; that does not put it into effect.
   async function putVersion(v) {
     var r = await api("GET", "/api/version?id=" + encodeURIComponent(v.id));
     rulesEl.value = r.text;
@@ -209,22 +209,22 @@
   }
 
   async function openVersion(v) {
-    if (dirty() && !window.confirm("В редакторе несохранённая правка. Заменить её текстом версии?")) return;
+    if (dirty() && !window.confirm("The editor has an unsaved edit. Replace it with the text of this version?")) return;
     try {
       await putVersion(v);
-      setStatus("В редакторе версия от " + day(new Date(v.time)) + ". Она ещё не действует: чтобы применить, сохраните", "warn");
+      setStatus("The editor shows the version from " + day(new Date(v.time)) + ". It is not in effect yet: save to apply it", "warn");
     } catch (e) { if (e.status !== 401) setStatus(e.message, "bad"); }
   }
 
   async function rollback(v, confirm) {
-    if (!confirm && dirty() && !window.confirm("В редакторе несохранённая правка — при возврате версии она пропадёт. Продолжить?")) {
+    if (!confirm && dirty() && !window.confirm("The editor has an unsaved edit — restoring a version will discard it. Continue?")) {
       loadHistory();
       return;
     }
-    setStatus("Возвращаю версию от " + day(new Date(v.time)) + "…", "");
+    setStatus("Restoring the version from " + day(new Date(v.time)) + "…", "");
     try {
       var r = await api("POST", "/api/rollback", { id: v.id, confirm: confirm });
-      // Пометки строк относятся к тексту версии — он и должен быть в редакторе.
+      // Line marks refer to the version's text, so that text belongs in the editor.
       if (r.saved) await loadRules(true);
       else if (!r.unchanged) await putVersion(v);
       showResult(r, function () { rollback(v, true); });
@@ -233,13 +233,13 @@
     } catch (e) { if (e.status !== 401) setStatus(e.message, "bad"); }
   }
 
-  /* ---- Почему ---- */
+  /* ---- Why ---- */
   async function why(ev) {
     ev.preventDefault();
     var q = $("why-q").value.trim();
     var box = $("why-answer");
     if (!q) return;
-    box.replaceChildren(el("span", "note", "Спрашиваю…"));
+    box.replaceChildren(el("span", "note", "Asking…"));
     try {
       var r = await api("POST", "/api/why", { subject: q });
       var lines = r.text.replace(/\n$/, "").split("\n");
@@ -256,13 +256,13 @@
       }
       box.replaceChildren(v);
       if (lines.length) box.appendChild(el("pre", "rule-text", lines.join("\n")));
-      if (r.source === "file") box.appendChild(el("p", "note", "Демон не отвечает: ответ только по файлу правил, без сведений из DNS."));
+      if (r.source === "file") box.appendChild(el("p", "note", "The daemon is not answering: this answer comes from the rules file alone, without DNS data."));
     } catch (e) {
       if (e.status !== 401) box.replaceChildren(el("span", "note bad", e.message));
     }
   }
 
-  /* ---- Состояние ---- */
+  /* ---- Status ---- */
   function chip(text, dot) {
     var c = el("span", "chip");
     if (dot) c.appendChild(el("span", "dot " + dot));
@@ -272,30 +272,30 @@
 
   function duration(ms) {
     var m = Math.max(0, Math.floor(ms / 60000)), h = Math.floor(m / 60), d = Math.floor(h / 24);
-    if (d) return d + " д " + (h % 24) + " ч";
-    if (h) return h + " ч " + (m % 60) + " мин";
-    return m + " мин";
+    if (d) return d + "d " + (h % 24) + "h";
+    if (h) return h + "h " + (m % 60) + "m";
+    return m + "m";
   }
 
   function renderState(s) {
     var d = s.daemon, chips = $("chips"), banner = $("banner");
     chips.replaceChildren();
     if (!d) {
-      chips.appendChild(chip("демон не отвечает", "bad"));
-      banner.textContent = "Демон trassa не отвечает (" + s.daemonError + "). Правила можно править и сохранять: " +
-        "они вступят в силу при его запуске. Счётчиков и DNS-ответов пока нет.";
+      chips.appendChild(chip("daemon not answering", "bad"));
+      banner.textContent = "The trassa daemon is not answering (" + s.daemonError + "). You can still edit and save rules: " +
+        "they will take effect when it starts. No counters or DNS answers until then.";
       banner.hidden = false;
     } else {
       banner.hidden = true;
-      chips.appendChild(chip(d.mode === "route" ? "маршрутизация" : "наблюдение", "ok"));
+      chips.appendChild(chip(d.mode === "route" ? "routing mode" : "observe mode", "ok"));
       if (d.mode === "route") {
         d.exits.forEach(function (x) {
-          if (!x.known) chips.appendChild(chip(x.name + ": ещё неизвестно", "off"));
+          if (!x.known) chips.appendChild(chip(x.name + ": not known yet", "off"));
           else if (x.via) chips.appendChild(chip(x.name + " → " + x.via, "ok"));
-          else chips.appendChild(chip(x.name + ": нет живых туннелей", "bad"));
+          else chips.appendChild(chip(x.name + ": no live tunnels", "bad"));
         });
       }
-      chips.appendChild(chip("работает " + duration(new Date(s.now) - new Date(d.started))));
+      chips.appendChild(chip("up " + duration(new Date(s.now) - new Date(d.started))));
     }
     renderCounters(d);
     renderTunnels(s.tunnels, d);
@@ -308,8 +308,8 @@
     if (!d) return;
     var st = d.stats;
     [
-      ["DNS-ответов с адресами", st.answers], ["под правила", st.claimed], ["адресов в списках", d.addrs],
-      ["изменений списков", st.changes], ["ошибок применения", st.applyErrors, true], ["повреждённых пакетов", st.malformed, true]
+      ["DNS answers with addresses", st.answers], ["matched rules", st.claimed], ["addresses in sets", d.addrs],
+      ["set changes", st.changes], ["apply errors", st.applyErrors, true], ["malformed packets", st.malformed, true]
     ].forEach(function (p) {
       var s = el("span", p[2] ? (p[1] ? "bad" : "zero") : "");
       s.appendChild(document.createTextNode(p[0] + " "));
@@ -321,7 +321,7 @@
   function renderTunnels(list, d) {
     var box = $("tunnels");
     box.replaceChildren();
-    if (!list.length) { box.appendChild(el("p", "note", "Выходов нет — или в файле правил ошибки.")); return; }
+    if (!list.length) { box.appendChild(el("p", "note", "No exits — or the rules file has errors.")); return; }
     var via = {};
     if (d) d.exits.forEach(function (x) { via[x.name] = x.via; });
     var groups = {};
@@ -330,7 +330,7 @@
         var g = el("div", "exit");
         var head = el("div", "exit-head");
         head.appendChild(el("span", "badge tunnel", t.exit));
-        if (d && d.mode === "route") head.appendChild(document.createTextNode(via[t.exit] ? "идёт через " + via[t.exit] : "живых туннелей нет"));
+        if (d && d.mode === "route") head.appendChild(document.createTextNode(via[t.exit] ? "via " + via[t.exit] : "no live tunnels"));
         g.appendChild(head);
         groups[t.exit] = el("ul", "ifaces");
         g.appendChild(groups[t.exit]);
@@ -339,7 +339,7 @@
       var li = el("li", via[t.exit] === t.name ? "active" : "");
       li.appendChild(el("span", "dot " + (t.error ? "bad" : t.up ? "ok" : "off")));
       li.appendChild(el("span", "name", t.name + (t.description ? " · " + t.description : "")));
-      li.appendChild(el("span", "meta", t.error || (t.up ? "подключён" : "не подключён")));
+      li.appendChild(el("span", "meta", t.error || (t.up ? "connected" : "not connected")));
       groups[t.exit].appendChild(li);
     });
   }
@@ -352,13 +352,13 @@
     rows.forEach(function (o) {
       var tr = el("tr");
       tr.appendChild(el("td", "t", clock(new Date(o.at))));
-      // Адрес устройства — под именем: длинный адрес IPv6 в своей колонке сжимал бы имя.
+      // The device address goes under the name: a long IPv6 address in its own column would squeeze the name.
       var name = el("td", "name", o.name);
       name.appendChild(el("span", "dev", o.client));
       tr.appendChild(name);
       var td = el("td", "path");
       td.appendChild(el("span", "badge " + (o.action === "direct" ? "direct" : "tunnel"), o.action));
-      td.appendChild(el("span", "dev", o.line ? "стр. " + o.line : "default"));
+      td.appendChild(el("span", "dev", o.line ? "line " + o.line : "default"));
       tr.appendChild(td);
       tb.appendChild(tr);
     });
@@ -372,7 +372,7 @@
     }
   }
 
-  /* ---- Вход ---- */
+  /* ---- Sign-in ---- */
   function showLogin() {
     signedIn = false;
     clearInterval(pollTimer);
@@ -383,7 +383,7 @@
   async function login(ev) {
     ev.preventDefault();
     var user = $("login-user").value.trim(), pass = $("login-pass").value, st = $("login-status");
-    st.textContent = "Проверяю…";
+    st.textContent = "Checking…";
     st.className = "status-line";
     $("login-go").disabled = true;
     try {
@@ -403,7 +403,7 @@
   }
 
   async function logout() {
-    try { await api("POST", "/api/logout"); } catch (e) { /* сеанс и так закрыт */ }
+    try { await api("POST", "/api/logout"); } catch (e) { /* the session is closed anyway */ }
     showLogin();
   }
 
@@ -423,7 +423,7 @@
 
   rulesEl.addEventListener("input", function () {
     clearProblems();
-    setStatus(dirty() ? "Есть несохранённые изменения" : "", "");
+    setStatus(dirty() ? "Unsaved changes" : "", "");
   });
   rulesEl.addEventListener("scroll", function () { $("gutter").scrollTop = rulesEl.scrollTop; });
   $("check").addEventListener("click", check);
@@ -431,7 +431,7 @@
   $("revert").addEventListener("click", function () {
     rulesEl.value = saved;
     clearProblems();
-    setStatus("Правка отменена", "");
+    setStatus("Edit discarded", "");
   });
   $("confirm-yes").addEventListener("click", function () {
     $("confirm").hidden = true;

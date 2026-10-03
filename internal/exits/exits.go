@@ -1,4 +1,4 @@
-// Package exits узнаёт у прошивки состояние туннелей и выбирает рабочий интерфейс выхода.
+// Package exits asks the firmware about tunnel state and picks a working interface for each exit.
 package exits
 
 import (
@@ -13,25 +13,25 @@ import (
 	"trassa/internal/rules"
 )
 
-// Status — что прошивка сообщает об интерфейсе.
+// Status is what the firmware reports about an interface.
 type Status struct {
-	Name   string // имя в прошивке, например Wireguard2
+	Name   string // firmware name, e.g. Wireguard2
 	Exists bool
-	Type   string // тип в прошивке, например Wireguard
-	System string // системное имя, например nwg2; пусто, если интерфейс не может быть выходом
+	Type   string // firmware type, e.g. Wireguard
+	System string // system name, e.g. nwg2; empty if the interface cannot be an exit
 	Up     bool
-	// Description — описание из настроек прошивки.
+	// Description is the description from the firmware settings.
 	Description string
 }
 
-// Source отвечает на вопрос о состоянии интерфейса. В тестах подменяется.
+// Source answers questions about interface state. Tests substitute it.
 type Source interface {
 	Interface(ctx context.Context, name string) (Status, error)
 }
 
-// RCI спрашивает прошивку по её локальному адресу.
+// RCI queries the firmware at its local address.
 type RCI struct {
-	Base   string // например http://127.0.0.1:79
+	Base   string // e.g. http://127.0.0.1:79
 	Client *http.Client
 }
 
@@ -61,18 +61,18 @@ func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return st, fmt.Errorf("прошивка не отвечает: %w", err)
+		return st, fmt.Errorf("firmware does not respond: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		return st, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return st, fmt.Errorf("прошивка ответила кодом %d", resp.StatusCode)
+		return st, fmt.Errorf("firmware answered with code %d", resp.StatusCode)
 	}
 	var j ifaceJSON
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&j); err != nil {
-		return st, fmt.Errorf("ответ прошивки не разобран: %w", err)
+		return st, fmt.Errorf("cannot parse firmware answer: %w", err)
 	}
 	if j.ID == "" {
 		return st, nil
@@ -93,7 +93,7 @@ func (r RCI) Interface(ctx context.Context, name string) (Status, error) {
 	return st, nil
 }
 
-// Validate проверяет интерфейсы всех выходов: каждый должен существовать и быть туннелем WireGuard.
+// Validate checks the interfaces of all exits: each must exist and be a WireGuard tunnel.
 func Validate(ctx context.Context, cfg *rules.Config, src Source) []rules.Problem {
 	var ps []rules.Problem
 	bad := func(line int, format string, args ...any) {
@@ -104,27 +104,27 @@ func Validate(ctx context.Context, cfg *rules.Config, src Source) []rules.Proble
 			st, err := src.Interface(ctx, name)
 			switch {
 			case err != nil:
-				bad(e.Line, "интерфейс %s: %v", name, err)
+				bad(e.Line, "interface %s: %v", name, err)
 			case !st.Exists:
-				bad(e.Line, "интерфейс %s не существует на роутере", name)
+				bad(e.Line, "interface %s does not exist on the router", name)
 			case st.System == "":
-				bad(e.Line, "интерфейс %s имеет тип %s: выходом может быть только туннель WireGuard", name, st.Type)
+				bad(e.Line, "interface %s has type %s: only a WireGuard tunnel can be an exit", name, st.Type)
 			}
 		}
 	}
 	return ps
 }
 
-// Choice — интерфейс, выбранный для выхода. Пустой System означает, что живых интерфейсов нет.
+// Choice is the interface chosen for an exit. An empty System means no interface is live.
 type Choice struct {
-	Interface string // имя в прошивке
-	System    string // системное имя
+	Interface string // firmware name
+	System    string // system name
 }
 
-// Active выбирает для каждого выхода первый живой интерфейс по порядку из файла правил.
-// Молчание прошивки — не то же самое, что упавший туннель: если живого интерфейса не нашлось,
-// но о каком-то интерфейсе выхода прошивка не ответила, за выходом остаётся прежний выбор из prev.
-// Ошибка возвращается, только если прошивка не ответила ни на один запрос.
+// Active picks, for each exit, the first live interface in rules file order.
+// Firmware silence is not the same as a tunnel being down: if no live interface was found
+// but the firmware did not answer about some interface of the exit, the exit keeps its previous choice from prev.
+// An error is returned only if the firmware answered none of the requests.
 func Active(ctx context.Context, cfg *rules.Config, src Source, prev map[string]Choice) (map[string]Choice, error) {
 	out := make(map[string]Choice, len(cfg.Exits))
 	asked, answered := 0, 0
@@ -155,7 +155,7 @@ func Active(ctx context.Context, cfg *rules.Config, src Source, prev map[string]
 	return out, nil
 }
 
-// Tunnel — интерфейс выхода и что о нём знает прошивка; для страницы.
+// Tunnel is an exit interface and what the firmware knows about it; used by the web page.
 type Tunnel struct {
 	Exit        string `json:"exit"`
 	Name        string `json:"name"`
@@ -164,7 +164,7 @@ type Tunnel struct {
 	Error       string `json:"error,omitempty"`
 }
 
-// Tunnels спрашивает прошивку обо всех интерфейсах всех выходов, по порядку из файла правил.
+// Tunnels asks the firmware about every interface of every exit, in rules file order.
 func Tunnels(ctx context.Context, cfg *rules.Config, src Source) []Tunnel {
 	out := []Tunnel{}
 	for _, e := range cfg.Exits {
@@ -175,7 +175,7 @@ func Tunnels(ctx context.Context, cfg *rules.Config, src Source) []Tunnel {
 			case err != nil:
 				t.Error = err.Error()
 			case !st.Exists:
-				t.Error = "интерфейса нет на роутере"
+				t.Error = "no such interface on the router"
 			default:
 				t.Description, t.Up = st.Description, st.Up
 			}

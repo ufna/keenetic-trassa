@@ -23,7 +23,7 @@ import (
 
 const rulesText = "exit vpn = Wireguard2\ndefault direct\nyoutube.com -> vpn\n"
 
-// fakeAuth — роутер с логином admin и паролем secret; считает закрытые вызовы.
+// fakeAuth is a router with login admin and password secret; it counts released challenges.
 type fakeAuth struct {
 	mu       sync.Mutex
 	n        int
@@ -69,7 +69,7 @@ func newEnv(t *testing.T) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, now: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)}
-	e.daemon = func(cmd, arg string) (string, error) { return "", fmt.Errorf("%w (тест)", ctl.ErrNoDaemon) }
+	e.daemon = func(cmd, arg string) (string, error) { return "", fmt.Errorf("%w (test)", ctl.ErrNoDaemon) }
 	e.srv = &Server{
 		Store:  &store.Store{Dir: dir},
 		Auth:   &fakeAuth{},
@@ -83,7 +83,7 @@ func newEnv(t *testing.T) *env {
 	return e
 }
 
-// do выполняет запрос с телом JSON (или без тела) с заголовком страницы, как app.js.
+// do performs a request with a JSON body (or none) and the page header, as app.js does.
 func (e *env) do(method, path string, body any) (int, []byte, *http.Response) {
 	e.t.Helper()
 	var rd io.Reader
@@ -108,12 +108,12 @@ func decode[T any](t *testing.T, b []byte) T {
 	t.Helper()
 	var v T
 	if err := json.Unmarshal(b, &v); err != nil {
-		t.Fatalf("ответ %s: %v", b, err)
+		t.Fatalf("response %s: %v", b, err)
 	}
 	return v
 }
 
-// login входит с паролем password и возвращает код ответа на вход.
+// login signs in with password and returns the status code of the sign-in.
 func (e *env) login(password string) int {
 	e.t.Helper()
 	code, b, _ := e.do(http.MethodGet, "/api/login", nil)
@@ -134,20 +134,20 @@ func (e *env) login(password string) int {
 func TestLogin(t *testing.T) {
 	e := newEnv(t)
 	if code, _, _ := e.do("GET", "/api/state", nil); code != 401 {
-		t.Fatalf("без входа: %d", code)
+		t.Fatalf("not signed in: %d", code)
 	}
 	if code := e.login("secret"); code != 200 || e.cookie == nil {
-		t.Fatalf("вход: %d", code)
+		t.Fatalf("sign-in: %d", code)
 	}
 	if !e.cookie.HttpOnly || e.cookie.SameSite != http.SameSiteStrictMode || e.cookie.MaxAge != int(sessionTTL/time.Second) {
 		t.Errorf("cookie: %+v", e.cookie)
 	}
 	if code, _, _ := e.do("GET", "/api/state", nil); code != 200 {
-		t.Errorf("после входа: %d", code)
+		t.Errorf("after sign-in: %d", code)
 	}
 	e.now = e.now.Add(sessionTTL)
 	if code, _, _ := e.do("GET", "/api/state", nil); code != 401 {
-		t.Errorf("после истечения сеанса: %d", code)
+		t.Errorf("after the session expired: %d", code)
 	}
 }
 
@@ -155,15 +155,15 @@ func TestLoginWrongPasswordAndLockout(t *testing.T) {
 	e := newEnv(t)
 	for i := 0; i < maxFailures; i++ {
 		if code := e.login("wrong"); code != 401 {
-			t.Fatalf("попытка %d: %d", i+1, code)
+			t.Fatalf("attempt %d: %d", i+1, code)
 		}
 	}
 	if code := e.login("secret"); code != 429 {
-		t.Errorf("после %d неудач вход должен быть закрыт: %d", maxFailures, code)
+		t.Errorf("after %d failures sign-in must be locked: %d", maxFailures, code)
 	}
 	e.now = e.now.Add(failWindow)
 	if code := e.login("secret"); code != 200 {
-		t.Errorf("после паузы: %d", code)
+		t.Errorf("after a pause: %d", code)
 	}
 }
 
@@ -173,10 +173,10 @@ func TestChallengeIsSingleUse(t *testing.T) {
 	ch := decode[map[string]string](t, b)
 	body := map[string]string{"id": ch["id"], "login": "admin", "response": answer("admin", "secret", ch["realm"], ch["challenge"])}
 	if code, _, _ := e.do("POST", "/api/login", body); code != 200 {
-		t.Fatalf("первый раз: %d", code)
+		t.Fatalf("first time: %d", code)
 	}
 	if code, _, _ := e.do("POST", "/api/login", body); code != 400 {
-		t.Errorf("повтор того же вызова: %d", code)
+		t.Errorf("same challenge again: %d", code)
 	}
 }
 
@@ -187,12 +187,12 @@ func TestDataNeedsSession(t *testing.T) {
 		{"GET", "/api/history"}, {"GET", "/api/version?id=x"}, {"POST", "/api/rollback"}, {"POST", "/api/why"},
 	} {
 		if code, _, _ := e.do(rq[0], rq[1], map[string]string{}); code != 401 {
-			t.Errorf("%s %s без входа: %d", rq[0], rq[1], code)
+			t.Errorf("%s %s not signed in: %d", rq[0], rq[1], code)
 		}
 	}
 }
 
-// Чужая страница может заставить браузер отправить запрос, но не с заголовком X-Trassa.
+// A foreign page can make the browser send a request, but not with the X-Trassa header.
 func TestPostNeedsPageHeader(t *testing.T) {
 	e := newEnv(t)
 	e.login("secret")
@@ -202,10 +202,10 @@ func TestPostNeedsPageHeader(t *testing.T) {
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, req)
 	if rec.Code != 403 {
-		t.Errorf("без заголовка: %d", rec.Code)
+		t.Errorf("no header: %d", rec.Code)
 	}
 	if text, _ := e.srv.Store.Current(); text != rulesText {
-		t.Error("правила изменены чужим запросом")
+		t.Error("rules changed by a foreign request")
 	}
 }
 
@@ -216,12 +216,12 @@ func TestHostIsChecked(t *testing.T) {
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, httptest.NewRequest("GET", "http://evil.example/", nil))
 	if rec.Code != http.StatusMisdirectedRequest {
-		t.Errorf("чужое имя: %d", rec.Code)
+		t.Errorf("foreign host name: %d", rec.Code)
 	}
 	rec = httptest.NewRecorder()
 	e.h.ServeHTTP(rec, httptest.NewRequest("GET", "http://192.168.1.1:8090/", nil))
 	if rec.Code != 200 {
-		t.Errorf("свой адрес: %d", rec.Code)
+		t.Errorf("own address: %d", rec.Code)
 	}
 }
 
@@ -229,7 +229,7 @@ func TestPageIsServed(t *testing.T) {
 	e := newEnv(t)
 	code, b, resp := e.do("GET", "/", nil)
 	if code != 200 || !strings.Contains(string(b), "<title>trassa</title>") {
-		t.Fatalf("код %d, страница %.200s", code, b)
+		t.Fatalf("status %d, page %.200s", code, b)
 	}
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 		t.Errorf("CSP: %q", csp)
@@ -247,20 +247,20 @@ func TestCheckAndSave(t *testing.T) {
 	code, b, _ := e.do("POST", "/api/check", map[string]any{"text": "default direct\nfoo.com -> vpn\n"})
 	chk := decode[checkJSON](t, b)
 	if code != 200 || len(chk.Problems) != 1 || chk.Problems[0].Severity != "error" || chk.Problems[0].Line != 2 {
-		t.Errorf("проверка с ошибкой: %d %s", code, b)
+		t.Errorf("check with an error: %d %s", code, b)
 	}
 	warn := "exit vpn = Wireguard2\ndefault vpn strict\n"
 	_, b, _ = e.do("POST", "/api/save", map[string]any{"text": warn})
 	if res := decode[resultJSON](t, b); res.Saved || !res.NeedConfirm || res.Problems[0].Severity != "warning" {
-		t.Errorf("предупреждение без подтверждения: %s", b)
+		t.Errorf("warning without confirmation: %s", b)
 	}
 	_, b, _ = e.do("POST", "/api/save", map[string]any{"text": warn, "confirm": true})
 	if res := decode[resultJSON](t, b); !res.Saved || res.Applied != "not-running" || res.Exits != 1 || res.Message == "" {
-		t.Errorf("с подтверждением: %s", b)
+		t.Errorf("with confirmation: %s", b)
 	}
 	_, b, _ = e.do("GET", "/api/rules", nil)
 	if got := decode[map[string]string](t, b)["text"]; got != warn {
-		t.Errorf("действующие правила: %q", got)
+		t.Errorf("rules in effect: %q", got)
 	}
 }
 
@@ -271,21 +271,21 @@ func TestHistoryAndRollback(t *testing.T) {
 	_, b, _ := e.do("GET", "/api/history", nil)
 	h := decode[[]store.Version](t, b)
 	if len(h) != 2 || h[0].Kind != "page" || !h[0].Current || h[1].Kind != "outside" {
-		t.Fatalf("история: %s", b)
+		t.Fatalf("history: %s", b)
 	}
 	_, b, _ = e.do("GET", "/api/version?id="+h[1].ID, nil)
 	if decode[map[string]string](t, b)["text"] != rulesText {
-		t.Errorf("версия: %s", b)
+		t.Errorf("version: %s", b)
 	}
 	_, b, _ = e.do("POST", "/api/rollback", map[string]any{"id": h[1].ID})
 	if res := decode[resultJSON](t, b); !res.Saved {
-		t.Errorf("возврат: %s", b)
+		t.Errorf("restore: %s", b)
 	}
 	if text, _ := e.srv.Store.Current(); text != rulesText {
-		t.Errorf("после возврата: %q", text)
+		t.Errorf("after restore: %q", text)
 	}
 	if code, _, _ := e.do("POST", "/api/rollback", map[string]any{"id": "../../etc/passwd"}); code != 400 {
-		t.Errorf("чужой путь: %d", code)
+		t.Errorf("foreign path: %d", code)
 	}
 }
 
@@ -295,20 +295,20 @@ func TestWhy(t *testing.T) {
 	_, b, _ := e.do("POST", "/api/why", map[string]any{"subject": "https://www.youtube.com/watch?v=1"})
 	out := decode[map[string]string](t, b)
 	if out["source"] != "file" || !strings.HasPrefix(out["text"], "www.youtube.com → vpn\n") {
-		t.Errorf("без демона: %s", b)
+		t.Errorf("without the daemon: %s", b)
 	}
 	e.daemon = func(cmd, arg string) (string, error) {
-		return arg + " → vpn\nвыход vpn: сейчас через Wireguard2\n", nil
+		return arg + " → vpn\nexit vpn: now via Wireguard2\n", nil
 	}
 	_, b, _ = e.do("POST", "/api/why", map[string]any{"subject": "t.me"})
-	if out = decode[map[string]string](t, b); out["source"] != "daemon" || !strings.Contains(out["text"], "сейчас через") {
-		t.Errorf("от демона: %s", b)
+	if out = decode[map[string]string](t, b); out["source"] != "daemon" || !strings.Contains(out["text"], "now via") {
+		t.Errorf("from the daemon: %s", b)
 	}
 	e.daemon = func(cmd, arg string) (string, error) {
-		return "", errors.New(`"149.154" похоже на адрес, но записано неверно`)
+		return "", errors.New(`"149.154" looks like an address but is malformed`)
 	}
-	if code, b, _ := e.do("POST", "/api/why", map[string]any{"subject": "149.154"}); code != 400 || !strings.Contains(string(b), "похоже на адрес") {
-		t.Errorf("ошибка демона: %d %s", code, b)
+	if code, b, _ := e.do("POST", "/api/why", map[string]any{"subject": "149.154"}); code != 400 || !strings.Contains(string(b), "looks like an address") {
+		t.Errorf("daemon error: %d %s", code, b)
 	}
 }
 
@@ -317,8 +317,8 @@ func TestState(t *testing.T) {
 	e.login("secret")
 	_, b, _ := e.do("GET", "/api/state", nil)
 	st := decode[stateJSON](t, b)
-	if st.Daemon != nil || !strings.Contains(st.DaemonError, "не запущен") || len(st.Tunnels) != 1 || st.Tunnels[0].Name != "Wireguard2" {
-		t.Errorf("без демона: %s", b)
+	if st.Daemon != nil || !strings.Contains(st.DaemonError, "not running") || len(st.Tunnels) != 1 || st.Tunnels[0].Name != "Wireguard2" {
+		t.Errorf("without the daemon: %s", b)
 	}
 	e.daemon = func(cmd, arg string) (string, error) {
 		b, _ := json.Marshal(ctl.State{Mode: "route", Rules: 1})
@@ -326,7 +326,7 @@ func TestState(t *testing.T) {
 	}
 	_, b, _ = e.do("GET", "/api/state", nil)
 	if st = decode[stateJSON](t, b); st.Daemon == nil || st.Daemon.Mode != "route" || st.DaemonError != "" {
-		t.Errorf("с демоном: %s", b)
+		t.Errorf("with the daemon: %s", b)
 	}
 }
 
@@ -337,34 +337,34 @@ func TestLogout(t *testing.T) {
 		t.Fatal(code)
 	}
 	if code, _, _ := e.do("GET", "/api/state", nil); code != 401 {
-		t.Errorf("после выхода: %d", code)
+		t.Errorf("after sign-out: %d", code)
 	}
 }
 
-// Каждый вызов на вход открывает сеанс у прошивки: чужая страница не должна уметь их заказывать
-// (картинкой или ссылкой), а свои — не чаще, чем нужно человеку.
+// Each login challenge opens a firmware session: a foreign page must not be able to request them
+// (with an image or a link), and our own page no more often than a person needs.
 func TestChallengeNeedsPageHeaderAndIsRateLimited(t *testing.T) {
 	e := newEnv(t)
 	rec := httptest.NewRecorder()
 	e.h.ServeHTTP(rec, httptest.NewRequest("GET", "/api/login", nil))
 	if n, _ := e.srv.Auth.(*fakeAuth).count(); rec.Code != 403 || n != 0 {
-		t.Errorf("без заголовка: код %d, вызовов у прошивки %d", rec.Code, n)
+		t.Errorf("no header: status %d, firmware challenges %d", rec.Code, n)
 	}
 	for i := 0; i < challengeBurst; i++ {
 		if code, _, _ := e.do("GET", "/api/login", nil); code != 200 {
-			t.Fatalf("вызов %d: %d", i+1, code)
+			t.Fatalf("challenge %d: %d", i+1, code)
 		}
 	}
 	if code, _, _ := e.do("GET", "/api/login", nil); code != 429 {
-		t.Errorf("сверх запаса: %d", code)
+		t.Errorf("beyond the allowance: %d", code)
 	}
 	e.now = e.now.Add(challengeEvery)
 	if code, _, _ := e.do("GET", "/api/login", nil); code != 200 {
-		t.Errorf("после паузы: %d", code)
+		t.Errorf("after a pause: %d", code)
 	}
 }
 
-// Вызов, на который не ответили (вытеснен или устарел), закрывается у прошивки.
+// A challenge that was not answered (evicted or expired) is closed at the firmware.
 func TestStaleChallengesAreReleased(t *testing.T) {
 	e := newEnv(t)
 	auth := e.srv.Auth.(*fakeAuth)
@@ -381,16 +381,16 @@ func TestStaleChallengesAreReleased(t *testing.T) {
 			time.Sleep(10 * time.Millisecond)
 		}
 		_, r := auth.count()
-		t.Errorf("закрыто вызовов %d, ожидалось %d", r, want)
+		t.Errorf("released challenges %d, want %d", r, want)
 	}
 	waitReleased(1)
-	_, b, _ := e.do("GET", "/api/login", nil) // вытесняет ещё один
+	_, b, _ := e.do("GET", "/api/login", nil) // evicts one more
 	ch := decode[map[string]string](t, b)
 	e.now = e.now.Add(pendingTTL)
 	code, _, _ := e.do("POST", "/api/login", map[string]string{
 		"id": ch["id"], "login": "admin", "response": answer("admin", "secret", ch["realm"], ch["challenge"])})
 	if code != 400 {
-		t.Errorf("устаревший вызов: %d", code)
+		t.Errorf("expired challenge: %d", code)
 	}
 	waitReleased(3)
 }

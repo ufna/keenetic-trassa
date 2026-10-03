@@ -19,15 +19,15 @@ import (
 //go:embed static
 var staticFiles embed.FS
 
-// Server — страница trassa и её HTTP-интерфейс.
+// Server is the trassa page and its HTTP API.
 type Server struct {
 	Store *store.Store
 	Auth  Authenticator
-	// Daemon передаёт команду демону через сокет управления.
+	// Daemon sends a command to the daemon over the control socket.
 	Daemon func(cmd, arg string) (string, error)
-	// Tunnels сообщает, что прошивка знает об интерфейсах выходов; nil — не спрашивать.
+	// Tunnels reports what the firmware knows about the exit interfaces; nil means do not ask.
 	Tunnels func(ctx context.Context, cfg *rules.Config) []exits.Tunnel
-	// Hosts — допустимые значения заголовка Host; пусто — любые. Защищает от подмены имени в DNS.
+	// Hosts are the allowed Host header values; empty means any. Protects against DNS rebinding.
 	Hosts []string
 	Now   func() time.Time
 	Logf  func(format string, args ...any)
@@ -48,7 +48,7 @@ func (s *Server) logf(format string, args ...any) {
 	}
 }
 
-// Handler возвращает обработчик всех запросов: страницу и её HTTP-интерфейс.
+// Handler returns the handler for all requests: the page and its HTTP API.
 func (s *Server) Handler() http.Handler {
 	files, err := fs.Sub(staticFiles, "static")
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Server) Handler() http.Handler {
 	return s.secure(mux)
 }
 
-// secure ставит заголовки защиты и отклоняет запросы на чужое имя.
+// secure sets protective headers and rejects requests addressed to a foreign host name.
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -83,25 +83,25 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		if len(s.Hosts) > 0 && !slices.Contains(s.Hosts, r.Host) {
-			http.Error(w, "страница trassa открывается по адресу http://"+s.Hosts[0]+"/", http.StatusMisdirectedRequest)
+			http.Error(w, "the trassa page is at http://"+s.Hosts[0]+"/", http.StatusMisdirectedRequest)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-// guard пропускает к данным только с действующим сеансом. Любой запрос к интерфейсу принимается
-// только со страницы trassa: заголовок X-Trassa чужая страница (форма, картинка, ссылка) поставить
-// не может без разрешения сервера, а сервер такого разрешения не даёт.
+// guard lets requests reach data only with a valid session. Any API request is accepted only from
+// the trassa page: a foreign page (form, image, link) cannot set the X-Trassa header without the
+// server's permission, and the server never grants it.
 func (s *Server) guard(needSession bool, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if r.Header.Get("X-Trassa") != "1" {
-			writeError(w, http.StatusForbidden, "запрос пришёл не со страницы trassa")
+			writeError(w, http.StatusForbidden, "the request did not come from the trassa page")
 			return
 		}
 		if needSession && !s.signedIn(r) {
-			writeError(w, http.StatusUnauthorized, "нужно войти")
+			writeError(w, http.StatusUnauthorized, "sign-in required")
 			return
 		}
 		r.Body = http.MaxBytesReader(w, r.Body, store.MaxSize+64<<10)
@@ -124,10 +124,10 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
-// readJSON разбирает тело запроса; при ошибке отвечает сам и возвращает false.
+// readJSON decodes the request body; on error it writes the response itself and returns false.
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "запрос не разобран: "+err.Error())
+		writeError(w, http.StatusBadRequest, "cannot parse the request: "+err.Error())
 		return false
 	}
 	return true
@@ -142,10 +142,10 @@ func clientIP(r *http.Request) string {
 }
 
 func lockedMessage(wait time.Duration) string {
-	return fmt.Sprintf("слишком много неудачных попыток входа — подождите %d с", int(wait/time.Second)+1)
+	return fmt.Sprintf("too many failed sign-in attempts — wait %d s", int(wait/time.Second)+1)
 }
 
-// release закрывает у прошивки сеансы вызовов, на которые не ответили; ответ странице не ждёт.
+// release closes the firmware sessions of unanswered challenges; the page response does not wait for it.
 func (s *Server) release(chs ...*Challenge) {
 	for _, ch := range chs {
 		go func(ch *Challenge) {
@@ -163,12 +163,12 @@ func (s *Server) loginChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.gate.allowChallenge(now) {
-		writeError(w, http.StatusTooManyRequests, "слишком частые попытки входа — подождите секунду")
+		writeError(w, http.StatusTooManyRequests, "sign-in attempts are too frequent — wait a second")
 		return
 	}
 	ch, err := s.Auth.Challenge(r.Context())
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "роутер не выдал вызов на вход: "+err.Error())
+		writeError(w, http.StatusBadGateway, "the router did not issue a login challenge: "+err.Error())
 		return
 	}
 	id, stale := s.gate.addPending(ch, now)
@@ -197,28 +197,28 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		if ch != nil {
 			s.release(ch)
 		}
-		writeError(w, http.StatusBadRequest, "вызов на вход устарел — попробуйте ещё раз")
+		writeError(w, http.StatusBadRequest, "the login challenge has expired — try again")
 		return
 	}
 	if in.Login == "" || len(in.Login) > 64 || len(in.Response) != 64 {
 		s.release(ch)
-		writeError(w, http.StatusBadRequest, "нужны логин и ответ на вызов")
+		writeError(w, http.StatusBadRequest, "a login and a challenge response are required")
 		return
 	}
 	good, err := s.Auth.Verify(r.Context(), ch, in.Login, in.Response)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, "роутер не проверил вход: "+err.Error())
+		writeError(w, http.StatusBadGateway, "the router could not check the sign-in: "+err.Error())
 		return
 	}
 	if !good {
 		s.gate.fail(now)
-		s.logf("неудачный вход на страницу: %s, логин %q", clientIP(r), in.Login)
-		writeError(w, http.StatusUnauthorized, "неверный логин или пароль")
+		s.logf("failed page sign-in: %s, login %q", clientIP(r), in.Login)
+		writeError(w, http.StatusUnauthorized, "wrong login or password")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.gate.newSession(now), Path: "/",
 		MaxAge: int(sessionTTL / time.Second), HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	s.logf("вход на страницу: %s, логин %q", clientIP(r), in.Login)
+	s.logf("page sign-in: %s, login %q", clientIP(r), in.Login)
 	writeJSON(w, http.StatusOK, map[string]string{"login": in.Login})
 }
 

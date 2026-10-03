@@ -19,7 +19,7 @@ func FuzzParse(f *testing.F) {
 		}
 		names, addrs, _ := m.Resolve()
 		if len(names) == 0 || len(names) > len(m.Answers)+1 || len(addrs) > len(m.Answers) {
-			t.Fatalf("Resolve вернул невозможное: имён %d, адресов %d, записей %d", len(names), len(addrs), len(m.Answers))
+			t.Fatalf("Resolve returned the impossible: %d names, %d addresses, %d records", len(names), len(addrs), len(m.Answers))
 		}
 	})
 }

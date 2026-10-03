@@ -8,7 +8,7 @@ func FuzzParseUDP(f *testing.F) {
 	f.Fuzz(func(t *testing.T, b []byte) {
 		u, err := ParseUDP(b)
 		if err == nil && len(u.Payload) > len(b) {
-			t.Fatalf("полезная нагрузка длиннее пакета: %d > %d", len(u.Payload), len(b))
+			t.Fatalf("payload longer than the packet: %d > %d", len(u.Payload), len(b))
 		}
 	})
 }

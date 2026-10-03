@@ -1,6 +1,6 @@
 #!/bin/sh
-# trassa: запуск, присмотр и остановка демона и веб-страницы.
-# Журнал и служебные файлы лежат в /tmp (оперативная память), чтобы не изнашивать флеш.
+# trassa: start, supervise and stop the daemon and the web page.
+# The log and service files live in /tmp (RAM) so the flash does not wear out.
 
 TRASSA_BIN=/opt/sbin/trassa
 TRASSA_CONF=/opt/etc/trassa
@@ -12,28 +12,28 @@ TRASSA_LOG=/tmp/trassa.log
 TRASSA_LOG_MAX=1048576
 TRASSA_LOG_KEEP=262144
 
-# Наш ли это процесс: $1 — номер, $2 — подкоманда (run — демон, web — страница).
-# Номер процесса мог достаться постороннему процессу.
+# Is this process ours: $1 is the PID, $2 the subcommand (run for the daemon, web for the page).
+# The PID may have been reused by an unrelated process.
 trassa_ours() {
 	[ -n "$1" ] && [ -r "/proc/$1/cmdline" ] && tr '\0' ' ' <"/proc/$1/cmdline" | grep -q "^$TRASSA_BIN $2 "
 }
 
-# Номер процесса демона, если демон жив.
+# PID of the daemon, if the daemon is alive.
 trassa_pid() {
 	[ -f $TRASSA_PID ] || return 1
 	trassa_p=$(cat $TRASSA_PID 2>/dev/null)
 	trassa_ours "$trassa_p" run && echo "$trassa_p"
 }
 
-# Все процессы с подкомандой $1 (run или web), включая оставшиеся без записи в файле.
+# All processes with subcommand $1 (run or web), including ones missing from the pid file.
 trassa_all() {
 	for trassa_p in $(pidof trassa 2>/dev/null); do
 		trassa_ours "$trassa_p" "$1" && echo "$trassa_p"
 	done
 }
 
-# Присмотр: если демон завершился сам, снять его правила и запустить снова.
-# Файлом с номером процесса владеет присмотр: записывает сразу после запуска, удаляет после завершения.
+# Supervisor: if the daemon exits on its own, remove its rules and start it again.
+# The supervisor owns the pid file: it writes it right after start and removes it after exit.
 trassa_supervise() {
 	trap "" HUP PIPE
 	PATH=/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -43,7 +43,7 @@ trassa_supervise() {
 		trassa_args=""
 		[ -r $TRASSA_CONF/args ] && trassa_args=$(cat $TRASSA_CONF/args)
 		trassa_t0=$(date +%s)
-		set -f # аргументы делятся по пробелам, но не раскрываются как маски файлов
+		set -f # arguments are split on spaces but not expanded as file globs
 		$TRASSA_BIN run -rules $TRASSA_CONF/rules.conf $trassa_args >>$TRASSA_LOG 2>&1 &
 		set +f
 		echo $! >$TRASSA_PID
@@ -52,15 +52,15 @@ trassa_supervise() {
 		rm -f $TRASSA_PID
 		$TRASSA_BIN cleanup >>$TRASSA_LOG 2>&1
 		[ -f $TRASSA_STOP ] && break
-		# Демон проработал больше минуты — это не череда падений, пауза возвращается к начальной.
+		# The daemon ran for over a minute, so this is not a crash loop: reset the pause to the initial value.
 		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
-		echo "$(date '+%Y/%m/%d %H:%M:%S') демон завершился с кодом $trassa_code, перезапуск через $trassa_pause с" >>$TRASSA_LOG
+		echo "$(date '+%Y/%m/%d %H:%M:%S') daemon exited with code $trassa_code, restart in $trassa_pause s" >>$TRASSA_LOG
 		sleep $trassa_pause
 		[ $trassa_pause -lt 60 ] && trassa_pause=$((trassa_pause * 2))
 	done
 }
 
-# Сторож: демон жив, но не отвечает — завершить принудительно. Заодно не даёт журналу расти без предела.
+# Watchdog: if the daemon is alive but not responding, kill it. It also keeps the log from growing without limit.
 trassa_watch() {
 	trap "" HUP PIPE
 	trassa_fails=0
@@ -73,23 +73,23 @@ trassa_watch() {
 		fi
 		if [ $trassa_fails -ge 2 ]; then
 			trassa_p=$(trassa_pid) && {
-				echo "$(date '+%Y/%m/%d %H:%M:%S') демон не отвечает, принудительное завершение" >>$TRASSA_LOG
+				echo "$(date '+%Y/%m/%d %H:%M:%S') daemon not responding, killing it" >>$TRASSA_LOG
 				kill -9 "$trassa_p" 2>/dev/null
 			}
 			trassa_fails=0
 		fi
 		if [ "$(wc -c <$TRASSA_LOG 2>/dev/null || echo 0)" -gt $TRASSA_LOG_MAX ]; then
-			# Пишущие открывают журнал на дозапись, поэтому его можно укоротить на месте.
+			# Writers open the log in append mode, so it can be truncated in place.
 			tail -c $TRASSA_LOG_KEEP $TRASSA_LOG >$TRASSA_LOG.keep 2>/dev/null &&
 				cat $TRASSA_LOG.keep >$TRASSA_LOG
 			rm -f $TRASSA_LOG.keep
-			echo "$(date '+%Y/%m/%d %H:%M:%S') журнал укорочен" >>$TRASSA_LOG
+			echo "$(date '+%Y/%m/%d %H:%M:%S') log truncated" >>$TRASSA_LOG
 		fi
 	done
 }
 
-# Присмотр за веб-страницей: если она завершилась, запустить снова. Страница не трогает сеть,
-# поэтому снимать после неё нечего.
+# Web page supervisor: if the page exits, start it again. The page does not touch the network,
+# so there is nothing to clean up after it.
 trassa_supervise_web() {
 	trap "" HUP PIPE
 	PATH=/opt/sbin:/opt/bin:/opt/usr/sbin:/opt/usr/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -107,7 +107,7 @@ trassa_supervise_web() {
 		rm -f $TRASSA_WEB_PID
 		[ -f $TRASSA_STOP ] && break
 		[ $(($(date +%s) - trassa_t0)) -ge 60 ] && trassa_pause=5
-		echo "$(date '+%Y/%m/%d %H:%M:%S') веб-страница завершилась с кодом $trassa_code, перезапуск через $trassa_pause с" >>$TRASSA_LOG
+		echo "$(date '+%Y/%m/%d %H:%M:%S') web page exited with code $trassa_code, restart in $trassa_pause s" >>$TRASSA_LOG
 		sleep $trassa_pause
 		[ $trassa_pause -lt 60 ] && trassa_pause=$((trassa_pause * 2))
 	done
@@ -115,7 +115,7 @@ trassa_supervise_web() {
 
 trassa_start() {
 	if [ ! -x $TRASSA_BIN ]; then
-		echo "нет $TRASSA_BIN"
+		echo "$TRASSA_BIN not found"
 		return 1
 	fi
 	trassa_daemon_up=0
@@ -124,39 +124,39 @@ trassa_start() {
 	fi
 	trassa_web_up=0
 	[ -n "$(trassa_all web)" ] && trassa_web_up=1
-	# Не запущено ничего — список присмотров начинается заново: номера прежних процессов
-	# могли достаться посторонним.
+	# Nothing is running: start the supervisor list afresh, since the PIDs of earlier processes
+	# may have been reused by unrelated processes.
 	if [ $trassa_daemon_up = 0 ] && [ $trassa_web_up = 0 ]; then
 		: >$TRASSA_SUP
 	fi
 	rm -f $TRASSA_STOP
 	trassa_rc=0
-	# Демон и страница запускаются по отдельности: страница нужна и тогда, когда в правилах
-	# ошибка, — чтобы их исправить.
+	# The daemon and the page start independently: the page is needed even when the rules
+	# have errors, so that they can be fixed.
 	if [ $trassa_daemon_up = 1 ]; then
-		echo "демон trassa уже запущен"
+		echo "trassa daemon is already running"
 	elif ! $TRASSA_BIN check $TRASSA_CONF/rules.conf >/dev/null; then
-		echo "в правилах ошибки, демон trassa не запущен: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
+		echo "the rules have errors, trassa daemon not started: $TRASSA_BIN check $TRASSA_CONF/rules.conf"
 		trassa_rc=1
 	else
 		rm -f $TRASSA_PID
-		# Потоки присмотра и сторожа отвязываются от сеанса, из которого их запустили. Иначе оболочка,
-		# сообщая о завершённом по сигналу демоне, пишет в закрытый сеанс и гибнет сама — и демон
-		# остаётся без присмотра.
+		# The supervisor and watchdog loops are detached from the session that started them. Otherwise
+		# the shell, when reporting a daemon killed by a signal, writes to the closed session and dies
+		# itself, leaving the daemon unsupervised.
 		trassa_supervise >>$TRASSA_LOG 2>&1 </dev/null &
 		echo $! >>$TRASSA_SUP
 		trassa_watch >>$TRASSA_LOG 2>&1 </dev/null &
 		echo $! >>$TRASSA_SUP
-		echo "демон trassa запущен"
+		echo "trassa daemon started"
 	fi
-	# Страница — только если задан её адрес.
+	# The page is started only if its address is configured.
 	if [ -f $TRASSA_CONF/web.args ]; then
 		if [ $trassa_web_up = 1 ]; then
-			echo "веб-страница уже запущена"
+			echo "web page is already running"
 		else
 			trassa_supervise_web >>$TRASSA_LOG 2>&1 </dev/null &
 			echo $! >>$TRASSA_SUP
-			echo "веб-страница запущена ($(cat $TRASSA_CONF/web.args))"
+			echo "web page started ($(cat $TRASSA_CONF/web.args))"
 		fi
 	fi
 	return $trassa_rc
@@ -169,7 +169,7 @@ trassa_stop() {
 			kill "$trassa_p" 2>/dev/null
 		done
 	fi
-	# Демон останавливается по сигналу; ждём, пока не исчезнут все его процессы.
+	# The daemon stops on a signal; wait until all its processes are gone.
 	for trassa_p in $(trassa_all run) $(trassa_all web); do
 		kill "$trassa_p" 2>/dev/null
 	done
@@ -183,7 +183,7 @@ trassa_stop() {
 	done
 	$TRASSA_BIN cleanup >/dev/null 2>&1
 	rm -f $TRASSA_SUP $TRASSA_PID $TRASSA_WEB_PID
-	echo "trassa остановлен"
+	echo "trassa stopped"
 }
 
 case "$1" in
@@ -201,12 +201,12 @@ status)
 	$TRASSA_BIN status
 	trassa_w=$(trassa_all web | head -1)
 	if [ -n "$trassa_w" ]; then
-		echo "веб-страница: работает ($(cat $TRASSA_CONF/web.args 2>/dev/null))"
+		echo "web page: running ($(cat $TRASSA_CONF/web.args 2>/dev/null))"
 	else
-		echo "веб-страница: не запущена"
+		echo "web page: not running"
 	fi
 	;;
 *)
-	echo "Использование: $0 {start|stop|restart|status}"
+	echo "Usage: $0 {start|stop|restart|status}"
 	;;
 esac

@@ -47,7 +47,7 @@ func config(t *testing.T, s string) *rules.Config {
 	t.Helper()
 	cfg, ps := rules.Load(s, nil)
 	if rules.HasErrors(ps) {
-		t.Fatalf("правила: %v", ps)
+		t.Fatalf("rules: %v", ps)
 	}
 	return cfg
 }
@@ -69,17 +69,17 @@ func TestInterface(t *testing.T) {
 	for _, c := range cases {
 		got, err := src.Interface(ctx, c.name)
 		if err != nil || got != c.want {
-			t.Errorf("%s: %+v, %v; ожидалось %+v", c.name, got, err, c.want)
+			t.Errorf("%s: %+v, %v; want %+v", c.name, got, err, c.want)
 		}
 	}
 	for _, name := range []string{"Broken", "Garbage"} {
 		if st, err := src.Interface(ctx, name); err == nil {
-			t.Errorf("%s: ожидалась ошибка, получено %+v", name, st)
+			t.Errorf("%s: want an error, got %+v", name, st)
 		}
 	}
 	dead := RCI{Base: "http://127.0.0.1:1"}
-	if _, err := dead.Interface(ctx, "Wireguard2"); err == nil || !strings.Contains(err.Error(), "прошивка не отвечает") {
-		t.Errorf("недоступная прошивка: %v", err)
+	if _, err := dead.Interface(ctx, "Wireguard2"); err == nil || !strings.Contains(err.Error(), "firmware does not respond") {
+		t.Errorf("unreachable firmware: %v", err)
 	}
 }
 
@@ -87,20 +87,20 @@ func TestValidate(t *testing.T) {
 	src := firmware(t)
 	ok := config(t, "exit vpn = Wireguard2, Wireguard0\ndefault direct\n")
 	if ps := Validate(context.Background(), ok, src); len(ps) != 0 {
-		t.Errorf("исправные выходы дали проблемы: %v", ps)
+		t.Errorf("valid exits produced problems: %v", ps)
 	}
 	bad := config(t, "exit vpn = Wireguard2\nexit a = Nope\nexit b = GigabitEthernet1\nexit c = Broken\ndefault direct\n")
 	ps := Validate(context.Background(), bad, src)
 	want := []struct {
 		line int
 		msg  string
-	}{{2, "Nope не существует на роутере"}, {3, "только туннель WireGuard"}, {4, "Broken"}}
+	}{{2, "Nope does not exist on the router"}, {3, "only a WireGuard tunnel"}, {4, "Broken"}}
 	if len(ps) != len(want) {
-		t.Fatalf("проблем %d: %v", len(ps), ps)
+		t.Fatalf("%d problems: %v", len(ps), ps)
 	}
 	for i, w := range want {
 		if ps[i].Line != w.line || ps[i].Severity != rules.Error || !strings.Contains(ps[i].Msg, w.msg) {
-			t.Errorf("проблема %d: %v; ожидалась строка %d с текстом %q", i, ps[i], w.line, w.msg)
+			t.Errorf("problem %d: %v; want line %d with text %q", i, ps[i], w.line, w.msg)
 		}
 	}
 }
@@ -113,23 +113,23 @@ func TestActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got["first"] != (Choice{"Wireguard2", "nwg2"}) {
-		t.Errorf("first: %+v — должен быть выбран первый живой по порядку", got["first"])
+		t.Errorf("first: %+v; the first live one in order must be chosen", got["first"])
 	}
 	if got["dead"] != (Choice{}) {
-		t.Errorf("dead: %+v — живых нет", got["dead"])
+		t.Errorf("dead: %+v; none is live", got["dead"])
 	}
 	if got["flaky"] != (Choice{"Wireguard2", "nwg2"}) {
-		t.Errorf("flaky: %+v — сбой одного интерфейса не должен мешать выбрать следующий", got["flaky"])
+		t.Errorf("flaky: %+v; a failure of one interface must not prevent choosing the next", got["flaky"])
 	}
-	// Прошивка не ответила ни разу: это ошибка, а не «все туннели упали».
+	// The firmware never answered: that is an error, not "all tunnels are down".
 	if _, err := Active(context.Background(), cfg, RCI{Base: "http://127.0.0.1:1"}, nil); err == nil {
-		t.Error("недоступная прошивка должна быть ошибкой")
+		t.Error("unreachable firmware must be an error")
 	}
 }
 
 func TestActiveKeepsPreviousWhenFirmwareSilent(t *testing.T) {
 	src := firmware(t)
-	// О первом по порядку интерфейсе прошивка не ответила, остальные выключены.
+	// The firmware did not answer about the first interface in order; the others are down.
 	cfg := config(t, "exit vpn = Broken, Wireguard0\nexit calm = Wireguard0\ndefault direct\n")
 	prev := map[string]Choice{"vpn": {"Broken", "nwg9"}, "calm": {"Wireguard0", "nwg0"}}
 	got, err := Active(context.Background(), cfg, src, prev)
@@ -137,14 +137,14 @@ func TestActiveKeepsPreviousWhenFirmwareSilent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got["vpn"] != prev["vpn"] {
-		t.Errorf("vpn: %+v — молчание прошивки принято за падение туннеля, ожидался прежний выбор", got["vpn"])
+		t.Errorf("vpn: %+v; firmware silence was taken for a tunnel failure, want the previous choice", got["vpn"])
 	}
 	if got["calm"] != (Choice{}) {
-		t.Errorf("calm: %+v — прошивка ответила, что туннель выключен: выбор должен сняться", got["calm"])
+		t.Errorf("calm: %+v; the firmware said the tunnel is down, so the choice must be cleared", got["calm"])
 	}
-	// Прежнего выбора нет — придумывать его не из чего.
+	// There is no previous choice, so there is nothing to fall back to.
 	if got, _ := Active(context.Background(), cfg, src, nil); got["vpn"] != (Choice{}) {
-		t.Errorf("vpn без прежнего выбора: %+v", got["vpn"])
+		t.Errorf("vpn without a previous choice: %+v", got["vpn"])
 	}
 }
 
@@ -154,15 +154,15 @@ func TestTunnels(t *testing.T) {
 	want := []Tunnel{
 		{Exit: "vpn", Name: "Wireguard2", Description: "tunnel-a", Up: true},
 		{Exit: "vpn", Name: "Wireguard0"},
-		{Exit: "vpn", Name: "Ghost", Error: "интерфейса нет на роутере"},
-		{Exit: "vpn", Name: "Broken", Error: "прошивка ответила кодом 500"},
+		{Exit: "vpn", Name: "Ghost", Error: "no such interface on the router"},
+		{Exit: "vpn", Name: "Broken", Error: "firmware answered with code 500"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("%+v", got)
 	}
 	for i := range want {
 		if got[i] != want[i] {
-			t.Errorf("%d: %+v, ожидалось %+v", i, got[i], want[i])
+			t.Errorf("%d: %+v, want %+v", i, got[i], want[i])
 		}
 	}
 }

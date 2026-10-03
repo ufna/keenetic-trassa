@@ -37,7 +37,7 @@ func TestCondMatch(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := mustCond(t, c.cond).Match(c.name); got != c.want {
-			t.Errorf("%q против %q = %v, ожидалось %v", c.cond, c.name, got, c.want)
+			t.Errorf("%q against %q = %v, expected %v", c.cond, c.name, got, c.want)
 		}
 	}
 }
@@ -45,7 +45,7 @@ func TestCondMatch(t *testing.T) {
 func TestParseCondErrors(t *testing.T) {
 	for _, tok := range []string{"~", "~(", "foo.*.com", "*", "=", "*.", "bad name", "=1.2.3.4", "*.10.0.0.1", "~\\.рф$"} {
 		if c, err := parseCond(tok); err == nil {
-			t.Errorf("parseCond(%q) = %+v, ожидалась ошибка", tok, c)
+			t.Errorf("parseCond(%q) = %+v, expected an error", tok, c)
 		}
 	}
 }
@@ -72,7 +72,7 @@ func TestCondCovers(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := mustCond(t, c.a).covers(mustCond(t, c.b)); got != c.want {
-			t.Errorf("%q перекрывает %q = %v, ожидалось %v", c.a, c.b, got, c.want)
+			t.Errorf("%q covers %q = %v, expected %v", c.a, c.b, got, c.want)
 		}
 	}
 }

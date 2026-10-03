@@ -1,10 +1,10 @@
-// webpreview показывает страницу trassa без роутера — для снимков экрана при разработке.
-// В исполняемый файл trassa не входит.
+// webpreview serves the trassa page without a router, for screenshots during development.
+// It is not part of the trassa binary.
 //
-//	go run ./tools/webpreview                                  — пример: правила из rules/rules.conf
-//	go run ./tools/webpreview -router http://192.168.1.1:8090  — настоящая страница роутера
+//	go run ./tools/webpreview                                  — demo: rules from rules/rules.conf
+//	go run ./tools/webpreview -router http://192.168.1.1:8090  — the real router page
 //
-// Страница открывается уже с выполненным входом: http://127.0.0.1:8091/
+// The page opens already signed in: http://127.0.0.1:8091/
 package main
 
 import (
@@ -39,7 +39,7 @@ func answer(login, password, realm, nonce string) string {
 	return hex.EncodeToString(s[:])
 }
 
-// demoAuth пускает admin с паролем demo.
+// demoAuth lets in admin with password demo.
 type demoAuth struct{}
 
 func (demoAuth) Challenge(ctx context.Context) (*web.Challenge, error) {
@@ -52,7 +52,7 @@ func (demoAuth) Verify(ctx context.Context, ch *web.Challenge, login, response s
 
 func (demoAuth) Release(ctx context.Context, ch *web.Challenge) {}
 
-// signIn входит на страницу и возвращает cookie сеанса. do выполняет запрос.
+// signIn signs in to the page and returns the session cookie. do performs a request.
 func signIn(do func(*http.Request) (*http.Response, error), base, password string) (*http.Cookie, error) {
 	req, _ := http.NewRequest(http.MethodGet, base+"/api/login", nil)
 	req.Header.Set("X-Trassa", "1")
@@ -78,10 +78,10 @@ func signIn(do func(*http.Request) (*http.Response, error), base, password strin
 		}
 	}
 	b, _ := io.ReadAll(resp.Body)
-	return nil, fmt.Errorf("вход не удался: %s %s", resp.Status, b)
+	return nil, fmt.Errorf("sign-in failed: %s %s", resp.Status, b)
 }
 
-// demo — страница с правилами из rulesPath и придуманным, но правдоподобным состоянием демона.
+// demo is the page with rules from rulesPath and a made-up but plausible daemon state.
 func demo(rulesPath string) (http.Handler, error) {
 	text, err := os.ReadFile(rulesPath)
 	if err != nil {
@@ -94,8 +94,8 @@ func demo(rulesPath string) (http.Handler, error) {
 	if err := os.WriteFile(filepath.Join(dir, store.RulesFile), text, 0o644); err != nil {
 		return nil, err
 	}
-	st := &store.Store{Dir: dir, Apply: func() (store.Applied, string) { return store.Running, "правила перечитаны" }}
-	st.Save(string(text)+"# пример правки со страницы\n", true)
+	st := &store.Store{Dir: dir, Apply: func() (store.Applied, string) { return store.Running, "rules reloaded" }}
+	st.Save(string(text)+"# example edit from the page\n", true)
 	now := time.Now()
 	state := ctl.State{Mode: "route", Started: now.Add(-124 * time.Minute), Rules: 12, Addrs: 25, Claims: 33,
 		Stats: ctl.Stats{Packets: 1140, Answers: 870, Claimed: 31, Changes: 50},
@@ -116,7 +116,7 @@ func demo(rulesPath string) (http.Handler, error) {
 				b, _ := json.Marshal(state)
 				return string(b), nil
 			}
-			return "", fmt.Errorf("%w (пример)", ctl.ErrNoDaemon)
+			return "", fmt.Errorf("%w (demo)", ctl.ErrNoDaemon)
 		},
 		Tunnels: func(ctx context.Context, cfg *rules.Config) []exits.Tunnel {
 			var out []exits.Tunnel
@@ -131,7 +131,7 @@ func demo(rulesPath string) (http.Handler, error) {
 	return srv.Handler(), nil
 }
 
-// withCookie подставляет cookie сеанса в каждый запрос.
+// withCookie adds the session cookie to every request.
 func withCookie(h http.Handler, c *http.Cookie) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := r.Cookie(c.Name); err != nil {
@@ -143,8 +143,8 @@ func withCookie(h http.Handler, c *http.Cookie) http.Handler {
 
 var gif1x1 = []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
 
-// withWait задерживает событие load страницы на две секунды: Firefox снимает экран по этому
-// событию, а данные страница подгружает после разбора — без задержки снимок вышел бы пустым.
+// withWait delays the page load event by two seconds: Firefox takes the screenshot on that event,
+// while the page fetches its data after parsing — without the delay the screenshot would be empty.
 func withWait(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -169,10 +169,10 @@ func withWait(h http.Handler) http.Handler {
 }
 
 func main() {
-	listen := flag.String("listen", "127.0.0.1:8091", "адрес показа")
-	rulesPath := flag.String("rules", "rules/rules.conf", "файл правил для примера")
-	router := flag.String("router", "", "адрес настоящей страницы, например http://192.168.1.1:8090")
-	passFile := flag.String("pass", "backup/.router-pass", "файл с паролем администратора роутера")
+	listen := flag.String("listen", "127.0.0.1:8091", "address to serve on")
+	rulesPath := flag.String("rules", "rules/rules.conf", "rules file for the demo")
+	router := flag.String("router", "", "address of the real page, e.g. http://192.168.1.1:8090")
+	passFile := flag.String("pass", "backup/.router-pass", "file with the router administrator password")
 	flag.Parse()
 
 	var h http.Handler
@@ -209,6 +209,6 @@ func main() {
 		proxy.Director = func(r *http.Request) { director(r); r.Host = target.Host }
 		h = withCookie(proxy, c)
 	}
-	log.Printf("страница: http://%s/", *listen)
+	log.Printf("page: http://%s/", *listen)
 	log.Fatal(http.ListenAndServe(*listen, withWait(h)))
 }

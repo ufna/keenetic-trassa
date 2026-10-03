@@ -10,36 +10,36 @@ import (
 type condKind int
 
 const (
-	condSuffix condKind = iota // домен и все поддомены
-	condExact                  // только точное имя
-	condSub                    // только поддомены
+	condSuffix condKind = iota // the domain and all its subdomains
+	condExact                  // the exact name only
+	condSub                    // subdomains only
 	condRegex
 )
 
-// Cond — одно условие по имени.
+// Cond is a single name condition.
 type Cond struct {
-	Text string // запись условия как в файле правил
+	Text string // the condition as written in the rules file
 	kind condKind
 	name string
 	re   *regexp.Regexp
 }
 
-// parseCond разбирает условие без ведущего «!».
+// parseCond parses a condition without the leading "!".
 func parseCond(tok string) (Cond, error) {
 	c := Cond{Text: tok}
 	if strings.HasPrefix(tok, "~") {
 		if tok == "~" {
-			return c, errors.New("пустое регулярное выражение")
+			return c, errors.New("empty regular expression")
 		}
 		for _, r := range tok {
 			if r >= 0x80 {
-				return c, fmt.Errorf("регулярное выражение %q: имена сравниваются в виде xn--…, поэтому символ U+%04X не совпадёт никогда", tok[1:], r)
+				return c, fmt.Errorf("regular expression %q: names are compared in xn--… form, so the character U+%04X will never match", tok[1:], r)
 			}
 		}
-		// Имена приводятся к нижнему регистру, поэтому выражение сравнивается без учёта регистра.
+		// Names are lowercased, so the expression is matched case-insensitively.
 		re, err := regexp.Compile("(?i)" + tok[1:])
 		if err != nil {
-			return c, fmt.Errorf("регулярное выражение %q: %v", tok[1:], err)
+			return c, fmt.Errorf("regular expression %q: %v", tok[1:], err)
 		}
 		c.kind, c.re = condRegex, re
 		return c, nil
@@ -54,20 +54,20 @@ func parseCond(tok string) (Cond, error) {
 		c.kind = condSuffix
 	}
 	if strings.Contains(name, "*") {
-		return c, fmt.Errorf("условие %q: звёздочка допустима только в начале, в виде *.example.com", tok)
+		return c, fmt.Errorf("condition %q: an asterisk is allowed only at the start, as in *.example.com", tok)
 	}
 	if looksNumeric(name) {
-		return c, fmt.Errorf("условие %q похоже на адрес: адреса и подсети пишутся без =, *. и !", tok)
+		return c, fmt.Errorf("condition %q looks like an address: addresses and subnets are written without =, *. and !", tok)
 	}
 	n, err := NormalizeName(name)
 	if err != nil {
-		return c, fmt.Errorf("условие %q: %w", tok, err)
+		return c, fmt.Errorf("condition %q: %w", tok, err)
 	}
 	c.name = n
 	return c, nil
 }
 
-// Match сообщает, подходит ли имя под условие. Имя должно быть приведено NormalizeName.
+// Match reports whether the name matches the condition. The name must be normalized with NormalizeName.
 func (c Cond) Match(name string) bool {
 	switch c.kind {
 	case condExact:
@@ -82,8 +82,8 @@ func (c Cond) Match(name string) bool {
 	return false
 }
 
-// disjoint сообщает, что ни одно имя не подходит под оба условия сразу.
-// Проверка осторожная: для регулярных выражений ответ всегда «нет».
+// disjoint reports that no name matches both conditions at once.
+// The check is conservative: for regular expressions the answer is always "no".
 func (a Cond) disjoint(b Cond) bool {
 	if a.kind == condRegex || b.kind == condRegex {
 		return false
@@ -91,8 +91,8 @@ func (a Cond) disjoint(b Cond) bool {
 	return a.name != b.name && !strings.HasSuffix(a.name, "."+b.name) && !strings.HasSuffix(b.name, "."+a.name)
 }
 
-// covers сообщает, что любое имя, подходящее под b, подходит и под a.
-// Для регулярных выражений ответ всегда «нет»: проверка намеренно осторожная.
+// covers reports that every name matching b also matches a.
+// For regular expressions the answer is always "no": the check is deliberately conservative.
 func (a Cond) covers(b Cond) bool {
 	if a.kind == condRegex || b.kind == condRegex {
 		return false

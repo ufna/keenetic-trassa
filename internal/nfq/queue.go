@@ -11,15 +11,15 @@ const (
 	solNetlink       = 270
 	netlinkNoEnobufs = 5
 	queueMaxLen      = 256
-	// copyRange — сколько байт пакета ядро передаёт демону. DNS-ответ по UDP длиннее не бывает
-	// на практике; более длинный пакет придёт обрезанным и будет отпущен без разбора.
+	// copyRange is how many bytes of a packet the kernel passes to the daemon. In practice a DNS response
+	// over UDP is never longer; a longer packet arrives truncated and is let through without parsing.
 	copyRange = 4096
 )
 
-// ErrTimeout — за время ожидания пакетов не пришло. Это не ошибка: вызывающий проверяет, не пора ли остановиться.
-var ErrTimeout = errors.New("nfq: пакетов нет")
+// ErrTimeout means no packets arrived within the wait. It is not a failure: the caller checks whether it is time to stop.
+var ErrTimeout = errors.New("nfq: no packets")
 
-// Queue — привязанная очередь пакетов. Не потокобезопасна.
+// Queue is a bound packet queue. It is not safe for concurrent use.
 type Queue struct {
 	fd      int
 	num     uint16
@@ -30,19 +30,19 @@ type Queue struct {
 
 var kernel = &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}
 
-// Open привязывает очередь num. Если демон перестанет читать очередь, ядро после
-// queueMaxLen ожидающих пакетов начнёт пропускать их без вердикта.
+// Open binds queue num. If the daemon stops reading the queue, after queueMaxLen
+// pending packets the kernel starts letting them through without a verdict.
 func Open(num uint16) (*Queue, error) {
 	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW, netlinkNetfilter)
 	if err != nil {
-		return nil, fmt.Errorf("сокет netlink: %w", err)
+		return nil, fmt.Errorf("netlink socket: %w", err)
 	}
 	q := &Queue{fd: fd, num: num, buf: make([]byte, 128<<10)}
 	if err := syscall.Bind(fd, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
 		syscall.Close(fd)
-		return nil, fmt.Errorf("привязка сокета netlink: %w", err)
+		return nil, fmt.Errorf("binding netlink socket: %w", err)
 	}
-	// Секундный таймаут чтения: цикл приёма регулярно получает управление.
+	// A one-second read timeout: the receive loop regularly gets control back.
 	syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &syscall.Timeval{Sec: 1})
 	syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 1<<20)
 	syscall.SetsockoptInt(fd, solNetlink, netlinkNoEnobufs, 1)
@@ -51,10 +51,10 @@ func Open(num uint16) (*Queue, error) {
 		what  string
 		build func(seq uint32) []byte
 	}{
-		{"привязка очереди", func(s uint32) []byte { return configCmd(num, cfgCmdBind, s) }},
-		{"режим копирования", func(s uint32) []byte { return configParams(num, copyPacket, copyRange, s) }},
-		{"длина очереди", func(s uint32) []byte { return configMaxLen(num, queueMaxLen, s) }},
-		{"пропуск при переполнении", func(s uint32) []byte { return configFlags(num, flagFailOpen, flagFailOpen, s) }},
+		{"binding queue", func(s uint32) []byte { return configCmd(num, cfgCmdBind, s) }},
+		{"copy mode", func(s uint32) []byte { return configParams(num, copyPacket, copyRange, s) }},
+		{"queue length", func(s uint32) []byte { return configMaxLen(num, queueMaxLen, s) }},
+		{"fail-open on overflow", func(s uint32) []byte { return configFlags(num, flagFailOpen, flagFailOpen, s) }},
 	}
 	for _, st := range steps {
 		if err := q.request(st.build); err != nil {
@@ -65,7 +65,7 @@ func Open(num uint16) (*Queue, error) {
 	return q, nil
 }
 
-// request отправляет запрос настройки и ждёт подтверждения. Пакеты, пришедшие тем временем, откладываются.
+// request sends a configuration request and waits for the acknowledgement. Packets arriving meanwhile are set aside.
 func (q *Queue) request(build func(seq uint32) []byte) error {
 	q.seq++
 	seq := q.seq
@@ -75,7 +75,7 @@ func (q *Queue) request(build func(seq uint32) []byte) error {
 	for {
 		n, _, err := syscall.Recvfrom(q.fd, q.buf, 0)
 		if err != nil {
-			return fmt.Errorf("ядро не подтвердило запрос: %w", err)
+			return fmt.Errorf("kernel did not acknowledge the request: %w", err)
 		}
 		rs, err := parse(q.buf[:n])
 		if err != nil {
@@ -103,7 +103,7 @@ func (q *Queue) keep(p *Packet) {
 	q.pending = append(q.pending, Packet{ID: p.ID, Payload: append([]byte(nil), p.Payload...)})
 }
 
-// Recv возвращает следующий пакет либо ErrTimeout, если за секунду ничего не пришло.
+// Recv returns the next packet, or ErrTimeout if nothing arrived within a second.
 func (q *Queue) Recv() (Packet, error) {
 	for len(q.pending) == 0 {
 		n, _, err := syscall.Recvfrom(q.fd, q.buf, 0)
@@ -128,12 +128,12 @@ func (q *Queue) Recv() (Packet, error) {
 	return p, nil
 }
 
-// Accept отпускает пакет дальше.
+// Accept lets the packet continue.
 func (q *Queue) Accept(id uint32) error {
 	return syscall.Sendto(q.fd, verdict(q.num, id, verdictAccept), 0, kernel)
 }
 
-// Close отвязывает очередь и закрывает сокет. После этого правило с --queue-bypass пропускает пакеты.
+// Close unbinds the queue and closes the socket. After that, a rule with --queue-bypass lets packets through.
 func (q *Queue) Close() error {
 	q.seq++
 	syscall.Sendto(q.fd, configCmd(q.num, cfgCmdUnbind, q.seq), 0, kernel)

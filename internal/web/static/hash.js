@@ -1,5 +1,5 @@
-// Хеши MD5 и SHA-256 для ответа на вызов роутера. Страница открыта по http, а там браузер
-// не даёт встроенных средств хеширования (crypto.subtle), поэтому они написаны здесь.
+// MD5 and SHA-256 hashes for the router challenge response. The page is served over http, where
+// the browser offers no built-in hashing (crypto.subtle), so they are implemented here.
 "use strict";
 
 var TrassaHash = (function () {
@@ -20,7 +20,7 @@ var TrassaHash = (function () {
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
 
-  // pad дополняет сообщение до целого числа блоков по 64 байта; длина в битах — в конце.
+  // pad pads the message to a whole number of 64-byte blocks; the length in bits goes at the end.
   function pad(msg, littleEndian) {
     var n = msg.length, total = ((n + 8) >>> 6) + 1;
     var buf = new Uint8Array(total * 64);
@@ -99,7 +99,7 @@ var TrassaHash = (function () {
   return {
     md5hex: function (s) { return md5(utf8(s)); },
     sha256hex: function (s) { return sha256(utf8(s)); },
-    // response — ответ на вызов роутера: sha256(вызов + md5(логин:realm:пароль)).
+    // response is the answer to a router challenge: sha256(challenge + md5(login:realm:password)).
     response: function (login, password, realm, challenge) {
       return sha256(utf8(challenge + md5(utf8(login + ":" + realm + ":" + password))));
     }

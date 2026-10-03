@@ -1,5 +1,5 @@
-/* Пульт сетевого инженера: сверху — положение дел, слева — правила как исходный текст и история,
-   справа — живое состояние. Цвета: синий — туннель, зелёный — напрямую. */
+/* A network engineer's console: the overall picture on top, rules as source text and history on the left,
+   live state on the right. Colors: blue means tunnel, green means direct. */
 :root {
   --ground: #e9eef2;
   --panel: #f8fafb;

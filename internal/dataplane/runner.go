@@ -1,4 +1,4 @@
-// Package dataplane меняет сетевые таблицы роутера, вызывая системные утилиты.
+// Package dataplane changes the router's network tables by running system utilities.
 package dataplane
 
 import (
@@ -9,18 +9,18 @@ import (
 	"time"
 )
 
-// Runner запускает системную утилиту. В тестах подменяется.
+// Runner runs a system utility. Tests substitute it.
 type Runner interface {
 	Run(ctx context.Context, name string, args ...string) (string, error)
 }
 
-// InputRunner умеет ещё и подать утилите текст на вход.
+// InputRunner can also feed text to a utility's standard input.
 type InputRunner interface {
 	Runner
 	RunInput(ctx context.Context, stdin, name string, args ...string) (string, error)
 }
 
-// Exec запускает утилиты по-настоящему.
+// Exec runs utilities for real.
 type Exec struct{}
 
 func (e Exec) Run(ctx context.Context, name string, args ...string) (string, error) {
@@ -29,8 +29,8 @@ func (e Exec) Run(ctx context.Context, name string, args ...string) (string, err
 
 func (Exec) RunInput(ctx context.Context, stdin, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
-	// Утилита может оставить дочерний процесс, который держит поток вывода; без этого предела
-	// ожидание вывода длилось бы дольше отведённого времени.
+	// A utility may leave behind a child process that holds the output stream; without this limit
+	// waiting for the output would outlast the allotted time.
 	cmd.WaitDelay = time.Second
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)

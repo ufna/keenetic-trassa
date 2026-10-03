@@ -10,11 +10,11 @@ import (
 	"unicode/utf8"
 )
 
-// Direct — имя выхода напрямую через провайдера.
+// Direct is the name of the exit that goes straight through the ISP.
 const Direct = "direct"
 
-// MaxExits — сколько выходов можно объявить: на каждый нужны две таблицы маршрутов,
-// а номера таблиц trassa — 540–599.
+// MaxExits is how many exits can be declared: each one needs two routing tables,
+// and trassa's table numbers are 540–599.
 const MaxExits = 29
 
 type Severity int
@@ -24,7 +24,7 @@ const (
 	Warning
 )
 
-// Problem — ошибка или предупреждение в файле правил. Line == 0, если к строке не привязано.
+// Problem is an error or a warning in the rules file. Line == 0 if it is not tied to a line.
 type Problem struct {
 	Line     int
 	Severity Severity
@@ -32,14 +32,14 @@ type Problem struct {
 }
 
 func (p Problem) String() string {
-	kind := "ошибка"
+	kind := "error"
 	if p.Severity == Warning {
-		kind = "предупреждение"
+		kind = "warning"
 	}
 	if p.Line == 0 {
 		return kind + ": " + p.Msg
 	}
-	return fmt.Sprintf("строка %d: %s: %s", p.Line, kind, p.Msg)
+	return fmt.Sprintf("line %d: %s: %s", p.Line, kind, p.Msg)
 }
 
 func HasErrors(ps []Problem) bool {
@@ -51,14 +51,14 @@ func HasErrors(ps []Problem) bool {
 	return false
 }
 
-// Exit — выход: упорядоченный список интерфейсов, первый живой используется.
+// Exit is an ordered list of interfaces; the first live one is used.
 type Exit struct {
 	Name       string
 	Interfaces []string
 	Line       int
 }
 
-// Action — куда направить трафик. Exit == Direct означает «через провайдера».
+// Action says where to send traffic. Exit == Direct means "through the ISP".
 type Action struct {
 	Exit   string
 	Strict bool
@@ -74,13 +74,13 @@ func (a Action) String() string {
 type Rule struct {
 	Line   int
 	Text   string
-	Pos    []Cond // подходит хотя бы одно (если есть)
-	Neg    []Cond // не подходит ни одно
+	Pos    []Cond // at least one matches (if any)
+	Neg    []Cond // none matches
 	Nets   []netip.Prefix
 	Action Action
 }
 
-// Test — ожидание из строки «test <имя или адрес> = <выход>».
+// Test is an expectation from a "test <name or address> = <exit>" line.
 type Test struct {
 	Line    int
 	Subject string
@@ -104,14 +104,14 @@ func (c *Config) Exit(name string) (Exit, bool) {
 	return Exit{}, false
 }
 
-// ReadFile читает файл, на который ссылается условие @путь.
+// ReadFile reads the file referenced by an @path condition.
 type ReadFile func(path string) (string, error)
 
-// Parse разбирает текст правил. Возвращает ошибки разбора; ожидания и предупреждения проверяет Check.
+// Parse parses the rules text. It returns parse errors; expectations and warnings are checked by Check.
 func Parse(src string, read ReadFile) (*Config, []Problem) {
 	p := &parser{cfg: &Config{}, read: read}
 	if !utf8.ValidString(src) {
-		p.errf(0, "файл не в кодировке UTF-8: пересохраните его в UTF-8")
+		p.errf(0, "the file is not UTF-8 encoded: re-save it as UTF-8")
 		return p.cfg, p.problems
 	}
 	for i, line := range strings.Split(strings.TrimPrefix(src, "\uFEFF"), "\n") {
@@ -137,7 +137,7 @@ func (p *parser) errf(line int, format string, args ...any) {
 	p.problems = append(p.problems, Problem{line, Error, fmt.Sprintf(format, args...)})
 }
 
-// clean убирает комментарий, возврат каретки и пробелы по краям.
+// clean strips a comment, a carriage return and surrounding whitespace.
 func clean(raw string) string {
 	s := strings.TrimRight(raw, "\r")
 	for i := 0; i < len(s); i++ {
@@ -180,8 +180,8 @@ func validIdent(s string) bool {
 	return true
 }
 
-// validIface пропускает только символы, из которых состоят имена интерфейсов прошивки:
-// имя потом подставляется в команду роутера.
+// validIface accepts only the characters that firmware interface names consist of:
+// the name is later substituted into a router command.
 func validIface(s string) bool {
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -197,30 +197,30 @@ func (p *parser) exit(n int, rest string) {
 	name, list, ok := strings.Cut(rest, "=")
 	name = strings.TrimSpace(name)
 	if !ok || name == "" {
-		p.errf(n, "ожидается: exit <имя> = <интерфейс>, <интерфейс>...")
+		p.errf(n, "expected: exit <name> = <interface>, <interface>...")
 		return
 	}
 	if !validIdent(name) {
-		p.errf(n, "имя выхода %q: допустимы строчные латинские буквы, цифры, - и _", name)
+		p.errf(n, "exit name %q: only lowercase Latin letters, digits, - and _ are allowed", name)
 		return
 	}
 	if name == Direct {
-		p.errf(n, "имя %q занято: так называется путь напрямую через провайдера", Direct)
+		p.errf(n, "name %q is reserved: it is the direct path through the ISP", Direct)
 		return
 	}
 	if _, dup := p.cfg.Exit(name); dup {
-		p.errf(n, "выход %q уже объявлен", name)
+		p.errf(n, "exit %q is already declared", name)
 		return
 	}
 	var ifs []string
 	for _, x := range strings.Split(list, ",") {
 		x = strings.TrimSpace(x)
 		if x == "" || strings.ContainsAny(x, " \t") {
-			p.errf(n, "пустое имя интерфейса в списке или пропущена запятая")
+			p.errf(n, "empty interface name in the list, or a missing comma")
 			return
 		}
 		if !validIface(x) {
-			p.errf(n, "имя интерфейса %q: допустимы латинские буквы, цифры и символы _ . / -", x)
+			p.errf(n, "interface name %q: only Latin letters, digits and the characters _ . / - are allowed", x)
 			return
 		}
 		ifs = append(ifs, x)
@@ -230,12 +230,12 @@ func (p *parser) exit(n int, rest string) {
 
 func (p *parser) action(n int, f []string) (Action, bool) {
 	if len(f) == 0 || len(f) > 2 || len(f) == 2 && f[1] != "strict" {
-		p.errf(n, "ожидается выход: direct или <имя выхода> [strict]")
+		p.errf(n, "expected an exit: direct or <exit name> [strict]")
 		return Action{}, false
 	}
 	a := Action{Exit: f[0], Strict: len(f) == 2}
 	if a.Exit == Direct && a.Strict {
-		p.errf(n, "strict не имеет смысла для direct")
+		p.errf(n, "strict makes no sense for direct")
 		return Action{}, false
 	}
 	p.refs = append(p.refs, exitRef{n, a.Exit})
@@ -248,7 +248,7 @@ func (p *parser) def(n int, f []string) {
 		return
 	}
 	if p.cfg.DefaultLine != 0 {
-		p.errf(n, "default уже задан в строке %d", p.cfg.DefaultLine)
+		p.errf(n, "default is already set on line %d", p.cfg.DefaultLine)
 		return
 	}
 	p.cfg.Default, p.cfg.DefaultLine = a, n
@@ -258,7 +258,7 @@ func (p *parser) test(n int, rest string) {
 	subj, want, ok := strings.Cut(rest, "=")
 	subj, want = strings.TrimSpace(subj), strings.TrimSpace(want)
 	if !ok || subj == "" || want == "" || strings.ContainsAny(subj+want, " \t") {
-		p.errf(n, "ожидается: test <имя или адрес> = <выход>")
+		p.errf(n, "expected: test <name or address> = <exit>")
 		return
 	}
 	p.refs = append(p.refs, exitRef{n, want})
@@ -268,12 +268,12 @@ func (p *parser) test(n int, rest string) {
 func (p *parser) rule(n int, s string) {
 	left, right, ok := strings.Cut(s, "->")
 	if !ok {
-		p.errf(n, "не понимаю строку: ожидается «условия -> выход», exit, default или test")
+		p.errf(n, `cannot parse the line: expected "conditions -> exit", exit, default or test`)
 		return
 	}
 	toks := strings.Fields(left)
 	if len(toks) == 0 {
-		p.errf(n, "перед -> нет ни одного условия")
+		p.errf(n, "no conditions before ->")
 		return
 	}
 	a, ok := p.action(n, strings.Fields(right))
@@ -299,20 +299,20 @@ func (p *parser) rule(n int, s string) {
 
 func (p *parser) include(n int, path string, r *Rule) bool {
 	if path == "" {
-		p.errf(n, "после @ нужен путь к файлу")
+		p.errf(n, "a file path is needed after @")
 		return false
 	}
 	if p.read == nil {
-		p.errf(n, "файл %s: включение файлов здесь недоступно", path)
+		p.errf(n, "file %s: including files is not available here", path)
 		return false
 	}
 	text, err := p.read(path)
 	if err != nil {
-		p.errf(n, "файл %s: %v", path, err)
+		p.errf(n, "file %s: %v", path, err)
 		return false
 	}
 	if !utf8.ValidString(text) {
-		p.errf(n, "файл %s не в кодировке UTF-8: пересохраните его в UTF-8", path)
+		p.errf(n, "file %s is not UTF-8 encoded: re-save it as UTF-8", path)
 		return false
 	}
 	good, count := true, 0
@@ -320,45 +320,45 @@ func (p *parser) include(n int, path string, r *Rule) bool {
 		for _, tok := range strings.Fields(clean(raw)) {
 			count++
 			if strings.HasPrefix(tok, "@") {
-				p.errf(n, "файл %s, строка %d: вложенные включения не поддерживаются", path, i+1)
+				p.errf(n, "file %s, line %d: nested includes are not supported", path, i+1)
 				good = false
 				continue
 			}
 			if err := r.add(tok); err != nil {
-				p.errf(n, "файл %s, строка %d: %v", path, i+1, err)
+				p.errf(n, "file %s, line %d: %v", path, i+1, err)
 				good = false
 			}
 		}
 	}
 	if count == 0 {
-		p.errf(n, "файл %s пуст", path)
+		p.errf(n, "file %s is empty", path)
 		return false
 	}
 	return good
 }
 
-// linkError объясняет, что вместо домена вставлена ссылка, и подсказывает домен из неё.
+// linkError explains that a link was pasted instead of a domain and suggests the domain from it.
 func linkError(tok string) error {
 	if u, err := url.Parse(tok); err == nil && u.Hostname() != "" {
-		return fmt.Errorf("условие %q — это ссылка, а нужен домен: %s", tok, u.Hostname())
+		return fmt.Errorf("condition %q is a link, but a domain is needed: %s", tok, u.Hostname())
 	}
-	return fmt.Errorf("условие %q — это ссылка, а нужен домен", tok)
+	return fmt.Errorf("condition %q is a link, but a domain is needed", tok)
 }
 
-// add добавляет в правило одно условие: по имени (с отрицанием или без) либо адрес или подсеть.
+// add adds one condition to the rule: a name (negated or not), or an address or subnet.
 func (r *Rule) add(tok string) error {
 	neg := strings.HasPrefix(tok, "!")
 	if neg {
 		tok = tok[1:]
 	}
 	if tok == "" {
-		return errors.New("пустое условие")
+		return errors.New("empty condition")
 	}
 	if strings.Contains(tok, "://") && !strings.HasPrefix(tok, "~") {
 		return linkError(tok)
 	}
 	if tok == "strict" || tok == Direct {
-		return fmt.Errorf("слово %q стоит среди условий, а пишется оно после ->", tok)
+		return fmt.Errorf("the word %q is among the conditions, but it belongs after ->", tok)
 	}
 	if !strings.HasPrefix(tok, "~") {
 		pfx, isNet, err := parseNet(tok)
@@ -367,13 +367,13 @@ func (r *Rule) add(tok string) error {
 		}
 		if isNet {
 			if neg {
-				return fmt.Errorf("условие !%s: отрицание адресов и подсетей не поддерживается", tok)
+				return fmt.Errorf("condition !%s: negating addresses and subnets is not supported", tok)
 			}
 			r.Nets = append(r.Nets, pfx)
 			return nil
 		}
 		if looksNumeric(tok) {
-			return fmt.Errorf("условие %q похоже на адрес, но записано неверно", tok)
+			return fmt.Errorf("condition %q looks like an address but is malformed", tok)
 		}
 	}
 	c, err := parseCond(tok)
@@ -389,11 +389,11 @@ func (r *Rule) add(tok string) error {
 	return nil
 }
 
-// parseNet распознаёт IPv4-адрес или подсеть. isNet == false означает «это не адрес, а имя».
+// parseNet recognizes an IPv4 address or subnet. isNet == false means "not an address but a name".
 func parseNet(tok string) (pfx netip.Prefix, isNet bool, err error) {
 	if a, e := netip.ParseAddr(tok); e == nil {
 		if !a.Is4() {
-			return pfx, true, fmt.Errorf("адрес %s: IPv6 пока не поддерживается", tok)
+			return pfx, true, fmt.Errorf("address %s: IPv6 is not supported yet", tok)
 		}
 		return netip.PrefixFrom(a, 32), true, nil
 	}
@@ -402,35 +402,35 @@ func parseNet(tok string) (pfx netip.Prefix, isNet bool, err error) {
 	}
 	p, e := netip.ParsePrefix(tok)
 	if e != nil {
-		return pfx, true, fmt.Errorf("подсеть %q: неверная запись", tok)
+		return pfx, true, fmt.Errorf("subnet %q: malformed", tok)
 	}
 	if !p.Addr().Is4() {
-		return pfx, true, fmt.Errorf("подсеть %s: IPv6 пока не поддерживается", tok)
+		return pfx, true, fmt.Errorf("subnet %s: IPv6 is not supported yet", tok)
 	}
 	if p.Bits() == 0 {
-		return pfx, true, fmt.Errorf("подсеть %s: «всё остальное» задаётся не подсетью — для этого есть default", tok)
+		return pfx, true, fmt.Errorf(`subnet %s: "everything else" is not a subnet; use default for that`, tok)
 	}
 	return p.Masked(), true, nil
 }
 
 func (p *parser) finish() {
 	if p.cfg.DefaultLine == 0 {
-		p.errf(0, "нет строки default: укажите, куда идёт всё, что не подошло ни под одно правило")
+		p.errf(0, "no default line: specify where everything that matches no rule should go")
 	}
 	for _, ref := range p.refs {
 		if ref.name == Direct {
 			continue
 		}
 		if _, ok := p.cfg.Exit(ref.name); !ok {
-			p.errf(ref.line, "выход %q не объявлен (нужна строка: exit %s = <интерфейсы>)", ref.name, ref.name)
+			p.errf(ref.line, "exit %q is not declared (add a line: exit %s = <interfaces>)", ref.name, ref.name)
 		}
 	}
-	// Имя выхода среди условий — почти наверняка стрелка не на месте: «youtube.com vpn -> direct».
+	// An exit name among the conditions almost certainly means a misplaced arrow: "youtube.com vpn -> direct".
 	for _, r := range p.cfg.Rules {
 		for _, c := range append(append([]Cond(nil), r.Pos...), r.Neg...) {
 			name := strings.TrimPrefix(c.Text, "!")
 			if _, ok := p.cfg.Exit(name); ok {
-				p.errf(r.Line, "условие %q — это имя выхода, а не домен: выход пишется после ->; если нужна доменная зона, запишите её как *.%s", c.Text, name)
+				p.errf(r.Line, "condition %q is an exit name, not a domain: the exit goes after ->; if you mean a domain zone, write it as *.%s", c.Text, name)
 			}
 		}
 	}

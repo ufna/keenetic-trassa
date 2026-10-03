@@ -8,29 +8,29 @@ import (
 )
 
 const (
-	sessionTTL  = 8 * time.Hour   // сколько живёт вход
-	pendingTTL  = 2 * time.Minute // сколько ждёт ответа вызов на вход
+	sessionTTL  = 8 * time.Hour   // how long a sign-in lasts
+	pendingTTL  = 2 * time.Minute // how long a login challenge waits for a response
 	maxSessions = 32
 	maxPending  = 16
-	// Не больше maxFailures неудачных входов за failWindow. Все входы страницы приходят к прошивке
-	// с одного адреса 127.0.0.1, а у прошивки своя блокировка по адресу: наш предел — заметно ниже.
+	// At most maxFailures failed sign-ins per failWindow. All page sign-ins reach the firmware from
+	// the same address 127.0.0.1, and the firmware has its own per-address lockout: ours is well below it.
 	maxFailures = 4
 	failWindow  = 15 * time.Minute
-	// Каждый вызов открывает сеанс у прошивки: не больше challengeBurst подряд, дальше — по одному
-	// за challengeEvery.
+	// Each challenge opens a firmware session: at most challengeBurst in a row, then one
+	// per challengeEvery.
 	challengeBurst = 5
 	challengeEvery = time.Second
 	cookieName     = "trassa_session"
 )
 
-// gate хранит сеансы и вызовы на вход и не даёт подбирать пароль.
+// gate keeps sessions and login challenges and prevents password guessing.
 type gate struct {
 	mu       sync.Mutex
-	sessions map[string]time.Time // токен → когда истекает
+	sessions map[string]time.Time // token → when it expires
 	pending  map[string]pendingLogin
-	failures []time.Time // неудачные входы за последние failWindow, от старых к новым
-	tokens   int         // сколько вызовов можно выдать сразу
-	refilled time.Time   // когда запас вызовов пополнялся
+	failures []time.Time // failed sign-ins within the last failWindow, oldest first
+	tokens   int         // how many challenges can be issued right away
+	refilled time.Time   // when the challenge allowance was last refilled
 }
 
 type pendingLogin struct {
@@ -41,13 +41,13 @@ type pendingLogin struct {
 func newToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		panic(err) // без случайных чисел сеансы не защищены — лучше не работать вовсе
+		panic(err) // without randomness sessions are not secure — better not to run at all
 	}
 	return hex.EncodeToString(b)
 }
 
-// evict удаляет просроченные записи и, пока места нет, ту, что истекает раньше всех.
-// Возвращает удалённое.
+// evict removes expired entries and, while there is still no room, the one that expires first.
+// It returns what was removed.
 func evict[V any](m map[string]V, expires func(V) time.Time, now time.Time, limit int) []V {
 	var gone []V
 	for k, v := range m {
@@ -69,8 +69,8 @@ func evict[V any](m map[string]V, expires func(V) time.Time, now time.Time, limi
 	return gone
 }
 
-// addPending запоминает вызов. Возвращает его номер и вызовы, вытесненные или устаревшие:
-// их сеансы у прошивки нужно закрыть.
+// addPending stores a challenge. It returns the challenge id and the challenges evicted or expired:
+// their firmware sessions must be closed.
 func (g *gate) addPending(ch *Challenge, now time.Time) (string, []*Challenge) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -86,8 +86,8 @@ func (g *gate) addPending(ch *Challenge, now time.Time) (string, []*Challenge) {
 	return id, stale
 }
 
-// takePending выдаёт вызов один раз. fresh == false — вызова нет (ch == nil) или он устарел:
-// устаревший тоже отдаётся, чтобы закрыть его сеанс у прошивки.
+// takePending hands out a challenge once. fresh == false means there is no challenge (ch == nil) or it
+// has expired: an expired one is still returned so that its firmware session can be closed.
 func (g *gate) takePending(id string, now time.Time) (ch *Challenge, fresh bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -99,7 +99,7 @@ func (g *gate) takePending(id string, now time.Time) (ch *Challenge, fresh bool)
 	return p.ch, now.Before(p.expires)
 }
 
-// allowChallenge решает, можно ли сейчас выдать ещё один вызов.
+// allowChallenge decides whether another challenge may be issued now.
 func (g *gate) allowChallenge(now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -117,7 +117,7 @@ func (g *gate) allowChallenge(now time.Time) bool {
 	return true
 }
 
-// dropOldFailures забывает неудачи старше failWindow. Вызывается под g.mu.
+// dropOldFailures forgets failures older than failWindow. Called with g.mu held.
 func (g *gate) dropOldFailures(now time.Time) {
 	kept := g.failures[:0]
 	for _, t := range g.failures {
@@ -128,8 +128,8 @@ func (g *gate) dropOldFailures(now time.Time) {
 	g.failures = kept
 }
 
-// locked сообщает, закрыт ли вход после неудачных попыток, и сколько ещё ждать: пока самая
-// старая неудача в окне не устареет.
+// locked reports whether sign-in is closed after failed attempts and how long to wait: until the
+// oldest failure in the window expires.
 func (g *gate) locked(now time.Time) (time.Duration, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -147,7 +147,7 @@ func (g *gate) fail(now time.Time) {
 	g.failures = append(g.failures, now)
 }
 
-// newSession открывает сеанс после удачного входа; счёт неудач начинается заново.
+// newSession opens a session after a successful sign-in; the failure count starts over.
 func (g *gate) newSession(now time.Time) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()

@@ -1,4 +1,4 @@
-// Package web — страница trassa на роутере: правка правил, «почему», состояние, история версий.
+// Package web is the trassa page on the router: rule editing, "why", status and version history.
 package web
 
 import (
@@ -12,29 +12,29 @@ import (
 	"time"
 )
 
-// Authenticator проверяет вход администратора у роутера.
+// Authenticator checks an administrator sign-in with the router.
 type Authenticator interface {
-	// Challenge получает у роутера одноразовый вызов на вход.
+	// Challenge gets a one-time login challenge from the router.
 	Challenge(ctx context.Context) (*Challenge, error)
-	// Verify передаёт роутеру ответ на вызов: true — логин и пароль верны. Сеанс прошивки,
-	// открытый вызовом, после этого закрыт при любом исходе.
+	// Verify passes the challenge response to the router: true means the login and password are
+	// correct. The firmware session opened by the challenge is closed afterwards whatever the outcome.
 	Verify(ctx context.Context, ch *Challenge, login, response string) (bool, error)
-	// Release закрывает сеанс прошивки вызова, на который так и не ответили.
+	// Release closes the firmware session of a challenge that was never answered.
 	Release(ctx context.Context, ch *Challenge)
 }
 
-// Challenge — вызов роутера. Вызов привязан к сеансу прошивки, а сеанс — к cookie в Jar.
+// Challenge is a router login challenge. It is bound to a firmware session, and the session to a cookie in Jar.
 type Challenge struct {
 	Realm string
 	Nonce string
 	Jar   http.CookieJar
 }
 
-// RouterAuth спрашивает веб-сервер прошивки тем же запросом /auth, что и его собственная страница.
-// Пароль до trassa не доходит: браузер присылает sha256(вызов + md5(логин:realm:пароль)).
+// RouterAuth asks the firmware web server with the same /auth request its own page uses.
+// The password never reaches trassa: the browser sends sha256(challenge + md5(login:realm:password)).
 type RouterAuth struct {
-	Base    string        // например http://127.0.0.1:79
-	Timeout time.Duration // 0 — 5 секунд
+	Base    string        // e.g. http://127.0.0.1:79
+	Timeout time.Duration // 0 means 5 seconds
 }
 
 func (a RouterAuth) client(jar http.CookieJar) *http.Client {
@@ -61,12 +61,12 @@ func (a RouterAuth) Challenge(ctx context.Context) (*Challenge, error) {
 	}
 	resp, err := a.client(jar).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("прошивка не отвечает: %w", err)
+		return nil, fmt.Errorf("firmware is not responding: %w", err)
 	}
 	drain(resp)
 	ch := &Challenge{Realm: resp.Header.Get("X-NDM-Realm"), Nonce: resp.Header.Get("X-NDM-Challenge"), Jar: jar}
 	if resp.StatusCode != http.StatusUnauthorized || ch.Realm == "" || ch.Nonce == "" {
-		return nil, fmt.Errorf("прошивка не выдала вызов на вход (код %d)", resp.StatusCode)
+		return nil, fmt.Errorf("firmware did not issue a login challenge (status %d)", resp.StatusCode)
 	}
 	return ch, nil
 }
@@ -83,10 +83,10 @@ func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response s
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client(ch.Jar).Do(req)
 	if err != nil {
-		return false, fmt.Errorf("прошивка не отвечает: %w", err)
+		return false, fmt.Errorf("firmware is not responding: %w", err)
 	}
 	drain(resp)
-	// Сеанс прошивки больше не нужен ни при каком исходе: у страницы trassa свой.
+	// The firmware session is no longer needed whatever the outcome: the trassa page has its own.
 	a.Release(ctx, ch)
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -94,7 +94,7 @@ func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response s
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return false, nil
 	}
-	return false, fmt.Errorf("прошивка ответила на вход кодом %d", resp.StatusCode)
+	return false, fmt.Errorf("firmware answered the sign-in with status %d", resp.StatusCode)
 }
 
 func (a RouterAuth) Release(ctx context.Context, ch *Challenge) {
