@@ -668,7 +668,7 @@ func TestDeviceRulesInWhyAndStatus(t *testing.T) {
 		t.Errorf("why by address:\n%s", text)
 	}
 	status := e.Status(t0)
-	for _, want := range []string{"devices pc: Desktop 192.168.1.94", "devices tv: Living room TV 192.168.1.40"} {
+	for _, want := range []string{"devices pc: Desktop (192.168.1.94)", "devices tv: Living room TV (192.168.1.40)"} {
 		if !strings.Contains(status, want) {
 			t.Errorf("status: no %q in\n%s", want, status)
 		}
@@ -676,7 +676,7 @@ func TestDeviceRulesInWhyAndStatus(t *testing.T) {
 	hosts := devHosts()
 	hosts[0].Online = false
 	e.SetDevices(hosts)
-	if status = e.Status(t0); !strings.Contains(status, `devices tv: "Living room TV" not on the network`) {
+	if status = e.Status(t0); !strings.Contains(status, "devices tv: Living room TV — not on the network") {
 		t.Errorf("status with the TV away:\n%s", status)
 	}
 }
@@ -704,7 +704,7 @@ func TestReloadFollowsDeviceLists(t *testing.T) {
 }
 func TestNoneInWhy(t *testing.T) {
 	l := &logs{}
-	e := New(config(t, "exit vpn = W\ndefault direct\nads.example -> none\n"), nil, l.printf, t0)
+	e := New(config(t, "exit vpn = W\ndefault direct\nads.example -> none\n"), &fakeSink{}, l.printf, t0)
 	if text, _ := e.Why("ads.example", t0); !strings.Contains(text, "ads.example → none") || !strings.Contains(text, "blocked: new connections are refused") {
 		t.Errorf("why:\n%s", text)
 	}
@@ -731,4 +731,82 @@ func TestDevicesBeforeFirstBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSources(t, sink.sources, "map[1:[192.168.1.94] 2:[192.168.1.41]]")
+}
+
+// Review of task 6: what why and status say about lists whose devices are away, and the log.
+func TestDeviceListsWithNoDeviceOnTheNetwork(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, devSrc), nil, l.printf, t0)
+	if text, _ := e.Why("tv.example", t0); !strings.Contains(text, "for tv: vpn strict (line 6)") {
+		t.Errorf("why by name, no TV on the network:\n%s", text)
+	}
+	e.HandlePacket(t0, answer("tv.example", "2.2.2.2"))
+	text, _ := e.Why("2.2.2.2", t0)
+	if !strings.Contains(text, "claim for devices not on the network now: tv.example → vpn strict (line 6") || strings.Contains(text, "not been seen") {
+		t.Errorf("why by address:\n%s", text)
+	}
+}
+
+func TestDeviceLogAndStatus(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	src := devSrc + "device ghost = \"Nobody\"\n"
+	e := New(config(t, src), sink, l.printf, t0)
+	e.Resync()
+	hosts := devHosts()
+	e.SetDevices(hosts)
+	e.SetDevices(hosts)
+	log := strings.Join(l.lines, "\n")
+	if strings.Count(log, `device "Nobody" of list ghost: not in the router's device list`) != 1 {
+		t.Errorf("an unknown device must be logged once:\n%s", log)
+	}
+	// The caller's list is not kept: changing it later changes nothing here.
+	hosts[0].IP = netip.MustParseAddr("192.168.1.99")
+	e.Reload(config(t, src))
+	wantSources(t, sink.sources, "map[1:[192.168.1.94] 2:[192.168.1.40]]")
+	e.HandlePacket(t0, answer("video.example", "1.1.1.1"))
+	log = strings.Join(l.lines, "\n")
+	for _, want := range []string{"192.168.1.94 (Desktop) asked for video.example", "1.1.1.1 for pc: - → vpn"} {
+		if !strings.Contains(log, want) {
+			t.Errorf("no %q in the log:\n%s", want, log)
+		}
+	}
+	status := e.Status(t0)
+	for _, want := range []string{"devices pc: Desktop (192.168.1.94)", "devices tv: Living room TV (192.168.1.40)",
+		`devices ghost: "Nobody" — not in the router's device list`, "192.168.1.94 (Desktop) video.example → vpn"} {
+		if !strings.Contains(status, want) {
+			t.Errorf("status: no %q in\n%s", want, status)
+		}
+	}
+	hosts = devHosts()
+	hosts[0].Online = false
+	e.SetDevices(hosts)
+	if status = e.Status(t0); !strings.Contains(status, "devices tv: Living room TV — not on the network") {
+		t.Errorf("status with the TV away:\n%s", status)
+	}
+}
+
+func TestNoSourceUpdatesWhileARebuildIsPending(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, devSrc), sink, l.printf, t0)
+	e.Resync()
+	e.SetDevices(devHosts())
+	sink.fail = true
+	e.Reload(config(t, devSrc)) // fails: a rebuild is pending
+	errs, sourced := e.Stats().ApplyErrors, sink.sourced
+	hosts := devHosts()
+	hosts[0].IP = netip.MustParseAddr("192.168.1.41")
+	e.SetDevices(hosts)
+	if e.Stats().ApplyErrors != errs || sink.sourced != sourced {
+		t.Errorf("with a rebuild pending: %d more errors, %d source updates", e.Stats().ApplyErrors-errs, sink.sourced-sourced)
+	}
+}
+
+func TestNoneInObserveMode(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndefault direct\nads.example -> none\n"), nil, l.printf, t0)
+	if text, _ := e.Why("ads.example", t0); !strings.Contains(text, "would be blocked: observe mode changes nothing") {
+		t.Errorf("why in observe mode:\n%s", text)
+	}
 }

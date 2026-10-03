@@ -150,6 +150,20 @@ func (s *Store) AddrsOf(name string) []netip.Addr {
 	return out
 }
 
+// Untracked returns the claims on an address that no tracked view has a rule for: they wait for a
+// device of their lists to join. Index and Action are those of the rule found with "for" ignored.
+func (s *Store) Untracked(addr netip.Addr) []Claim {
+	var out []Claim
+	for _, c := range s.byAddr[addr] {
+		if slices.ContainsFunc(c.dec, func(d int32) bool { return d >= 0 }) {
+			continue
+		}
+		c.Index, c.Action = int(c.any), s.cfg.Rules[c.any].Action
+		out = append(out, c)
+	}
+	return out
+}
+
 // Known reports whether any DNS answer claimed the address, for any device.
 func (s *Store) Known(addr netip.Addr) bool { return len(s.byAddr[addr]) > 0 }
 

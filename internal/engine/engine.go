@@ -150,7 +150,11 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	if life > maxTTL {
 		life = maxTTL
 	}
-	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", u.Dst, names[0]))
+	// Without device lists the asking device's decision is everyone's: no rule, nothing to keep.
+	if d.Rule == nil && len(e.cfg.Devices) == 0 {
+		return
+	}
+	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", who(u.Dst, o.device), names[0]))
 }
 
 // Tick drops claims that have expired.
@@ -170,7 +174,7 @@ func (e *Engine) Reload(cfg *rules.Config) error {
 	e.cfg = cfg
 	old := e.devs
 	e.devs = devices.Resolve(cfg, e.hosts)
-	e.logDevices(old)
+	e.logDevices(old, false)
 	e.note(e.store.SetConfig(cfg, e.devs.ViewList()), "rules changed")
 	return e.rebuild()
 }
@@ -238,10 +242,11 @@ func (e *Engine) SetExits(active map[string]string) {
 func (e *Engine) SetDevices(hosts []devices.Host) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.hosts = hosts
+	first := e.hosts == nil
+	e.hosts = slices.Clone(hosts) // the caller may reuse its slice
 	old := e.devs
-	e.devs = devices.Resolve(e.cfg, hosts)
-	e.logDevices(old)
+	e.devs = devices.Resolve(e.cfg, e.hosts)
+	e.logDevices(old, first)
 	if views := e.devs.ViewList(); !slices.Equal(views, e.store.Views()) {
 		e.note(e.store.SetViews(views), "device lists changed")
 		if !e.built {
@@ -252,7 +257,8 @@ func (e *Engine) SetDevices(hosts []devices.Host) error {
 		return e.rebuild()
 	}
 	sources := e.devs.Sources()
-	if e.sink == nil || !e.built || maps.EqualFunc(old.Sources(), sources, slices.Equal[[]netip.Addr]) {
+	// A pending rebuild (dirty) takes the new addresses along.
+	if e.sink == nil || !e.built || e.dirty || maps.EqualFunc(old.Sources(), sources, slices.Equal[[]netip.Addr]) {
 		return nil
 	}
 	if err := e.sink.SetSources(sources); err != nil {
@@ -265,27 +271,44 @@ func (e *Engine) SetDevices(hosts []devices.Host) error {
 	return nil
 }
 
-// logDevices writes to the log the listed devices that changed their address or left the network.
-func (e *Engine) logDevices(old devices.Map) {
-	was := map[string]netip.Addr{}
+// logDevices writes to the log the listed devices whose address or state changed. The first time
+// the firmware's list arrives, and for lists new in the rules, it also writes the devices that are
+// not on the network: a name the router does not know is better read in the log than guessed.
+func (e *Engine) logDevices(old devices.Map, first bool) {
+	type seen struct {
+		ip    netip.Addr
+		state string
+	}
+	was := map[string]seen{}
 	for _, l := range old.Lists {
 		for _, m := range l.Members {
-			was[l.Name+" "+m.Ref.String()] = m.IP
+			was[l.Name+" "+m.Ref.String()] = seen{m.IP, m.State}
 		}
 	}
 	for _, l := range e.devs.Lists {
 		for _, m := range l.Members {
 			prev, known := was[l.Name+" "+m.Ref.String()]
-			if !known || prev == m.IP {
-				continue
-			}
-			if m.IP.IsValid() {
-				e.logf("device %s of list %s: now at %s", m.Ref, l.Name, m.IP)
-			} else {
-				e.logf("device %s of list %s: left the network", m.Ref, l.Name)
+			switch {
+			case (first || !known) && !m.IP.IsValid():
+				e.logf("device %s of list %s: %s", m.Ref, l.Name, m.State)
+			case known && prev.ip == m.IP && prev.state == m.State:
+			case m.IP.IsValid():
+				if !known || prev.ip != m.IP {
+					e.logf("device %s of list %s: now at %s", m.Ref, l.Name, m.IP)
+				}
+			default:
+				e.logf("device %s of list %s: %s", m.Ref, l.Name, m.State)
 			}
 		}
 	}
+}
+
+// who names a device for the log: its address and, if known, its name.
+func who(a netip.Addr, device string) string {
+	if device == "" {
+		return a.String()
+	}
+	return a.String() + " (" + device + ")"
 }
 
 // note records changes in the log and the counters.
@@ -300,7 +323,11 @@ func (e *Engine) note(changes []claims.Change, why string) {
 	}
 	parts := make([]string, len(shown), len(shown)+1)
 	for i, c := range shown {
-		parts[i] = fmt.Sprintf("%s %s → %s", c.Addr, show(c.Old), show(c.New))
+		if c.View == 0 {
+			parts[i] = fmt.Sprintf("%s %s → %s", c.Addr, show(c.Old), show(c.New))
+		} else {
+			parts[i] = fmt.Sprintf("%s for %s: %s → %s", c.Addr, e.cfg.ViewName(c.View), show(c.Old), show(c.New))
+		}
 	}
 	if more := len(changes) - len(shown); more > 0 {
 		parts = append(parts, fmt.Sprintf("… %d more", more))
@@ -325,6 +352,9 @@ func (e *Engine) apply(changes []claims.Change, why string) {
 // exitLine describes the current state of the action's exit; empty if there is nothing to say.
 func (e *Engine) exitLine(a rules.Action) string {
 	if a.Exit == rules.None {
+		if e.sink == nil {
+			return "would be blocked: observe mode changes nothing\n"
+		}
 		return "blocked: new connections are refused\n"
 	}
 	if a.Exit == rules.Direct || e.exits == nil {
@@ -376,7 +406,15 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 		fmt.Fprintf(&b, "no rule matched; default applies (line %d)\n", e.cfg.DefaultLine)
 	}
 	b.WriteString(e.exitLine(d.Action))
-	b.WriteString(e.cfg.DeviceLines(subject, e.devs.ViewList()))
+	// The lists of devices on the network, and every single list: a list whose devices are away
+	// still has rules worth knowing about.
+	views := e.devs.ViewList()
+	for _, v := range e.cfg.ListViews() {
+		if !slices.Contains(views, v) {
+			views = append(views, v)
+		}
+	}
+	b.WriteString(e.cfg.DeviceLines(subject, views))
 	if addr, err := netip.ParseAddr(subj); err == nil {
 		if !e.store.Known(addr) {
 			b.WriteString("this address has not been seen in DNS answers\n")
@@ -397,6 +435,10 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 			if eff := e.store.EffectiveFor(v, addr); eff != nil {
 				fmt.Fprintf(&b, "in the dynamic set for %s: %s\n", e.cfg.ViewName(v), *eff)
 			}
+		}
+		for _, c := range e.store.Untracked(addr) {
+			fmt.Fprintf(&b, "claim for devices not on the network now: %s → %s (line %d, %s left)\n",
+				strings.Join(c.Names, " → "), c.Action, e.lineOf(c.Index), ago(c.Expires.Sub(now)))
 		}
 		return b.String(), nil
 	}
@@ -457,11 +499,13 @@ func (e *Engine) Status(now time.Time) string {
 		for _, m := range l.Members {
 			switch {
 			case m.IP.IsValid() && m.Label != "":
-				parts = append(parts, m.Label+" "+m.IP.String())
+				parts = append(parts, m.Label+" ("+m.IP.String()+")")
 			case m.IP.IsValid():
 				parts = append(parts, m.IP.String())
+			case m.Label != "":
+				parts = append(parts, m.Label+" — "+m.State)
 			default:
-				parts = append(parts, m.Ref.String()+" not on the network")
+				parts = append(parts, m.Ref.String()+" — "+m.State)
 			}
 		}
 		fmt.Fprintf(&b, "devices %s: %s\n", l.Name, strings.Join(parts, ", "))
@@ -477,7 +521,7 @@ func (e *Engine) Status(now time.Time) string {
 		if o.line != 0 {
 			where = fmt.Sprintf("line %d", o.line)
 		}
-		fmt.Fprintf(&b, "  %s %s %s → %s (%s)\n", o.at.Format("15:04:05"), o.client, o.name, o.action, where)
+		fmt.Fprintf(&b, "  %s %s %s → %s (%s)\n", o.at.Format("15:04:05"), who(o.client, o.device), o.name, o.action, where)
 	}
 	return b.String()
 }
