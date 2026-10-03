@@ -194,3 +194,54 @@ func TestParseRejectsBadCounts(t *testing.T) {
 		t.Errorf("3-byte A record: error %v", err)
 	}
 }
+
+// svcb builds SVCB/HTTPS record data: priority 1, target "." (the owner itself), then parameters.
+func svcb(params ...[]byte) []byte {
+	b := []byte{0, 1, 0}
+	for _, p := range params {
+		b = append(b, p...)
+	}
+	return b
+}
+
+func param(key uint16, value []byte) []byte {
+	b := binary.BigEndian.AppendUint16(nil, key)
+	b = binary.BigEndian.AppendUint16(b, uint16(len(value)))
+	return append(b, value...)
+}
+
+func TestResolveIPv4Hints(t *testing.T) {
+	https := svcb(param(1, []byte{2, 'h', '2'}), param(4, []byte{1, 2, 3, 4, 5, 6, 7, 8}))
+	m, err := Parse(build("video.example", TypeHTTPS, 0x8180, rr{"video.example", TypeHTTPS, 300, https}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, addrs, ttl := m.Resolve()
+	want := []netip.Addr{netip.MustParseAddr("1.2.3.4"), netip.MustParseAddr("5.6.7.8")}
+	if !reflect.DeepEqual(names, []string{"video.example"}) || !reflect.DeepEqual(addrs, want) || ttl != 300 {
+		t.Errorf("hints: %v %v %d", names, addrs, ttl)
+	}
+
+	// Through a CNAME: the hints of the target count.
+	m, err = Parse(build("www.example", TypeHTTPS, 0x8180,
+		rr{"www.example", TypeCNAME, 60, wireName("cdn.example")},
+		rr{"cdn.example", TypeHTTPS, 120, svcb(param(4, []byte{9, 9, 9, 9}))}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, addrs, ttl = m.Resolve()
+	if !reflect.DeepEqual(names, []string{"www.example", "cdn.example"}) || !reflect.DeepEqual(addrs, []netip.Addr{netip.MustParseAddr("9.9.9.9")}) || ttl != 120 {
+		t.Errorf("hints through a CNAME: %v %v %d", names, addrs, ttl)
+	}
+
+	// A malformed hint parameter does not spoil the rest of the answer.
+	m, err = Parse(build("mixed.example", TypeA, 0x8180,
+		rr{"mixed.example", TypeHTTPS, 300, svcb(param(4, []byte{1, 2, 3}))},
+		rr{"mixed.example", TypeA, 60, []byte{7, 7, 7, 7}}))
+	if err != nil {
+		t.Fatalf("a malformed HTTPS record spoiled the answer: %v", err)
+	}
+	if _, addrs, ttl = m.Resolve(); !reflect.DeepEqual(addrs, []netip.Addr{netip.MustParseAddr("7.7.7.7")}) || ttl != 60 {
+		t.Errorf("A record next to a malformed HTTPS record: %v %d", addrs, ttl)
+	}
+}

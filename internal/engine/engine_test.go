@@ -536,3 +536,13 @@ func TestState(t *testing.T) {
 		t.Error("with a sink the mode is route")
 	}
 }
+
+// A client may connect to an address from ipv4hint without asking for A records at all.
+func TestHTTPSHintsAreClaimed(t *testing.T) {
+	e, _ := newEngine(t, &fakeSink{})
+	hint := []byte{0, 1, 0, 0, 4, 0, 4, 3, 3, 3, 3} // priority 1, target ".", ipv4hint 3.3.3.3
+	e.HandlePacket(t0, ipv4(53, dns("video.example", 0x8180, rr{"video.example", 65, 300, hint})))
+	if cs := e.store.Claims(netip.MustParseAddr("3.3.3.3")); len(cs) != 1 || cs[0].Action.Exit != "vpn" {
+		t.Errorf("claims for the hint address: %+v", cs)
+	}
+}
