@@ -167,8 +167,14 @@ func (s *Store) Effective(addr netip.Addr) *rules.Action { return s.EffectiveFor
 
 func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
 	best := int32(-1)
+	private := privateAddr(addr)
 	for _, c := range s.byAddr[addr] {
-		if d := c.dec[i]; d >= 0 && (best < 0 || d < best) {
+		d := c.dec[i]
+		// Blocking by name never closes a private network, just as default none leaves them open.
+		if d < 0 || private && s.cfg.Rules[d].Action.Exit == rules.None {
+			continue
+		}
+		if best < 0 || d < best {
 			best = d
 		}
 	}
@@ -405,6 +411,12 @@ func sortChanges(cs []Change) {
 		}
 		return cs[i].Addr.Less(cs[j].Addr)
 	})
+}
+
+// privateAddr reports whether the address is in a private or carrier-grade NAT network: the home
+// network, another network behind the router or a tunnel.
+func privateAddr(a netip.Addr) bool {
+	return a.IsPrivate() || netip.MustParsePrefix("100.64.0.0/10").Contains(a)
 }
 
 // usable reports whether the address can be a destination of ordinary traffic. The kernel

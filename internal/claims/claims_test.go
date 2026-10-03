@@ -513,3 +513,19 @@ func TestViewsDivergeAlongTheCNAMEChain(t *testing.T) {
 		t.Errorf("entries %s, want %s", got, want)
 	}
 }
+
+// Final review: blocking by name never closes private networks (a NAS, an office behind a tunnel),
+// as default none does not; another rule for the same address still applies. A subnet written in
+// the rules is another matter: that is the user's explicit choice.
+func TestNoneSkipsPrivateAddresses(t *testing.T) {
+	s := New(config(t, "exit vpn = W\ndefault direct\n*.io -> none\nnas.example -> vpn\n"), hour)
+	nas, cgnat, public := netip.MustParseAddr("10.1.2.3"), netip.MustParseAddr("100.64.1.1"), netip.MustParseAddr("5.5.5.5")
+	s.Observe(t0, []string{"nas.io"}, []netip.Addr{nas, cgnat, public}, hour)
+	if s.Effective(nas) != nil || s.Effective(cgnat) != nil || show(s.Effective(public)) != "none" {
+		t.Errorf("nas %s, cgnat %s, public %s", show(s.Effective(nas)), show(s.Effective(cgnat)), show(s.Effective(public)))
+	}
+	s.Observe(t0, []string{"nas.example"}, []netip.Addr{nas}, hour)
+	if got := show(s.Effective(nas)); got != "vpn" {
+		t.Errorf("another rule for a private address: %s", got)
+	}
+}
