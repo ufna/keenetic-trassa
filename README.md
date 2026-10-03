@@ -12,9 +12,28 @@ default direct                            # everything else as before
 ```
 
 trassa is a single static Go binary (standard library only, no third-party code) that runs on
-the router under Entware. It was developed on a Netcraze Giga NC-1012 (a Keenetic Giga KN-1012
-rebrand) with firmware 5.2; other Keenetic models with the same firmware family should work but
-have not been tested.
+the router under Entware.
+
+## Tested on
+
+trassa has been tested **only** on this router:
+
+| | |
+|---|---|
+| Router | Netcraze Giga (NC-1012), hardware 1210C000, ARM64 (`aarch64`) |
+| Firmware | KeeneticOS 5.2 Beta 0 (`5.02.B.0.0-0`), kernel 4.9-ndm-5 |
+| Entware | `aarch64-3.10`: iptables 1.4.21, ipset 7.24, dropbear 2025.89 |
+
+Netcraze is the Keenetic line under another brand: the same KeeneticOS, the same web and RCI
+interfaces. trassa relies only on what the firmware has in common (RCI on `127.0.0.1:79`, the
+Entware hooks in `/opt/etc/ndm/`, `WireguardN` interfaces, the `br0` home network), so a
+Keenetic router with KeeneticOS 5.x should behave the same, but none has been tried. Older
+firmware (4.x) has not been tried either.
+
+Many Keenetic models run on MIPS (MediaTek MT7621, MT7628) rather than ARM64. `tools/deploy.sh`
+builds trassa for the router's processor (ARM64, MIPS little- or big-endian) and checks that the
+build runs there before it replaces anything; the MIPS builds compile but have never run on a
+real router. A MIPS router also has less memory and a slower processor than the tested one.
 
 ## How it works
 
@@ -43,7 +62,8 @@ packet from a client ──► mark by address set ──► routing table of th
   (`opkg-kmod-netfilter-addons`). Installing components reboots the router.
 - **Entware** installed on the router's internal storage or a USB drive, with the packages
   `iptables` and `ipset` (`opkg install iptables ipset`), and SSH access as `root` (Entware's
-  `dropbear`; key login recommended).
+  `dropbear`; key login recommended). With the firmware's own SSH server enabled, Entware's
+  usually listens on port 222: set `TRASSA_SSH_PORT=222` for the tools.
 - At least one **WireGuard** connection set up in the firmware (only WireGuard interfaces can be
   exits).
 - Clients use the router as their DNS server (the default). A device with its own encrypted DNS
@@ -54,18 +74,18 @@ packet from a client ──► mark by address set ──► routing table of th
 ## Build
 
 ```sh
-make test     # vet, tests, build check
-make build    # build/trassa (this computer) and build/trassa-arm64 (the router)
+make test     # vet, tests, and builds for ARM64 and MIPS
+make build    # build/trassa (this computer) and build/trassa-arm64
 ```
 
-`build/trassa-arm64` is for 64-bit ARM routers (`uname -m` on the router prints `aarch64`).
-For a MIPS router build with `GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 go build
-./cmd/trassa` (not tested).
+`tools/deploy.sh` builds for the router itself, choosing the processor by Entware's
+architecture (`opkg print-architecture`): `aarch64` → ARM64, `mipsel` → MIPS little-endian,
+`mips` → MIPS big-endian (both with software floating point).
 
 ## Install
 
-`tools/deploy.sh` builds trassa, copies it to the router over SSH and installs the init script
-and the firmware hooks:
+`tools/deploy.sh` builds trassa for the router's processor, checks that the build runs on the
+router, then replaces the program and installs the init script and the firmware hooks:
 
 ```sh
 TRASSA_ROUTER=192.168.1.1 TRASSA_SSH_KEY=~/.ssh/id_ed25519 tools/deploy.sh start
@@ -76,6 +96,7 @@ TRASSA_ROUTER=192.168.1.1 TRASSA_SSH_KEY=~/.ssh/id_ed25519 tools/deploy.sh start
 | `TRASSA_ROUTER` | `192.168.1.1` | the router's address on the home network |
 | `TRASSA_SSH_KEY` | `backup/ssh/router_ed25519`, if present | private key for `root` on the router; otherwise ssh uses its defaults |
 | `TRASSA_KNOWN_HOSTS` | `backup/ssh/known_hosts`, if present | known_hosts file for the router |
+| `TRASSA_SSH_PORT` | `22` | port of Entware's SSH server; often `222` when the firmware's own SSH server is on |
 
 On the first install the default rules from `rules/rules.conf` are copied to the router; they
 change nothing until you add rules. After that the rules on the router are the master copy:

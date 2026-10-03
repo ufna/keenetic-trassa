@@ -9,15 +9,34 @@ cd "$ROOT"
 #   TRASSA_SSH_KEY      the private key for root on the router, backup/ssh/router_ed25519 if present;
 #                       otherwise ssh uses its own defaults (agent, ~/.ssh)
 #   TRASSA_KNOWN_HOSTS  the known_hosts file for the router, backup/ssh/known_hosts if present
+#   TRASSA_SSH_PORT     the port of Entware's SSH server, 22; with the firmware's own SSH server
+#                       enabled, Entware's usually listens on 222
 ROUTER_HOST=${TRASSA_ROUTER:-192.168.1.1}
 SSH_KEY=${TRASSA_SSH_KEY:-backup/ssh/router_ed25519}
 KNOWN_HOSTS=${TRASSA_KNOWN_HOSTS:-backup/ssh/known_hosts}
-SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+SSH_PORT=${TRASSA_SSH_PORT:-22}
+SSH=(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "$SSH_PORT")
 if [ -r "$SSH_KEY" ]; then SSH+=(-i "$SSH_KEY" -o IdentitiesOnly=yes); fi
 if [ -r "$KNOWN_HOSTS" ]; then SSH+=(-o UserKnownHostsFile="$KNOWN_HOSTS"); fi
 SSH+=("root@$ROUTER_HOST")
 
 say() { echo ">>> $*"; }
+
+# goenv prints the Go build settings for the router's processor, judged by Entware's architecture.
+goenv() {
+	local arch
+	arch=$("${SSH[@]}" 'PATH=/opt/bin:/opt/sbin:$PATH opkg print-architecture' |
+		awk '$1 == "arch" && $2 != "all" && $2 != "noarch" { print $2; exit }')
+	case "$arch" in
+	aarch64*) echo "GOARCH=arm64" ;;
+	mipsel*) echo "GOARCH=mipsle GOMIPS=softfloat" ;;
+	mips*) echo "GOARCH=mips GOMIPS=softfloat" ;;
+	*)
+		echo "Entware architecture '${arch:-unknown}': trassa is built for aarch64, mipsel and mips" >&2
+		return 1
+		;;
+	esac
+}
 
 # put <local file> <path on the router> <mode>: write to a temporary file, then swap it in.
 put() {
@@ -41,6 +60,10 @@ say "tests and build"
 make test >/dev/null
 make build >/dev/null
 build/trassa check rules/rules.conf
+goarch=$(goenv)
+say "the router's processor: $goarch"
+# shellcheck disable=SC2086 # $goarch is a list of variable assignments
+env GOOS=linux $goarch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/trassa-router ./cmd/trassa
 
 say "delivering to the router"
 "${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d /opt/etc/ndm/iflayerchanged.d'
@@ -57,7 +80,17 @@ if "${SSH[@]}" 'test -f /opt/etc/trassa/rules.conf'; then
 else
 	rules_present=0
 fi
-put build/trassa-arm64 /opt/sbin/trassa 755
+# The new program must run on the router before it replaces the old one: a build for another
+# processor stops here, and the router keeps the program it had. Without arguments trassa prints
+# its usage. The exit code proves nothing: the shell runs a file the kernel refuses as a script,
+# and a syntax error has the same code.
+"${SSH[@]}" 'cat > /opt/sbin/trassa.new && chmod 755 /opt/sbin/trassa.new' <build/trassa-router
+if ! "${SSH[@]}" '/opt/sbin/trassa.new 2>&1 | grep -q "trassa check <rules file>"'; then
+	"${SSH[@]}" 'rm -f /opt/sbin/trassa.new'
+	echo "the new program does not run on the router; the old one stays" >&2
+	exit 1
+fi
+"${SSH[@]}" 'mv /opt/sbin/trassa.new /opt/sbin/trassa'
 if [ "$rules_present" = 0 ]; then
 	put rules/rules.conf /opt/etc/trassa/rules.conf 644
 fi

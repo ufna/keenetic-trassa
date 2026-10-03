@@ -48,12 +48,14 @@ type Packet struct {
 
 func align4(n int) int { return (n + 3) &^ 3 }
 
+// Netlink's own headers are in the host's byte order (little-endian on ARM and on most routers'
+// MIPS, big-endian on some MIPS); the queue's values inside them are big-endian, in network order.
 func be32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
 
 func attr(typ uint16, value []byte) []byte {
 	b := make([]byte, align4(4+len(value)))
-	binary.LittleEndian.PutUint16(b[0:], uint16(4+len(value)))
-	binary.LittleEndian.PutUint16(b[2:], typ)
+	binary.NativeEndian.PutUint16(b[0:], uint16(4+len(value)))
+	binary.NativeEndian.PutUint16(b[2:], typ)
 	copy(b[4:], value)
 	return b
 }
@@ -64,10 +66,10 @@ func message(typ, flags uint16, seq uint32, queue uint16, attrs ...[]byte) []byt
 		n += len(a)
 	}
 	b := make([]byte, n)
-	binary.LittleEndian.PutUint32(b[0:], uint32(n))
-	binary.LittleEndian.PutUint16(b[4:], subsysQueue<<8|typ)
-	binary.LittleEndian.PutUint16(b[6:], flags)
-	binary.LittleEndian.PutUint32(b[8:], seq)
+	binary.NativeEndian.PutUint32(b[0:], uint32(n))
+	binary.NativeEndian.PutUint16(b[4:], subsysQueue<<8|typ)
+	binary.NativeEndian.PutUint16(b[6:], flags)
+	binary.NativeEndian.PutUint32(b[8:], seq)
 	binary.BigEndian.PutUint16(b[18:], queue)
 	off := nlHdrLen + nfgenLen
 	for _, a := range attrs {
@@ -111,17 +113,17 @@ func parse(b []byte) ([]reply, error) {
 		if len(b) < nlHdrLen {
 			return out, errMalformed
 		}
-		n := int(binary.LittleEndian.Uint32(b[0:]))
+		n := int(binary.NativeEndian.Uint32(b[0:]))
 		if n < nlHdrLen || n > len(b) {
 			return out, errMalformed
 		}
 		body := b[nlHdrLen:n]
-		switch binary.LittleEndian.Uint16(b[4:]) {
+		switch binary.NativeEndian.Uint16(b[4:]) {
 		case nlMsgError:
 			if len(body) < 4 {
 				return out, errMalformed
 			}
-			out = append(out, reply{ack: true, seq: binary.LittleEndian.Uint32(b[8:]), errno: int32(binary.LittleEndian.Uint32(body))})
+			out = append(out, reply{ack: true, seq: binary.NativeEndian.Uint32(b[8:]), errno: int32(binary.NativeEndian.Uint32(body))})
 		case subsysQueue<<8 | msgPacket:
 			p, err := parsePacket(body)
 			if err != nil {
@@ -143,12 +145,12 @@ func parsePacket(body []byte) (*Packet, error) {
 		if len(a) < 4 {
 			return nil, errMalformed
 		}
-		l := int(binary.LittleEndian.Uint16(a[0:]))
+		l := int(binary.NativeEndian.Uint16(a[0:]))
 		if l < 4 || l > len(a) {
 			return nil, errMalformed
 		}
 		value := a[4:l]
-		switch binary.LittleEndian.Uint16(a[2:]) & 0x3fff { // the top two bits are flags
+		switch binary.NativeEndian.Uint16(a[2:]) & 0x3fff { // the top two bits are flags
 		case attrPacketHdr:
 			if len(value) < 4 {
 				return nil, errMalformed

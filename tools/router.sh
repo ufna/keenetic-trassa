@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check, backup and rollback of a Keenetic/Netcraze router (developed on a Netcraze Giga).
+# Check, backup and rollback of a Keenetic/Netcraze router (tested only on a Netcraze Giga NC-1012).
 # Works over the local network, no internet needed.
 set -euo pipefail
 
@@ -11,6 +11,7 @@ BACKUP=${BACKUP:-$ROOT/backup/baseline}
 PASSFILE=$ROOT/backup/.router-pass
 SSH_KEY=${TRASSA_SSH_KEY:-$ROOT/backup/ssh/router_ed25519}
 KNOWN_HOSTS=${TRASSA_KNOWN_HOSTS:-$ROOT/backup/ssh/known_hosts}
+SSH_PORT=${TRASSA_SSH_PORT:-22} # Entware's SSH server; often 222 when the firmware's own one is on
 # The owner's own rollback notes, if kept (docs/ is not in git); otherwise the README.
 GUIDE=${ROLLBACK_GUIDE:-docs/ОТКАТ.md}
 JAR=$(mktemp)
@@ -48,7 +49,7 @@ Rollback (every command asks for confirmation):
 Router: $ROUTER (the ROUTER variable)
 Baseline backup: $BACKUP (the BACKUP variable)
 Password: the ROUTER_PASS variable, the file backup/.router-pass, or typed at the keyboard.
-SSH for trassa-off: TRASSA_SSH_KEY and TRASSA_KNOWN_HOSTS, else ssh defaults.
+SSH for trassa-off: TRASSA_SSH_KEY, TRASSA_KNOWN_HOSTS and TRASSA_SSH_PORT (22), else ssh defaults.
 EOF
 }
 
@@ -309,7 +310,7 @@ cmd_restore_all() {
 # on the program being rolled back working correctly.
 cmd_trassa_off() {
   local host=${ROUTER#*://}; host=${host%%[:/]*}
-  local ssh=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+  local ssh=(ssh -o BatchMode=yes -o ConnectTimeout=10 -p "$SSH_PORT")
   if [ -r "$SSH_KEY" ]; then ssh+=(-i "$SSH_KEY" -o IdentitiesOnly=yes); fi
   if [ -r "$KNOWN_HOSTS" ]; then ssh+=(-o UserKnownHostsFile="$KNOWN_HOSTS"); fi
   "${ssh[@]}" "root@$host" '
