@@ -911,3 +911,18 @@ func TestAnswersEpochAndManyAnswers(t *testing.T) {
 		t.Errorf("state: %d recent, first %+v", len(st.Recent), st.Recent[0])
 	}
 }
+
+// An answer that went to a device over IPv6 is shown as an answer to that device, and decided by
+// its device lists.
+func TestAnswersOverIPv6NameTheDevice(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, devSrc), &fakeSink{}, l.printf, t0)
+	e.Resync()
+	hosts := devHosts()
+	hosts[1].IP6 = []netip.Addr{netip.MustParseAddr("::94")} // Desktop, 192.168.1.94 in list pc
+	e.SetDevices(hosts)
+	e.HandlePacket(t0, ipv6(53, dns("video.example", 0x8180, a("video.example", 300, "1.1.1.1"))))
+	if o := e.State().Recent[0]; o.Client != "192.168.1.94" || o.Device != "Desktop" || o.Action != "vpn" {
+		t.Errorf("observation %+v", o)
+	}
+}

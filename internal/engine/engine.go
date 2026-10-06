@@ -140,9 +140,11 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 		names = append(names, n)
 	}
 	e.stats.Answers++
-	// The decision shown is the asking device's; the memory keeps the answer for every device.
-	d := e.cfg.MatchChainFor(e.devs.Views[u.Dst], names)
-	o := observation{at: now, client: u.Dst, device: e.devs.Labels[u.Dst], name: names[0], action: d.Action}
+	// The decision shown is the asking device's; the memory keeps the answer for every device. An
+	// answer that went over IPv6 is the device's too: it is known by its IPv4 address.
+	client := e.devs.Device(u.Dst)
+	d := e.cfg.MatchChainFor(e.devs.Views[client], names)
+	o := observation{at: now, client: client, device: e.devs.Labels[client], name: names[0], action: d.Action}
 	if d.Rule != nil {
 		o.line = d.Rule.Line
 		if !d.Rule.All { // "*" is what everything else gets, not a match
@@ -158,7 +160,7 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	if (d.Rule == nil || d.Rule.All) && len(e.cfg.Devices) == 0 {
 		return
 	}
-	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", who(u.Dst, o.device), names[0]))
+	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", who(client, o.device), names[0]))
 }
 
 // Tick drops claims that have expired.
@@ -273,6 +275,13 @@ func (e *Engine) SetDevices(hosts []devices.Host) error {
 		return err
 	}
 	return nil
+}
+
+// Device returns the IPv4 address of the device at a, which may be one of its IPv6 addresses.
+func (e *Engine) Device(a netip.Addr) netip.Addr {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.devs.Device(a)
 }
 
 // logDevices writes to the log the listed devices whose address or state changed. The first time

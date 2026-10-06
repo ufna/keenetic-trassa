@@ -65,6 +65,9 @@ var TrassaLogic = {
     return { answers: fresh.concat(list).slice(0, max), last: Math.max(have.last, resp.last), epoch: resp.epoch, reset: false };
   },
 
+  // deviceLabel names a device in the filter: by its name, else by its address.
+  deviceLabel: function (o) { return o.device || o.client; },
+
   // filter keeps the DNS answers whose name contains q (any case) and that went to client
   // ("" means any).
   filter: function (rows, q, client) {

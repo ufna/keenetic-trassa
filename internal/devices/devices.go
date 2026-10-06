@@ -23,6 +23,9 @@ type Host struct {
 	Name     string     // the name given to the device in the firmware's device list; may be empty
 	Hostname string     // the name the device reports about itself; may be empty
 	Online   bool       // on the network now, or holding a DHCP lease
+	// IP6 are its IPv6 addresses, from the firmware's list and the router's neighbour table: a
+	// device that asks DNS over IPv6 is still this device.
+	IP6 []netip.Addr
 }
 
 // Label is how the device is shown: its firmware name, else its own name.
@@ -48,11 +51,12 @@ type RCI struct {
 }
 
 type hostJSON struct {
-	MAC      string `json:"mac"`
-	IP       string `json:"ip"`
-	Name     string `json:"name"`
-	Hostname string `json:"hostname"`
-	Active   bool   `json:"active"`
+	MAC      string   `json:"mac"`
+	IP       string   `json:"ip"`
+	Name     string   `json:"name"`
+	Hostname string   `json:"hostname"`
+	Active   bool     `json:"active"`
+	IP6      []string `json:"ip6"`
 	DHCP     struct {
 		Expires int64 `json:"expires"`
 	} `json:"dhcp"`
@@ -101,6 +105,11 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 		}
 		if a, err := netip.ParseAddr(h.IP); err == nil && a.Is4() && !a.IsUnspecified() {
 			host.IP = a
+		}
+		for _, s := range h.IP6 {
+			if a, err := netip.ParseAddr(s); err == nil && a.Is6() && !a.Is4In6() {
+				host.IP6 = append(host.IP6, a)
+			}
 		}
 		hosts = append(hosts, host)
 	}
@@ -222,17 +231,101 @@ type Map struct {
 	Views  map[netip.Addr]rules.View // device address → its device lists; only listed devices
 	Labels map[netip.Addr]string     // device address → its name, for every device the firmware knows
 	Lists  []List                    // in declaration order
+
+	ipv4   map[netip.Addr]netip.Addr // an IPv6 address of a device → its IPv4 address
+	macIP4 map[string]netip.Addr     // a device's MAC → its IPv4 address
+}
+
+// Device returns the IPv4 address of the device at a, which may be one of its IPv6 addresses; an
+// address of no known device is returned as it is. A link-local address built from the MAC
+// (EUI-64) is recognised even when no table lists it.
+func (m Map) Device(a netip.Addr) netip.Addr {
+	if a.Is4() {
+		return a
+	}
+	if v, ok := m.ipv4[a]; ok {
+		return v
+	}
+	if mac, ok := eui64MAC(a); ok {
+		if v, ok := m.macIP4[mac]; ok {
+			return v
+		}
+	}
+	return a
+}
+
+// eui64MAC returns the MAC an IPv6 address was built from, if it was (the "ff:fe" in the middle of
+// its interface part, the universal/local bit flipped).
+func eui64MAC(a netip.Addr) (string, bool) {
+	if !a.Is6() || !a.IsLinkLocalUnicast() {
+		return "", false
+	}
+	b := a.As16()
+	if b[11] != 0xff || b[12] != 0xfe {
+		return "", false
+	}
+	return fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x", b[8]^2, b[9], b[10], b[13], b[14], b[15]), true
+}
+
+// Neighbor is an entry of the router's IPv6 neighbour table: an address and the MAC behind it.
+type Neighbor struct {
+	IP  netip.Addr
+	MAC string
+}
+
+// ParseNeighbors reads the output of "ip -6 neigh show"; entries without a MAC are skipped.
+func ParseNeighbors(out string) []Neighbor {
+	var n []Neighbor
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		a, err := netip.ParseAddr(f[0])
+		if err != nil || !a.Is6() {
+			continue
+		}
+		for i := 1; i+1 < len(f); i++ {
+			if f[i] == "lladdr" {
+				if mac, err := net.ParseMAC(f[i+1]); err == nil {
+					n = append(n, Neighbor{IP: a, MAC: mac.String()})
+				}
+				break
+			}
+		}
+	}
+	return n
+}
+
+// WithNeighbors adds to the devices the IPv6 addresses the neighbour table has for their MACs.
+func WithNeighbors(hosts []Host, n []Neighbor) []Host {
+	out := slices.Clone(hosts)
+	for _, x := range n {
+		for i := range out {
+			if out[i].MAC == x.MAC && !slices.Contains(out[i].IP6, x.IP) {
+				out[i].IP6 = append(slices.Clone(out[i].IP6), x.IP)
+			}
+		}
+	}
+	return out
 }
 
 // Resolve finds the addresses of the device lists' devices. An address written in the rules counts
 // always; a name or a MAC counts while the device is on the network or holds a DHCP lease. nil hosts
 // means the firmware's list has not been read yet.
 func Resolve(cfg *rules.Config, hosts []Host) Map {
-	m := Map{Views: map[netip.Addr]rules.View{}, Labels: map[netip.Addr]string{}}
+	m := Map{Views: map[netip.Addr]rules.View{}, Labels: map[netip.Addr]string{},
+		ipv4: map[netip.Addr]netip.Addr{}, macIP4: map[string]netip.Addr{}}
 	for _, h := range hosts {
 		// An address may still be listed for a device gone from the network: the one there now wins.
 		if _, have := m.Labels[h.IP]; h.IP.IsValid() && h.Label() != "" && (!have || h.Online) {
 			m.Labels[h.IP] = h.Label()
+		}
+		if h.IP.IsValid() {
+			m.macIP4[h.MAC] = h.IP
+			for _, a := range h.IP6 {
+				m.ipv4[a] = h.IP
+			}
 		}
 	}
 	for i, d := range cfg.Devices {

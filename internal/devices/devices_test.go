@@ -248,3 +248,37 @@ func TestRCIHostsWithoutAnIPv4Address(t *testing.T) {
 		}
 	}
 }
+
+// A device that asks DNS over IPv6 is the same device: its IPv6 addresses come from the firmware's
+// list and from the router's neighbour table, and an address built from the MAC needs neither.
+func TestIPv6AddressesOfDevices(t *testing.T) {
+	out := "fe80::c803:47ff:fe04:97ae dev br0 lladdr ca:03:47:04:97:ae router ref 1 used 0/0/0 probes 1 REACHABLE\n" +
+		"fdbd:8531::5 dev br0  used 0/0/0 probes 3 FAILED\n" +
+		"fe80::1234:5678:9abc:def0 dev br0 lladdr AA-BB-CC-00-00-02 STALE\n"
+	n := ParseNeighbors(out)
+	if fmt.Sprint(n) != "[{fe80::c803:47ff:fe04:97ae ca:03:47:04:97:ae} {fe80::1234:5678:9abc:def0 aa:bb:cc:00:00:02}]" {
+		t.Fatalf("neighbours %v", n)
+	}
+	ip := netip.MustParseAddr
+	hosts := []Host{
+		{MAC: "ca:03:47:04:97:ae", IP: ip("192.168.1.40"), Name: "TV", Online: true},
+		{MAC: "aa:bb:cc:00:00:02", IP: ip("192.168.1.61"), Hostname: "Pixel-7", Online: true},
+		{MAC: "aa:bb:cc:00:00:03", IP: ip("192.168.1.70"), Name: "Laptop", Online: true, IP6: []netip.Addr{ip("fdbd:8531::70")}},
+		{MAC: "02:11:22:33:44:55", IP: ip("192.168.1.80"), Name: "Console", Online: true},
+	}
+	m := Resolve(config(t, "default direct\n"), WithNeighbors(hosts, n))
+	cases := map[string]string{
+		"fe80::c803:47ff:fe04:97ae": "192.168.1.40", "fe80::1234:5678:9abc:def0": "192.168.1.61", "fdbd:8531::70": "192.168.1.70",
+		"fe80::11:22ff:fe33:4455": "192.168.1.80", // built from the MAC, in no table
+		"192.168.1.40":            "192.168.1.40", "fe80::9": "fe80::9",
+	}
+	for a, want := range cases {
+		if got := m.Device(ip(a)).String(); got != want {
+			t.Errorf("%s: device at %s, want %s", a, got, want)
+		}
+	}
+	hs, err := serve(t, 200, `{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","ip6":["fdbd:8531::5","nonsense","10.0.0.1"],"active":true}]}`).Hosts(context.Background())
+	if err != nil || fmt.Sprint(hs[0].IP6) != "[fdbd:8531::5]" {
+		t.Errorf("ip6 from the firmware: %+v, %v", hs, err)
+	}
+}

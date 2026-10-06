@@ -237,3 +237,17 @@ process.stdout.write(JSON.stringify(out));`
 		}
 	}
 }
+
+// The device filter names a device by its name, else by its address.
+func TestLogicDeviceLabel(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/logic.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(src) + `
+process.stdout.write(JSON.stringify([TrassaLogic.deviceLabel({device: "Desktop", client: "192.168.1.94"}), TrassaLogic.deviceLabel({client: "192.168.1.61"})]));`
+	b, err := exec.Command(node(t), "-e", script).Output()
+	if err != nil || string(b) != `["Desktop","192.168.1.61"]` {
+		t.Errorf("%s, %v", b, err)
+	}
+}

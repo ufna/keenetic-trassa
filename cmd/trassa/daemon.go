@@ -385,7 +385,10 @@ func cmdRun(args []string, errw io.Writer) int {
 		current = active
 	}
 
-	devPoller := &devicePoller{src: devSrc, eng: eng, logf: logger.Printf}
+	devPoller := &devicePoller{src: devSrc, eng: eng, logf: logger.Printf,
+		neigh: func(ctx context.Context) (string, error) {
+			return dataplane.Exec{}.Run(ctx, "ip", "-6", "neigh", "show")
+		}}
 	refreshDevices := devPoller.poll
 
 	// The socket goes first: it also checks that no other instance is running.
@@ -613,6 +616,9 @@ type devicePoller struct {
 	logf   func(format string, args ...any)
 	failed bool // the last poll failed
 	known  bool // a list has arrived at least once
+	// neigh reads the router's IPv6 neighbour table ("ip -6 neigh show"): it ties the IPv6
+	// addresses devices ask DNS from to their MACs. nil or a failure leaves them out.
+	neigh func(ctx context.Context) (string, error)
 }
 
 func (p *devicePoller) poll() {
@@ -631,5 +637,10 @@ func (p *devicePoller) poll() {
 		return
 	}
 	p.failed, p.known = false, true
+	if p.neigh != nil {
+		if out, err := p.neigh(ctx); err == nil {
+			hosts = devices.WithNeighbors(hosts, devices.ParseNeighbors(out))
+		}
+	}
 	p.eng.SetDevices(hosts) // the engine logs its own failures
 }

@@ -48,3 +48,23 @@ func TestDevicePoller(t *testing.T) {
 		t.Errorf("the list did not reach the engine:\n%s", eng.Status(time.Now()))
 	}
 }
+
+// The poller hands the engine the IPv6 addresses from the neighbour table along with the devices.
+func TestDevicePollerAddsNeighbors(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": "exit vpn = W\ndevice tv = \"Living room TV\"\ndefault direct\nx.example -> vpn for tv\n"})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	src := &flakySource{hosts: []devices.Host{{MAC: "aa:bb:cc:00:00:01", IP: netip.MustParseAddr("192.168.1.40"), Name: "Living room TV", Online: true}}}
+	asked := 0
+	p := &devicePoller{src: src, eng: eng, logf: func(string, ...any) {}, neigh: func(context.Context) (string, error) {
+		asked++
+		return "fe80::1 dev br0 lladdr aa:bb:cc:00:00:01 REACHABLE\n", nil
+	}}
+	p.poll()
+	if asked != 1 || src.hosts[0].IP6 != nil {
+		t.Errorf("neighbour table asked %d times; the source's list changed: %v", asked, src.hosts[0].IP6)
+	}
+	if got := eng.Device(netip.MustParseAddr("fe80::1")); got.String() != "192.168.1.40" {
+		t.Errorf("fe80::1 is the device at %s", got)
+	}
+}

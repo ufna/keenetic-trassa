@@ -480,7 +480,7 @@
     answers.forEach(function (o) {
       if (seen[o.client]) return;
       seen[o.client] = true;
-      list.push({ value: o.client, label: o.device ? o.device + " · " + o.client : o.client });
+      list.push({ value: o.client, label: TrassaLogic.deviceLabel(o) });
     });
     list.sort(function (a, b) { return a.label.localeCompare(b.label); });
     var key = list.map(function (d) { return d.label; }).join("\n");
