@@ -162,6 +162,7 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 				time.Sleep(delay)
 			}
 			if cmd == "answers" && !st.Disabled() {
+				time.Sleep(delay)
 				after, _ := strconv.ParseUint(arg, 10, 64)
 				b, _ := json.Marshal(answersAfter(after))
 				return string(b), nil
@@ -228,7 +229,7 @@ func main() {
 	router := flag.String("router", "", "address of the real page, e.g. http://192.168.1.1:8090")
 	passFile := flag.String("pass", "backup/.router-pass", "file with the router administrator password")
 	off := flag.Bool("off", false, "demo: start with trassa turned off")
-	delay := flag.Duration("delay", 0, "demo: how long the daemon state takes, like a busy router")
+	delay := flag.Duration("delay", 0, "demo: how long the daemon state and answers take, like a busy router")
 	flag.Parse()
 
 	var h http.Handler

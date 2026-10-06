@@ -894,3 +894,20 @@ func TestAnswersHistory(t *testing.T) {
 		}
 	}
 }
+
+// The answers carry the daemon's start, so a page can tell a restarted daemon; the memory keeps
+// the latest 500 however many come.
+func TestAnswersEpochAndManyAnswers(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, src), nil, l.printf, t0)
+	for i := 0; i < 1234; i++ {
+		e.HandlePacket(t0, answer(fmt.Sprintf("n%d.example", i), "1.1.1.1"))
+	}
+	a := e.Answers(0)
+	if a.Epoch != t0.UnixNano() || len(a.Answers) != 500 || a.Answers[0].Name != "n1233.example" || a.Answers[499].Name != "n734.example" {
+		t.Errorf("epoch %d, %d answers, %s … %s", a.Epoch, len(a.Answers), a.Answers[0].Name, a.Answers[len(a.Answers)-1].Name)
+	}
+	if st := e.State(); len(st.Recent) != stateRows || st.Recent[0].Name != "n1233.example" {
+		t.Errorf("state: %d recent, first %+v", len(st.Recent), st.Recent[0])
+	}
+}

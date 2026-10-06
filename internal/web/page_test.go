@@ -193,3 +193,47 @@ process.stdout.write(JSON.stringify(out));`
 		t.Errorf("filtered %v", got.Filtered)
 	}
 }
+
+// Review of the answers panel: merging responses that overlap, come late or come from a restarted
+// daemon; parents that stop at shared suffixes; a filter typed in Cyrillic.
+func TestLogicMergeAnswersAndMore(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/logic.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(src) + `
+const L = TrassaLogic, out = {};
+const a = (seq) => ({seq: seq, name: "n" + seq + ".example"});
+const seqs = (r) => r.answers.map(x => x.seq).join(",") + " last " + r.last + (r.reset ? " reset" : "");
+let r = L.mergeAnswers([], {epoch: 1, last: 3, full: true, answers: [a(3), a(2), a(1)]}, {epoch: 0, last: 0}, 500);
+out.full = seqs(r);
+r = L.mergeAnswers(r.answers, {epoch: 1, last: 5, full: false, answers: [a(5), a(4)]}, {epoch: 1, last: 3}, 500);
+out.newer = seqs(r);
+// The same answers again, from a request that overlapped: nothing doubles.
+out.again = seqs(L.mergeAnswers(r.answers, {epoch: 1, last: 5, full: false, answers: [a(5), a(4)]}, {epoch: 1, last: 5}, 500));
+// A late response for an older request: the page's number does not go back.
+out.late = seqs(L.mergeAnswers(r.answers, {epoch: 1, last: 4, full: false, answers: [a(4)]}, {epoch: 1, last: 5}, 500));
+// Another daemon (restarted): ask for the whole list again.
+out.restart = seqs(L.mergeAnswers(r.answers, {epoch: 2, last: 7, full: false, answers: [a(7)]}, {epoch: 1, last: 5}, 500));
+out.cap = L.mergeAnswers([a(2), a(1)], {epoch: 1, last: 4, full: false, answers: [a(4), a(3)]}, {epoch: 1, last: 2}, 3).answers.length;
+out.parents = [L.parents("user.github.io"), L.parents("a.user.github.io"), L.parents("shop.msk.ru"), L.parents("www.shop.msk.ru")];
+out.cyrillic = L.filter([{name: "xn--80aswg.xn--p1ai", client: "1"}, {name: "example.com", client: "1"}], "сайт", "").length;
+process.stdout.write(JSON.stringify(out));`
+	b, err := exec.Command(node(t), "-e", script).Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%s: %v", b, err)
+	}
+	want := map[string]string{
+		"full": "3,2,1 last 3", "newer": "5,4,3,2,1 last 5", "again": "5,4,3,2,1 last 5", "late": "5,4,3,2,1 last 5",
+		"restart": "5,4,3,2,1 last 0 reset", "cap": "3", "parents": "[[] [user.github.io] [] [shop.msk.ru]]", "cyrillic": "1",
+	}
+	for k, w := range want {
+		if g := fmt.Sprint(got[k]); g != w {
+			t.Errorf("%s: %s, want %s", k, g, w)
+		}
+	}
+}

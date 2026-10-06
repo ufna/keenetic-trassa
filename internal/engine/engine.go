@@ -380,13 +380,22 @@ func show(a *rules.Action) string {
 	return a.String()
 }
 
+// kept returns the DNS answers kept for the page, oldest first: the latest recentSize.
+func (e *Engine) kept() []observation {
+	if len(e.recent) > recentSize {
+		return e.recent[len(e.recent)-recentSize:]
+	}
+	return e.recent
+}
+
 func (e *Engine) remember(o observation) {
 	e.seq++
 	o.seq = e.seq
-	if len(e.recent) == recentSize {
-		e.recent = append(e.recent[:0], e.recent[1:]...)
-	}
 	e.recent = append(e.recent, o)
+	// The oldest go in bulk rather than one by one: shifting 500 entries on every answer costs.
+	if len(e.recent) >= 2*recentSize {
+		e.recent = append(e.recent[:0], e.recent[len(e.recent)-recentSize:]...)
+	}
 }
 
 func (e *Engine) lineOf(index int) int {
@@ -400,6 +409,7 @@ func (e *Engine) lineOf(index int) int {
 func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	kept := e.kept()
 	subj, d, err := e.cfg.MatchSubject(subject)
 	if err != nil {
 		return "", err
@@ -465,8 +475,8 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 		b.WriteString(a.String())
 	}
 	b.WriteString("\n")
-	for i := len(e.recent) - 1; i >= 0; i-- {
-		if o := e.recent[i]; o.name == subj {
+	for i := len(kept) - 1; i >= 0; i-- {
+		if o := kept[i]; o.name == subj {
 			fmt.Fprintf(&b, "last DNS answer: %s ago, device %s\n", ago(now.Sub(o.at)), o.client)
 			return b.String(), nil
 		}
@@ -479,6 +489,7 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 func (e *Engine) Status(now time.Time) string {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	kept := e.kept()
 	var b strings.Builder
 	if e.sink == nil {
 		b.WriteString("trassa: observe mode — address sets and routes are not changed\n")
@@ -518,13 +529,13 @@ func (e *Engine) Status(now time.Time) string {
 		}
 		fmt.Fprintf(&b, "devices %s: %s\n", l.Name, strings.Join(parts, ", "))
 	}
-	if len(e.recent) == 0 {
+	if len(kept) == 0 {
 		b.WriteString("no observations yet\n")
 		return b.String()
 	}
 	b.WriteString("recent observations:\n")
-	from := max(0, len(e.recent)-statusRows)
-	for _, o := range e.recent[from:] {
+	from := max(0, len(kept)-statusRows)
+	for _, o := range kept[from:] {
 		where := "default"
 		if o.line != 0 {
 			where = fmt.Sprintf("line %d", o.line)
@@ -538,6 +549,7 @@ func (e *Engine) Status(now time.Time) string {
 func (e *Engine) State() ctl.State {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	kept := e.kept()
 	st := ctl.State{Mode: "observe", Started: e.started, Rules: len(e.cfg.Rules), Addrs: e.store.Len(),
 		Claims: e.store.Total(), Stats: e.snapshot(), Exits: []ctl.ExitState{}, Recent: []ctl.Observation{}}
 	if e.sink != nil {
@@ -546,8 +558,8 @@ func (e *Engine) State() ctl.State {
 	for _, x := range e.cfg.Exits {
 		st.Exits = append(st.Exits, ctl.ExitState{Name: x.Name, Via: e.exits[x.Name], Known: e.exits != nil})
 	}
-	for i := len(e.recent) - 1; i >= 0 && len(st.Recent) < stateRows; i-- {
-		st.Recent = append(st.Recent, e.recent[i].json())
+	for i := len(kept) - 1; i >= 0 && len(st.Recent) < stateRows; i-- {
+		st.Recent = append(st.Recent, kept[i].json())
 	}
 	return st
 }
@@ -582,16 +594,17 @@ func (o observation) json() ctl.Observation {
 func (e *Engine) Answers(after uint64) ctl.Answers {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	out := ctl.Answers{Last: e.seq, Answers: []ctl.Answer{}}
+	kept := e.kept()
+	out := ctl.Answers{Epoch: e.started.UnixNano(), Last: e.seq, Answers: []ctl.Answer{}}
 	oldest := e.seq + 1
-	if len(e.recent) > 0 {
-		oldest = e.recent[0].seq
+	if len(kept) > 0 {
+		oldest = kept[0].seq
 	}
 	if after == 0 || after > e.seq || after+1 < oldest {
 		out.Full, after = true, 0
 	}
-	for i := len(e.recent) - 1; i >= 0 && e.recent[i].seq > after; i-- {
-		out.Answers = append(out.Answers, ctl.Answer{Seq: e.recent[i].seq, Observation: e.recent[i].json()})
+	for i := len(kept) - 1; i >= 0 && kept[i].seq > after; i-- {
+		out.Answers = append(out.Answers, ctl.Answer{Seq: kept[i].seq, Observation: kept[i].json()})
 	}
 	return out
 }

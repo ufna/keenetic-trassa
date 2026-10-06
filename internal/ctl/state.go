@@ -42,7 +42,8 @@ type Answer struct {
 // Answers are the DNS answers newer than the one a page already has, newest first (the answers
 // command).
 type Answers struct {
-	Last uint64 `json:"last"` // the number of the newest answer
+	Epoch int64  `json:"epoch"` // when the daemon started: another value means another daemon
+	Last  uint64 `json:"last"`  // the number of the newest answer
 	// Full means the whole list: the page replaces its own. So it is on its first request, after a
 	// daemon restart, and when the answers it missed are no longer kept.
 	Full    bool     `json:"full"`

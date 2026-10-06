@@ -17,6 +17,11 @@
   var devKey = "";           // the devices in the filter, to rebuild it only when they change
   var choices = { exits: [], lists: [] }; // of the saved rules, for the "add a rule" window
   var ANSWERS = 500;
+  var epoch = 0;             // the daemon the answers came from: another one means it restarted
+  var answersBusy = false;   // a request for answers is on its way: the next tick waits
+  var pending = false;       // new answers wait while the person reads or points into the list
+  var hovering = false;      // the mouse is over the list
+  var addOpener = null;      // what had the focus before the "add a rule" window opened
   var HISTORY_ROWS = 6;     // versions shown without scrolling
   var OBS_ROWS = 8;         // DNS answers shown without scrolling
   var signedIn = false;
@@ -150,6 +155,7 @@
       var r = await api("POST", "/api/save", { text: text, confirm: confirm });
       if (r.saved || r.unchanged) saved = text;
       showResult(r, function () { save(true); });
+      if (r.saved) refreshChoices();
       loadHistory();
       loadState();
     } catch (e) {
@@ -242,6 +248,7 @@
       if (r.saved) await loadRules(true);
       else if (!r.unchanged) await putVersion(v);
       showResult(r, function () { rollback(v, true); });
+      if (r.saved) refreshChoices();
       loadHistory();
       loadState();
     } catch (e) { if (e.status !== 401) setStatus(e.message, "bad"); }
@@ -394,11 +401,47 @@
   // loadAnswers fetches the answers newer than the last the page has; the daemon sends the whole
   // list when the page cannot continue (first request, restart).
   async function loadAnswers() {
-    var r;
-    try { r = await api("GET", "/api/answers?after=" + lastSeq); } catch (e) { return; }
-    answers = r.full ? r.answers : r.answers.concat(answers).slice(0, ANSWERS);
-    lastSeq = r.last;
-    if (r.full || r.answers.length) renderObs();
+    // A slow daemon must not get a second request with the same number: the answers would double.
+    if (answersBusy) return;
+    answersBusy = true;
+    try {
+      var r = await api("GET", "/api/answers?after=" + lastSeq);
+      var m = TrassaLogic.mergeAnswers(answers, r, { epoch: epoch, last: lastSeq }, ANSWERS);
+      epoch = m.epoch;
+      lastSeq = m.last; // after a restart 0: the next tick fetches the whole list
+      if (m.reset) return;
+      var changed = r.full || m.answers.length !== answers.length || (m.answers.length && m.answers[0] !== answers[0]);
+      answers = m.answers;
+      if (changed) showAnswers();
+    } catch (e) {
+      if (e.status !== 401) $("obs-count").textContent = "not updated: " + e.message;
+    } finally {
+      answersBusy = false;
+    }
+  }
+
+  // showAnswers draws the answers unless the person is reading further down or pointing into the
+  // list: the rows would move under them, and a click could open another name. The new answers
+  // wait until they scroll back to the top or move the pointer away.
+  function showAnswers() {
+    var wrap = $("obs-wrap");
+    if (wrap.scrollTop > 0 || hovering || wrap.contains(document.activeElement)) {
+      pending = true;
+      $("obs-count").textContent = answers.length + " answers · new ones wait at the top";
+      return;
+    }
+    pending = false;
+    renderObs();
+  }
+
+  function catchUp() { if (pending) showAnswers(); }
+
+  // refreshChoices takes the exits and device lists of the rules just saved, for the window.
+  async function refreshChoices() {
+    try {
+      var r = await api("GET", "/api/rules");
+      choices = { exits: r.exits || [], lists: r.lists || [] };
+    } catch (e) { /* the window keeps the previous choices */ }
   }
 
   function renderObs() {
@@ -463,6 +506,7 @@
 
   /* ---- The "add a rule" window ---- */
   function openAdd(name) {
+    addOpener = document.activeElement;
     $("add-name").value = name;
     var p = $("add-parents");
     p.replaceChildren();
@@ -502,7 +546,12 @@
     updateAdd();
   }
 
-  function closeAdd() { $("add").hidden = true; }
+  function closeAdd() {
+    if ($("add").hidden) return;
+    $("add").hidden = true;
+    if (addOpener && document.body.contains(addOpener)) addOpener.focus();
+    addOpener = null;
+  }
 
   // addRule reads the window: the rule the person is putting together.
   function addRule() {
@@ -531,7 +580,10 @@
     nowTimer = setTimeout(async function () {
       try {
         var w = await api("POST", "/api/why", { subject: r.name });
-        if ($("add-name").value.trim() === r.name) $("add-now").textContent = "Now: " + w.text.split("\n")[0];
+        // The decision for devices in no list, and the device lists that get another one.
+        var lines = w.text.split("\n");
+        var shown = [lines[0]].concat(lines.filter(function (l) { return l.indexOf("for ") === 0; }));
+        if ($("add-name").value.trim() === r.name) $("add-now").textContent = "Now: " + shown.join("; ");
       } catch (e) { /* the line is a hint only */ }
     }, 300);
   }
@@ -610,6 +662,7 @@
   /* ---- Sign-in ---- */
   function showLogin() {
     signedIn = false;
+    closeAdd();
     clearInterval(pollTimer);
     clearInterval(answersTimer);
     $("login").hidden = false;
@@ -675,7 +728,15 @@
   });
   rulesEl.addEventListener("scroll", function () { $("gutter").scrollTop = rulesEl.scrollTop; });
   $("check").addEventListener("click", function () { check(); });
-  $("obs-q").addEventListener("input", renderObs);
+  var filterTimer = null;
+  $("obs-q").addEventListener("input", function () {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(renderObs, 150); // 500 rows are not redrawn on every key
+  });
+  $("obs-wrap").addEventListener("scroll", function () { if ($("obs-wrap").scrollTop === 0) catchUp(); });
+  $("obs-wrap").addEventListener("pointerenter", function (ev) { if (ev.pointerType === "mouse") hovering = true; });
+  $("obs-wrap").addEventListener("pointerleave", function () { hovering = false; catchUp(); });
+  $("obs-wrap").addEventListener("focusout", function () { setTimeout(catchUp, 0); });
   $("obs-dev").addEventListener("change", renderObs);
   $("add-name").addEventListener("input", updateAdd);
   $("add-for").addEventListener("change", updateAdd);

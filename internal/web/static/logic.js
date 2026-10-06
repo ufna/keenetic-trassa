@@ -4,6 +4,12 @@
 // Second-level zones under a country domain: example.co.uk is a domain of its own, co.uk is not.
 var secondLevel = ["ac", "co", "com", "edu", "go", "gov", "ne", "net", "or", "org"];
 
+// Domains under which anyone registers a site of their own: a rule for one of them would cover
+// strangers' sites too, so they are never offered as parents.
+var sharedSuffixes = ["appspot.com", "azurewebsites.net", "blogspot.com", "cloudfront.net", "firebaseapp.com",
+  "github.io", "herokuapp.com", "msk.ru", "narod.ru", "netlify.app", "pages.dev", "spb.ru", "ucoz.ru",
+  "vercel.app", "web.app", "workers.dev"];
+
 var TrassaLogic = {
   // parents lists the domains a name belongs to, nearest first, down to the one registered:
   // "a.b.example.com" → ["b.example.com", "example.com"]. A rule for a domain also covers its
@@ -14,6 +20,9 @@ var TrassaLogic = {
     if (labels.length >= 3 && labels[labels.length - 1].length === 2 &&
         secondLevel.indexOf(labels[labels.length - 2]) >= 0) {
       base = 3;
+    }
+    for (var k = 0; k < sharedSuffixes.length; k++) {
+      if (name.endsWith("." + sharedSuffixes[k])) base = sharedSuffixes[k].split(".").length + 1;
     }
     var out = [];
     for (var i = 1; labels.length - i >= base; i++) {
@@ -38,10 +47,28 @@ var TrassaLogic = {
     return (t === "" ? "" : t + "\n") + line + "\n";
   },
 
+  // ascii writes a name typed in another alphabet the way DNS answers carry it (punycode): "сайт.рф"
+  // becomes "xn--80aswg.xn--p1ai". A part of a label cannot be converted and stays as it is.
+  ascii: function (q) {
+    if (!/[^\x00-\x7f]/.test(q)) return q;
+    try { return new URL("http://" + q).hostname; } catch (e) { return q; }
+  },
+
+  // mergeAnswers puts a response of /api/answers into the page's list, newest first. have is what
+  // the page had: {epoch, last}. Answers the page already has are skipped (two requests may
+  // overlap), and the page's number never goes back (a late response). A response of another
+  // daemon (it restarted) is not merged: reset asks the page to fetch the whole list.
+  mergeAnswers: function (list, resp, have, max) {
+    if (resp.full) return { answers: resp.answers.slice(0, max), last: resp.last, epoch: resp.epoch, reset: false };
+    if (have.epoch && resp.epoch !== have.epoch) return { answers: list, last: 0, epoch: resp.epoch, reset: true };
+    var fresh = resp.answers.filter(function (a) { return a.seq > have.last; });
+    return { answers: fresh.concat(list).slice(0, max), last: Math.max(have.last, resp.last), epoch: resp.epoch, reset: false };
+  },
+
   // filter keeps the DNS answers whose name contains q (any case) and that went to client
   // ("" means any).
   filter: function (rows, q, client) {
-    q = q.trim().toLowerCase();
+    q = TrassaLogic.ascii(q.trim().toLowerCase());
     return rows.filter(function (r) {
       return (!q || r.name.toLowerCase().indexOf(q) >= 0) && (!client || r.client === client);
     });

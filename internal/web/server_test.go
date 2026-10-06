@@ -472,7 +472,7 @@ func TestPower(t *testing.T) {
 func TestAnswers(t *testing.T) {
 	e := newEnv(t)
 	e.login("secret")
-	if code, b, _ := e.do("GET", "/api/answers?after=0", nil); code != 200 || string(b) != `{"last":0,"full":true,"answers":[]}`+"\n" {
+	if code, b, _ := e.do("GET", "/api/answers?after=0", nil); code != 200 || string(b) != `{"epoch":0,"last":0,"full":true,"answers":[]}`+"\n" {
 		t.Errorf("no daemon: %d %s", code, b)
 	}
 	var asked string
@@ -498,5 +498,15 @@ func TestRulesCarryExitsAndLists(t *testing.T) {
 	got := decode[map[string]any](t, b)
 	if fmt.Sprint(got["exits"]) != "[vpn alt]" || fmt.Sprint(got["lists"]) != "[tv]" {
 		t.Errorf("rules: %s", b)
+	}
+}
+
+// A busy daemon is an error, so the page keeps the answers it has.
+func TestAnswersFromABusyDaemon(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	e.daemon = func(cmd, arg string) (string, error) { return "", fmt.Errorf("%w (test)", ctl.ErrNoReply) }
+	if code, _, _ := e.do("GET", "/api/answers?after=3", nil); code != 503 {
+		t.Errorf("busy daemon: %d", code)
 	}
 }
