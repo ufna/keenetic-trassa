@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"trassa/internal/ctl"
@@ -103,7 +104,44 @@ func (s *Server) rulesText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "cannot read the rules file: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	// The exits and device lists of the saved rules, for the "add a rule" window.
+	cfg, _ := store.Load(s.Store.Dir, text)
+	exits, lists := []string{}, []string{}
+	for _, e := range cfg.Exits {
+		exits = append(exits, e.Name)
+	}
+	for _, d := range cfg.Devices {
+		lists = append(lists, d.Name)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"text": text, "exits": exits, "lists": lists})
+}
+
+// answers passes on the DNS answers newer than the page's last one. With the daemon not running
+// there are none; a busy daemon is an error, so the page keeps the list it has.
+func (s *Server) answers(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("after")
+	if q == "" {
+		q = "0"
+	}
+	after, err := strconv.ParseUint(q, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "after: a number is needed")
+		return
+	}
+	text, err := s.Daemon("answers", strconv.FormatUint(after, 10))
+	if errors.Is(err, ctl.ErrNoDaemon) {
+		writeJSON(w, http.StatusOK, ctl.Answers{Full: true, Answers: []ctl.Answer{}})
+		return
+	}
+	var out ctl.Answers
+	if err == nil {
+		err = json.Unmarshal([]byte(text), &out)
+	}
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "the daemon did not give its DNS answers: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type textRequest struct {

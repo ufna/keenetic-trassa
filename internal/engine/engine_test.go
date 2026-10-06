@@ -869,3 +869,28 @@ func TestCatchAllIsNotCountedAsAMatch(t *testing.T) {
 		t.Errorf("observation: %+v", o)
 	}
 }
+
+// The page keeps the last 500 DNS answers and asks only for those newer than the last it has.
+func TestAnswersHistory(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, src), nil, l.printf, t0)
+	for i := 0; i < 600; i++ {
+		e.HandlePacket(t0, answer(fmt.Sprintf("n%d.example", i), "1.1.1.1"))
+	}
+	a := e.Answers(0)
+	if !a.Full || a.Last != 600 || len(a.Answers) != 500 || a.Answers[0].Name != "n599.example" || a.Answers[0].Seq != 600 || a.Answers[499].Name != "n100.example" {
+		t.Fatalf("all: full %v, last %d, %d answers, first %+v", a.Full, a.Last, len(a.Answers), a.Answers[0])
+	}
+	if a = e.Answers(590); a.Full || len(a.Answers) != 10 || a.Answers[0].Seq != 600 || a.Answers[9].Seq != 591 {
+		t.Errorf("newer than 590: full %v, %d answers", a.Full, len(a.Answers))
+	}
+	if a = e.Answers(600); a.Full || len(a.Answers) != 0 || a.Last != 600 {
+		t.Errorf("nothing new: %+v", a)
+	}
+	// The page's number is from before a restart, or older than anything kept: the whole list again.
+	for _, after := range []uint64{5000, 10} {
+		if a = e.Answers(after); !a.Full || len(a.Answers) != 500 {
+			t.Errorf("after %d: full %v, %d answers", after, a.Full, len(a.Answers))
+		}
+	}
+}

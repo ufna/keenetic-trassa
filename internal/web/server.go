@@ -72,6 +72,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/rollback", s.guard(true, s.rollback))
 	mux.HandleFunc("POST /api/why", s.guard(true, s.why))
 	mux.HandleFunc("POST /api/power", s.guard(true, s.power))
+	mux.HandleFunc("GET /api/answers", s.guard(true, s.answers))
 	return s.secure(mux)
 }
 

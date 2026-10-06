@@ -33,6 +33,22 @@ type Observation struct {
 	Line   int       `json:"line"` // 0 means default matched
 }
 
+// Answer is a DNS answer and the decision made on it, numbered in arrival order.
+type Answer struct {
+	Seq uint64 `json:"seq"`
+	Observation
+}
+
+// Answers are the DNS answers newer than the one a page already has, newest first (the answers
+// command).
+type Answers struct {
+	Last uint64 `json:"last"` // the number of the newest answer
+	// Full means the whole list: the page replaces its own. So it is on its first request, after a
+	// daemon restart, and when the answers it missed are no longer kept.
+	Full    bool     `json:"full"`
+	Answers []Answer `json:"answers"`
+}
+
 // State is the daemon state for the web page (the state command).
 type State struct {
 	Mode    string        `json:"mode"` // observe or route

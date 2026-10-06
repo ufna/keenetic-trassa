@@ -457,3 +457,16 @@ func TestHandlerStop(t *testing.T) {
 		t.Errorf("stop: %q, %v, stopped %d", text, err, stopped)
 	}
 }
+
+func TestHandlerAnswers(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	text, err := handler(eng, nil, nil)("answers", "0")
+	if err != nil || !strings.Contains(text, `"last":0`) || !strings.Contains(text, `"full":true`) {
+		t.Errorf("answers: %q, %v", text, err)
+	}
+	if _, err := handler(eng, nil, nil)("answers", "x"); err == nil {
+		t.Error("a malformed number must be an error")
+	}
+}

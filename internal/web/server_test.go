@@ -185,7 +185,7 @@ func TestDataNeedsSession(t *testing.T) {
 	for _, rq := range [][2]string{
 		{"GET", "/api/state"}, {"GET", "/api/rules"}, {"POST", "/api/check"}, {"POST", "/api/save"},
 		{"GET", "/api/history"}, {"GET", "/api/version?id=x"}, {"POST", "/api/rollback"}, {"POST", "/api/why"},
-		{"POST", "/api/power"},
+		{"POST", "/api/power"}, {"GET", "/api/answers"},
 	} {
 		if code, _, _ := e.do(rq[0], rq[1], map[string]string{}); code != 401 {
 			t.Errorf("%s %s not signed in: %d", rq[0], rq[1], code)
@@ -260,7 +260,7 @@ func TestCheckAndSave(t *testing.T) {
 		t.Errorf("with confirmation: %s", b)
 	}
 	_, b, _ = e.do("GET", "/api/rules", nil)
-	if got := decode[map[string]string](t, b)["text"]; got != warn {
+	if got := decode[map[string]any](t, b)["text"]; got != warn {
 		t.Errorf("rules in effect: %q", got)
 	}
 }
@@ -466,5 +466,37 @@ func TestPower(t *testing.T) {
 	}
 	if code, _, _ := e.do("POST", "/api/power", map[string]any{"on": true}); code != 200 || e.srv.Store.Disabled() {
 		t.Errorf("turn on: %d, disabled %v", code, e.srv.Store.Disabled())
+	}
+}
+
+func TestAnswers(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	if code, b, _ := e.do("GET", "/api/answers?after=0", nil); code != 200 || string(b) != `{"last":0,"full":true,"answers":[]}`+"\n" {
+		t.Errorf("no daemon: %d %s", code, b)
+	}
+	var asked string
+	e.daemon = func(cmd, arg string) (string, error) {
+		asked = cmd + " " + arg
+		return `{"last":7,"full":false,"answers":[{"seq":7,"at":"2026-10-03T12:00:00Z","client":"192.168.1.94","name":"x.example","action":"vpn","line":3}]}`, nil
+	}
+	code, b, _ := e.do("GET", "/api/answers?after=6", nil)
+	if code != 200 || asked != "answers 6" || !strings.Contains(string(b), `"name":"x.example"`) {
+		t.Errorf("answers: %d %s, asked %q", code, b, asked)
+	}
+	if code, _, _ := e.do("GET", "/api/answers?after=-1", nil); code != 400 {
+		t.Errorf("a malformed number: %d", code)
+	}
+}
+
+// The page offers the exits and device lists of the saved rules in its "add a rule" window.
+func TestRulesCarryExitsAndLists(t *testing.T) {
+	e := newEnv(t)
+	e.login("secret")
+	os.WriteFile(filepath.Join(e.srv.Store.Dir, store.RulesFile), []byte("exit vpn = W\nexit alt = W\ndevice tv = 1.2.3.4\ndefault direct\n"), 0o644)
+	_, b, _ := e.do("GET", "/api/rules", nil)
+	got := decode[map[string]any](t, b)
+	if fmt.Sprint(got["exits"]) != "[vpn alt]" || fmt.Sprint(got["lists"]) != "[tv]" {
+		t.Errorf("rules: %s", b)
 	}
 }

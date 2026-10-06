@@ -29,7 +29,7 @@ const (
 	maxChain       = 8     // names in a CNAME chain; real chains are shorter
 	maxAnswerAddrs = 32    // addresses taken from one answer
 	logChanges     = 8     // changes shown in one log line
-	recentSize     = 200
+	recentSize     = 500   // DNS answers kept for the web page
 	statusRows     = 10
 	stateRows      = 30
 )
@@ -49,6 +49,7 @@ type Sink interface {
 type Stats = ctl.Stats
 
 type observation struct {
+	seq    uint64 // arrival number, from 1
 	at     time.Time
 	client netip.Addr
 	device string // the device's name from the firmware, if known
@@ -66,6 +67,7 @@ type Engine struct {
 	started time.Time
 	stats   Stats
 	recent  []observation
+	seq     uint64            // number of the last DNS answer remembered
 	exits   map[string]string // exit → name of the live interface; nil means unknown
 	dirty   bool              // kernel sets may have drifted from memory: a rebuild is needed
 	hosts   []devices.Host    // the firmware's device list, as last read
@@ -379,6 +381,8 @@ func show(a *rules.Action) string {
 }
 
 func (e *Engine) remember(o observation) {
+	e.seq++
+	o.seq = e.seq
 	if len(e.recent) == recentSize {
 		e.recent = append(e.recent[:0], e.recent[1:]...)
 	}
@@ -543,9 +547,7 @@ func (e *Engine) State() ctl.State {
 		st.Exits = append(st.Exits, ctl.ExitState{Name: x.Name, Via: e.exits[x.Name], Known: e.exits != nil})
 	}
 	for i := len(e.recent) - 1; i >= 0 && len(st.Recent) < stateRows; i-- {
-		o := e.recent[i]
-		st.Recent = append(st.Recent, ctl.Observation{At: o.at, Client: o.client.String(), Device: o.device, Name: o.name,
-			Action: o.action.String(), Line: o.line})
+		st.Recent = append(st.Recent, e.recent[i].json())
 	}
 	return st
 }
@@ -567,4 +569,29 @@ func uptime(d time.Duration) string {
 		return fmt.Sprintf("%dm", m)
 	}
 	return fmt.Sprintf("%dh%02dm", h, m)
+}
+
+func (o observation) json() ctl.Observation {
+	return ctl.Observation{At: o.at, Client: o.client.String(), Device: o.device, Name: o.name,
+		Action: o.action.String(), Line: o.line}
+}
+
+// Answers returns the DNS answers newer than after, newest first. If the list cannot be continued
+// from after (the page's first request, a daemon restart, or the answers it missed are no longer
+// kept), it returns the whole list.
+func (e *Engine) Answers(after uint64) ctl.Answers {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := ctl.Answers{Last: e.seq, Answers: []ctl.Answer{}}
+	oldest := e.seq + 1
+	if len(e.recent) > 0 {
+		oldest = e.recent[0].seq
+	}
+	if after == 0 || after > e.seq || after+1 < oldest {
+		out.Full, after = true, 0
+	}
+	for i := len(e.recent) - 1; i >= 0 && e.recent[i].seq > after; i-- {
+		out.Answers = append(out.Answers, ctl.Answer{Seq: e.recent[i].seq, Observation: e.recent[i].json()})
+	}
+	return out
 }

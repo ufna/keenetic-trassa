@@ -132,6 +132,13 @@ func handler(eng *engine.Engine, reload func() (string, error), stop func()) ctl
 			return string(b), err
 		case "reload":
 			return reload()
+		case "answers":
+			after, err := strconv.ParseUint(arg, 10, 64)
+			if err != nil {
+				return "", fmt.Errorf("answers: a number is needed, not %q", arg)
+			}
+			b, err := json.Marshal(eng.Answers(after))
+			return string(b), err
 		case "stop":
 			stop()
 			return "trassa is stopping\n", nil
