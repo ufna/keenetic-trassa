@@ -70,7 +70,12 @@
       </section>
 
       <section class="panel" aria-labelledby="h-obs">
-        <h2 id="h-obs">Recent DNS answers <small>what came in and where it went</small></h2>
+        <h2 id="h-obs">Recent DNS answers <small>the last 500 · a name opens a rule for it</small></h2>
+        <div class="obs-filter">
+          <input id="obs-q" type="search" placeholder="name" aria-label="Filter by name" autocomplete="off" spellcheck="false">
+          <select id="obs-dev" aria-label="Filter by device"><option value="">all devices</option></select>
+          <span class="note" id="obs-count"></span>
+        </div>
         <div class="tablewrap" id="obs-wrap">
           <table class="obs">
             <thead><tr><th>Time</th><th>Name and device</th><th>Path</th></tr></thead>
@@ -81,6 +86,24 @@
       </section>
     </div>
   </div>
+</div>
+
+<div class="modal-back" id="add" hidden>
+  <form class="modal" id="add-form" aria-labelledby="add-title">
+    <h2 id="add-title">Add a rule</h2>
+    <label for="add-name">Name<input id="add-name" autocomplete="off" spellcheck="false"></label>
+    <div class="add-parents" id="add-parents"></div>
+    <p class="note">A rule for a domain covers its subdomains too.</p>
+    <fieldset><legend>Exit</legend><div class="add-exits" id="add-exits"></div></fieldset>
+    <label for="add-for">For<select id="add-for"></select></label>
+    <label class="checkline"><input type="checkbox" id="add-strict"> strict: blocked while all of the exit's tunnels are down</label>
+    <pre class="rule-text" id="add-line"></pre>
+    <p class="note" id="add-now"></p>
+    <div class="actions">
+      <button class="btn" type="button" id="add-cancel">Cancel</button>
+      <button class="btn primary" type="submit" id="add-ok">Add to the rules</button>
+    </div>
+  </form>
 </div>
 
 <div class="login-back" id="login" hidden>

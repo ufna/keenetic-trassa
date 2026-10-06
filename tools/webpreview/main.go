@@ -23,7 +23,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"trassa/internal/ctl"
@@ -120,6 +122,33 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 		o.At = o.At.Add(-time.Duration(i+1) * 80 * time.Second)
 		state.Recent = append(state.Recent, o)
 	}
+	// The demo's DNS answers: the sample ones, then a new one every two seconds, so that the page's
+	// refresh can be seen.
+	var mu sync.Mutex
+	var answers []ctl.Answer // oldest first
+	for i := len(state.Recent) - 1; i >= 0; i-- {
+		answers = append(answers, ctl.Answer{Seq: uint64(len(answers) + 1), Observation: state.Recent[i]})
+	}
+	lastAdd := time.Now()
+	answersAfter := func(after uint64) ctl.Answers {
+		mu.Lock()
+		defer mu.Unlock()
+		if time.Since(lastAdd) >= 2*time.Second {
+			o := state.Recent[len(answers)%len(state.Recent)]
+			o.At = time.Now()
+			answers = append(answers, ctl.Answer{Seq: uint64(len(answers) + 1), Observation: o})
+			lastAdd = time.Now()
+		}
+		last := uint64(len(answers))
+		out := ctl.Answers{Last: last, Answers: []ctl.Answer{}}
+		if after == 0 || after > last {
+			out.Full, after = true, 0
+		}
+		for i := len(answers) - 1; i >= 0 && answers[i].Seq > after; i-- {
+			out.Answers = append(out.Answers, answers[i])
+		}
+		return out
+	}
 	desc := map[string]string{"Wireguard0": "tunnel-b", "Wireguard1": "tunnel-c", "Wireguard2": "tunnel-a",
 		"Wireguard3": "tunnel-d", "Wireguard4": "tunnel-e"}
 	srv := &web.Server{
@@ -131,6 +160,11 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 			}
 			if cmd == "state" {
 				time.Sleep(delay)
+			}
+			if cmd == "answers" && !st.Disabled() {
+				after, _ := strconv.ParseUint(arg, 10, 64)
+				b, _ := json.Marshal(answersAfter(after))
+				return string(b), nil
 			}
 			if cmd == "state" && !st.Disabled() {
 				b, _ := json.Marshal(state)

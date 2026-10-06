@@ -199,9 +199,12 @@ router's administrator login and password: the page checks them with the firmwar
 the password never leaves the browser (only a response to a one-time challenge does).
 
 On the page: the rules editor with errors and warnings by line, "why" for any name, address or
-link, the state of the exits and tunnels, the latest DNS answers with the device's name from the
-router's device list, and the version history with
-one-click restore (the last 20 versions are kept). The page listens on the home network only.
+link, the state of the exits and tunnels, the version history with one-click restore (the last
+20 versions are kept), and the last 500 DNS answers with the device's name from the router's
+device list, refreshed every two seconds and filtered by name and by device. A name in the
+answers opens a window that puts together a rule for it: the name or one of its parent domains,
+the exit, all devices or only (or all but) a device list, strict; the rule goes to the end of the
+editor and takes effect once saved. The page listens on the home network only.
 
 The switch in the header turns trassa off and on. Off, the daemon stops and removes its routes,
 and the router routes all traffic as without trassa; trassa stays off after a reboot until it is

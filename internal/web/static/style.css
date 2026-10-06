@@ -158,3 +158,28 @@ ol.history .tag { font-size: 12px; color: var(--tunnel); padding-inline: 4px; }
   .btn, .linkbtn { transition: filter .15s; } .btn:hover:not(:disabled) { filter: brightness(1.08); }
   .switch .track { transition: background .15s; } .switch .knob { transition: transform .15s; }
 }
+
+/* Recent DNS answers: the filter, and names that open the "add a rule" window. */
+.obs-filter { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.obs-filter input, .obs-filter select { font: 13px var(--font-ui); padding: 5px 8px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--code-bg); color: var(--ink); min-width: 0; }
+.obs-filter input { flex: 1 1 140px; }
+.obs-filter select { flex: 0 1 220px; }
+.name-link { font: inherit; color: var(--tunnel); background: none; border: 0; padding: 0; cursor: pointer; text-align: left; overflow-wrap: anywhere; }
+.name-link:hover { text-decoration: underline; }
+.name-link:focus-visible { outline: 2px solid var(--tunnel); outline-offset: 2px; }
+
+/* The "add a rule" window. */
+.modal-back { position: fixed; inset: 0; background: rgba(10, 20, 30, .45); display: grid; place-items: center; padding: 16px; z-index: 6; }
+.modal { width: min(460px, 100%); max-height: calc(100vh - 32px); overflow: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: var(--radius); padding: 20px; display: grid; gap: 12px; }
+.modal h2 { margin: 0; font-size: 18px; }
+.modal label { display: grid; gap: 4px; font-size: 13px; color: var(--ink-soft); }
+.modal input#add-name, .modal select { font: 14px var(--font-code); padding: 7px 10px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--code-bg); color: var(--ink); min-width: 0; }
+.modal fieldset { border: 0; padding: 0; margin: 0; display: grid; gap: 6px; }
+.modal legend { font-size: 13px; color: var(--ink-soft); padding: 0; margin-bottom: 6px; }
+.modal .note { margin: 0; }
+.add-exits { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.modal .radio, .modal .checkline { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ink); }
+.add-parents { display: flex; flex-wrap: wrap; gap: 6px; }
+.add-parents:empty { display: none; }
+.chipbtn { font: 12px var(--font-code); padding: 3px 9px; border-radius: 999px; border: 1px solid var(--rule); background: var(--panel); color: var(--tunnel); cursor: pointer; }
+.modal .rule-text { margin: 0; }

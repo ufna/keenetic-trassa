@@ -11,6 +11,12 @@
   var enabled = null;       // trassa is turned on, from the last state; null until it arrives
   var startingUntil = 0;    // after turning on, "not running" means "starting" until this time
   var pollTimer = null;
+  var answersTimer = null;
+  var answers = [];          // DNS answers, newest first
+  var lastSeq = 0;           // the number of the newest answer the page has
+  var devKey = "";           // the devices in the filter, to rebuild it only when they change
+  var choices = { exits: [], lists: [] }; // of the saved rules, for the "add a rule" window
+  var ANSWERS = 500;
   var HISTORY_ROWS = 6;     // versions shown without scrolling
   var OBS_ROWS = 8;         // DNS answers shown without scrolling
   var signedIn = false;
@@ -98,14 +104,16 @@
   function counts(r) { return "rules: " + r.rules + ", exits: " + r.exits + ", expectations: " + r.tests; }
   function errorsIn(ps) { return ps.filter(function (p) { return p.severity === "error"; }).length; }
 
-  async function check() {
+  // check checks the editor's text; lead goes before the outcome in the status line.
+  async function check(lead) {
+    lead = typeof lead === "string" ? lead : "";
     try {
       var r = await api("POST", "/api/check", { text: rulesEl.value });
       showProblems(r.problems);
       var errs = errorsIn(r.problems), warns = r.problems.length - errs;
-      if (errs) setStatus("Errors: " + errs + " — these rules cannot be applied", "bad");
-      else if (warns) setStatus("No errors, warnings: " + warns + "; " + counts(r), "warn");
-      else setStatus("No errors; " + counts(r), "ok");
+      if (errs) setStatus(lead + "Errors: " + errs + " — these rules cannot be applied", "bad");
+      else if (warns) setStatus(lead + "No errors, warnings: " + warns + "; " + counts(r), "warn");
+      else setStatus(lead + "No errors; " + counts(r), "ok");
     } catch (e) { if (e.status !== 401) setStatus(e.message, "bad"); }
   }
 
@@ -158,6 +166,7 @@
     var a = force ? { editor: r.text, saved: r.text, note: "" } : TrassaLogic.adopt(rulesEl.value, saved, r.text);
     saved = a.saved;
     rulesEl.value = a.editor;
+    choices = { exits: r.exits || [], lists: r.lists || [] };
     clearProblems();
     if (a.note) setStatus(a.note, "warn");
   }
@@ -302,7 +311,6 @@
       banner.hidden = false;
       renderCounters(null);
       renderTunnels(s.tunnels, null);
-      renderObs(null);
       return;
     }
     if (d) startingUntil = 0;
@@ -334,7 +342,6 @@
     }
     renderCounters(d);
     renderTunnels(s.tunnels, d);
-    renderObs(d);
   }
 
   function renderCounters(d) {
@@ -383,16 +390,32 @@
     });
   }
 
-  function renderObs(d) {
-    var rows = d ? d.recent : [];
+  /* ---- Recent DNS answers ---- */
+  // loadAnswers fetches the answers newer than the last the page has; the daemon sends the whole
+  // list when the page cannot continue (first request, restart).
+  async function loadAnswers() {
+    var r;
+    try { r = await api("GET", "/api/answers?after=" + lastSeq); } catch (e) { return; }
+    answers = r.full ? r.answers : r.answers.concat(answers).slice(0, ANSWERS);
+    lastSeq = r.last;
+    if (r.full || r.answers.length) renderObs();
+  }
+
+  function renderObs() {
+    renderDevices();
+    var rows = TrassaLogic.filter(answers, $("obs-q").value, $("obs-dev").value);
     var tb = $("obs");
     tb.replaceChildren();
-    $("obs-empty").hidden = rows.length > 0;
     rows.forEach(function (o) {
       var tr = el("tr");
       tr.appendChild(el("td", "t", clock(new Date(o.at))));
       // The device address goes under the name: a long IPv6 address in its own column would squeeze the name.
-      var name = el("td", "name", o.name);
+      var name = el("td", "name");
+      var link = el("button", "name-link", o.name);
+      link.type = "button";
+      link.title = "Add a rule for " + o.name;
+      link.addEventListener("click", function () { openAdd(o.name); });
+      name.appendChild(link);
       name.appendChild(el("span", "dev", o.device ? o.device + " · " + o.client : o.client));
       tr.appendChild(name);
       var td = el("td", "path");
@@ -401,8 +424,130 @@
       tr.appendChild(td);
       tb.appendChild(tr);
     });
+    $("obs-empty").hidden = rows.length > 0;
+    $("obs-empty").textContent = answers.length ? "No answers match." : "No answers yet.";
+    $("obs-count").textContent = rows.length === answers.length ? answers.length + " answers" : rows.length + " of " + answers.length;
     fitRows($("obs-wrap"), tb.children, OBS_ROWS);
   }
+
+  // renderDevices fills the device filter with the devices among the answers. It is rebuilt only
+  // when they change: rebuilding it under an open list would close the list.
+  function renderDevices() {
+    var seen = {}, list = [];
+    answers.forEach(function (o) {
+      if (seen[o.client]) return;
+      seen[o.client] = true;
+      list.push({ value: o.client, label: o.device ? o.device + " · " + o.client : o.client });
+    });
+    list.sort(function (a, b) { return a.label.localeCompare(b.label); });
+    var key = list.map(function (d) { return d.label; }).join("\n");
+    if (key === devKey) return;
+    devKey = key;
+    var sel = $("obs-dev"), cur = sel.value;
+    var all = el("option", "", "all devices");
+    all.value = "";
+    var opts = [all];
+    list.forEach(function (d) {
+      var o = el("option", "", d.label);
+      o.value = d.value;
+      opts.push(o);
+    });
+    if (cur && !seen[cur]) { // the chosen device has no answers left: keep it chosen
+      var keep = el("option", "", cur);
+      keep.value = cur;
+      opts.push(keep);
+    }
+    sel.replaceChildren.apply(sel, opts);
+    sel.value = cur;
+  }
+
+  /* ---- The "add a rule" window ---- */
+  function openAdd(name) {
+    $("add-name").value = name;
+    var p = $("add-parents");
+    p.replaceChildren();
+    TrassaLogic.parents(name).forEach(function (n) {
+      var b = el("button", "chipbtn", n);
+      b.type = "button";
+      b.addEventListener("click", function () { $("add-name").value = n; updateAdd(); });
+      p.appendChild(b);
+    });
+    var ex = $("add-exits");
+    ex.replaceChildren();
+    choices.exits.concat(["direct", "none"]).forEach(function (x, i) {
+      var l = el("label", "radio");
+      var r = el("input");
+      r.type = "radio";
+      r.name = "add-exit";
+      r.value = x;
+      r.checked = i === 0;
+      r.addEventListener("change", updateAdd);
+      l.appendChild(r);
+      l.appendChild(document.createTextNode(x));
+      ex.appendChild(l);
+    });
+    var f = $("add-for");
+    var opts = [["all", "all devices"]];
+    choices.lists.forEach(function (l) {
+      opts.push(["only:" + l, "only " + l], ["except:" + l, "all except " + l]);
+    });
+    f.replaceChildren.apply(f, opts.map(function (o) {
+      var e = el("option", "", o[1]);
+      e.value = o[0];
+      return e;
+    }));
+    $("add-strict").checked = false;
+    $("add").hidden = false;
+    $("add-name").focus();
+    updateAdd();
+  }
+
+  function closeAdd() { $("add").hidden = true; }
+
+  // addRule reads the window: the rule the person is putting together.
+  function addRule() {
+    var exit = document.querySelector('input[name="add-exit"]:checked');
+    var scope = $("add-for").value.split(":");
+    return {
+      name: $("add-name").value.trim(),
+      exit: exit ? exit.value : "direct",
+      strict: $("add-strict").checked,
+      scope: scope[0],
+      list: scope[1] || ""
+    };
+  }
+
+  var nowTimer = null;
+  function updateAdd() {
+    var r = addRule();
+    var tunnel = r.exit !== "direct" && r.exit !== "none";
+    $("add-strict").disabled = !tunnel;
+    $("add-line").textContent = r.name ? TrassaLogic.ruleLine(r) : "";
+    $("add-ok").disabled = !r.name;
+    // How the name goes now, asked a moment after the typing stops.
+    clearTimeout(nowTimer);
+    $("add-now").textContent = "";
+    if (!r.name) return;
+    nowTimer = setTimeout(async function () {
+      try {
+        var w = await api("POST", "/api/why", { subject: r.name });
+        if ($("add-name").value.trim() === r.name) $("add-now").textContent = "Now: " + w.text.split("\n")[0];
+      } catch (e) { /* the line is a hint only */ }
+    }, 300);
+  }
+
+  async function submitAdd(ev) {
+    ev.preventDefault();
+    var r = addRule();
+    if (!r.name) return;
+    rulesEl.value = TrassaLogic.appendRule(rulesEl.value, TrassaLogic.ruleLine(r));
+    closeAdd();
+    drawGutter();
+    rulesEl.scrollTop = rulesEl.scrollHeight;
+    $("gutter").scrollTop = rulesEl.scrollTop;
+    await check("Rule added at the end, not saved yet. ");
+  }
+
 
   // fitRows lets box show at most n rows and scroll the rest. Row heights differ and change with
   // the screen width, so the height is taken from the n-th row itself. It is measured twice: the
@@ -466,6 +611,7 @@
   function showLogin() {
     signedIn = false;
     clearInterval(pollTimer);
+    clearInterval(answersTimer);
     $("login").hidden = false;
     $("login-pass").focus();
   }
@@ -514,10 +660,13 @@
     signedIn = true;
     // The page appears once, with everything in place: parts filling in one by one make it jump.
     // A slow router holds it back for three seconds at most.
-    await Promise.race([Promise.all([loadHistory(), loadState()]), wait(3000)]);
+    await Promise.race([Promise.all([loadHistory(), loadState(), loadAnswers()]), wait(3000)]);
     reveal();
     clearInterval(pollTimer);
     pollTimer = setInterval(function () { if (!document.hidden && signedIn) loadState(); }, 5000);
+    // DNS answers come more often: the request is small and asks only for what is new.
+    clearInterval(answersTimer);
+    answersTimer = setInterval(function () { if (!document.hidden && signedIn) loadAnswers(); }, 2000);
   }
 
   rulesEl.addEventListener("input", function () {
@@ -525,7 +674,16 @@
     setStatus(dirty() ? "Unsaved changes" : "", "");
   });
   rulesEl.addEventListener("scroll", function () { $("gutter").scrollTop = rulesEl.scrollTop; });
-  $("check").addEventListener("click", check);
+  $("check").addEventListener("click", function () { check(); });
+  $("obs-q").addEventListener("input", renderObs);
+  $("obs-dev").addEventListener("change", renderObs);
+  $("add-name").addEventListener("input", updateAdd);
+  $("add-for").addEventListener("change", updateAdd);
+  $("add-strict").addEventListener("change", updateAdd);
+  $("add-form").addEventListener("submit", submitAdd);
+  $("add-cancel").addEventListener("click", closeAdd);
+  $("add").addEventListener("click", function (ev) { if (ev.target === $("add")) closeAdd(); });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && !$("add").hidden) closeAdd(); });
   $("save").addEventListener("click", function () { save(false); });
   $("power").addEventListener("click", power);
   $("revert").addEventListener("click", function () {

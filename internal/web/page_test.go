@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,5 +132,64 @@ process.stdout.write(JSON.stringify(cases.map(c => TrassaLogic.adopt(c.Editor, c
 		if g.Editor != c.WantEditor || g.Saved != c.WantSaved || (c.Note == "") != (g.Note == "") || !strings.Contains(g.Note, c.Note) {
 			t.Errorf("%+v: got %+v", c, g)
 		}
+	}
+}
+
+// The page's "add a rule" window and its filter: the parts that need no page.
+func TestLogicRulesAndFilter(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/logic.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(src) + `
+const L = TrassaLogic, out = {};
+out.parents = [
+  L.parents("rr3---sn-4g5e.googlevideo.com"), L.parents("www.youtube.com"), L.parents("youtube.com"),
+  L.parents("news.bbc.co.uk"), L.parents("a.b.example.com.tr"), L.parents("сайт.рф"),
+];
+out.lines = [
+  L.ruleLine({name: "googlevideo.com", exit: "vpn"}),
+  L.ruleLine({name: "t.me", exit: "vpn", strict: true, scope: "only", list: "tv"}),
+  L.ruleLine({name: "x.example", exit: "direct", strict: true, scope: "except", list: "office"}),
+  L.ruleLine({name: "ads.example", exit: "none", strict: true}),
+];
+out.appended = [L.appendRule("", "a -> vpn"), L.appendRule("x\n", "a -> vpn"), L.appendRule("x", "a -> vpn"), L.appendRule("x\n\n\n", "a -> vpn")];
+const rows = [
+  {name: "www.youtube.com", client: "192.168.1.94", device: "Desktop"},
+  {name: "t.me", client: "192.168.1.61", device: "Pixel"},
+  {name: "i.ytimg.com", client: "192.168.1.94"},
+];
+out.filtered = [
+  L.filter(rows, "", "").length, L.filter(rows, "YouTube", "").length, L.filter(rows, "y", "192.168.1.94").length,
+  L.filter(rows, "", "192.168.1.61").length, L.filter(rows, "t.me", "192.168.1.94").length,
+];
+process.stdout.write(JSON.stringify(out));`
+	b, err := exec.Command(node(t), "-e", script).Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		Parents  [][]string
+		Lines    []string
+		Appended []string
+		Filtered []int
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("%s: %v", b, err)
+	}
+	wantParents := `[[googlevideo.com] [youtube.com] [] [bbc.co.uk] [b.example.com.tr example.com.tr] []]`
+	if fmt.Sprint(got.Parents) != wantParents {
+		t.Errorf("parents %v\nwant    %s", got.Parents, wantParents)
+	}
+	wantLines := []string{"googlevideo.com -> vpn", "t.me -> vpn strict for tv", "x.example -> direct for !office", "ads.example -> none"}
+	if fmt.Sprint(got.Lines) != fmt.Sprint(wantLines) {
+		t.Errorf("lines %q, want %q", got.Lines, wantLines)
+	}
+	wantAppended := []string{"a -> vpn\n", "x\na -> vpn\n", "x\na -> vpn\n", "x\na -> vpn\n"}
+	if fmt.Sprint(got.Appended) != fmt.Sprint(wantAppended) {
+		t.Errorf("appended %q, want %q", got.Appended, wantAppended)
+	}
+	if fmt.Sprint(got.Filtered) != "[3 1 2 1 0]" {
+		t.Errorf("filtered %v", got.Filtered)
 	}
 }
