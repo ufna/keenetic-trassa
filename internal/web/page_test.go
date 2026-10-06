@@ -238,6 +238,25 @@ process.stdout.write(JSON.stringify(out));`
 	}
 }
 
+// The device filter names a device by its name, else by its address; two devices of one name
+// get their addresses too, so they can be told apart.
+func TestLogicDeviceOptions(t *testing.T) {
+	src, err := staticFiles.ReadFile("static/logic.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(src) + `
+var a = [{device: "iPhone", client: "192.168.1.61"}, {client: "192.168.1.70"}, {device: "Desktop", client: "192.168.1.94"},
+  {device: "iPhone", client: "192.168.1.62"}, {device: "Desktop", client: "192.168.1.94"}];
+process.stdout.write(JSON.stringify(TrassaLogic.deviceOptions(a)));`
+	b, err := exec.Command(node(t), "-e", script).Output()
+	want := `[{"value":"192.168.1.70","label":"192.168.1.70"},{"value":"192.168.1.94","label":"Desktop"},` +
+		`{"value":"192.168.1.61","label":"iPhone · 192.168.1.61"},{"value":"192.168.1.62","label":"iPhone · 192.168.1.62"}]`
+	if err != nil || string(b) != want {
+		t.Errorf("%s, %v", b, err)
+	}
+}
+
 // The device filter names a device by its name, else by its address.
 func TestLogicDeviceLabel(t *testing.T) {
 	src, err := staticFiles.ReadFile("static/logic.js")

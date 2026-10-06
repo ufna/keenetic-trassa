@@ -68,6 +68,21 @@ var TrassaLogic = {
   // deviceLabel names a device in the filter: by its name, else by its address.
   deviceLabel: function (o) { return o.device || o.client; },
 
+  // deviceOptions lists the devices among the answers for the filter, once each, sorted by label.
+  // Devices that share a name are told apart by their addresses.
+  deviceOptions: function (answers) {
+    var seen = {}, list = [], count = {};
+    answers.forEach(function (o) {
+      if (seen[o.client]) return;
+      seen[o.client] = true;
+      var label = TrassaLogic.deviceLabel(o);
+      count[label] = (count[label] || 0) + 1;
+      list.push({ value: o.client, label: label });
+    });
+    list.forEach(function (d) { if (count[d.label] > 1) d.label += " · " + d.value; });
+    return list.sort(function (a, b) { return a.label.localeCompare(b.label); });
+  },
+
   // filter keeps the DNS answers whose name contains q (any case) and that went to client
   // ("" means any).
   filter: function (rows, q, client) {

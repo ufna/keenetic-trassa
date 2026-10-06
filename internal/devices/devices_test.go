@@ -282,3 +282,28 @@ func TestIPv6AddressesOfDevices(t *testing.T) {
 		t.Errorf("ip6 from the firmware: %+v, %v", hs, err)
 	}
 }
+
+// Review of the IPv6 mapping: an "ip6" field of another shape must not break the device list;
+// zones are dropped; an address shared by two devices goes to the one on the network.
+func TestIPv6Robustness(t *testing.T) {
+	for _, body := range []string{
+		`{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","name":"TV","active":true,"ip6":[{"addr":"fd00::1"}]}]}`,
+		`{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","name":"TV","active":true,"ip6":"fd00::1"}]}`,
+	} {
+		if hs, err := serve(t, 200, body).Hosts(context.Background()); err != nil || len(hs) != 1 || hs[0].Name != "TV" {
+			t.Errorf("%s: %+v, %v", body, hs, err)
+		}
+	}
+	ip := netip.MustParseAddr
+	hs, _ := serve(t, 200, `{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","active":true,"ip6":["fe80::1%br0"]}]}`).Hosts(context.Background())
+	if m := Resolve(config(t, "default direct\n"), hs); m.Device(ip("fe80::1")).String() != "192.168.1.40" {
+		t.Errorf("an address with a zone: %v", hs[0].IP6)
+	}
+	hosts := []Host{
+		{MAC: "aa:bb:cc:00:00:01", IP: ip("192.168.1.5"), Name: "Current", Online: true, IP6: []netip.Addr{ip("fd00::5")}},
+		{MAC: "aa:bb:cc:00:00:02", IP: ip("192.168.1.9"), Name: "Gone", IP6: []netip.Addr{ip("fd00::5")}},
+	}
+	if m := Resolve(config(t, "default direct\n"), hosts); m.Device(ip("fd00::5")).String() != "192.168.1.5" {
+		t.Errorf("an address of two devices: %s", m.Device(ip("fd00::5")))
+	}
+}

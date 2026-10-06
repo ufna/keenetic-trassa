@@ -52,7 +52,8 @@ type observation struct {
 	seq    uint64 // arrival number, from 1
 	at     time.Time
 	client netip.Addr
-	device string // the device's name from the firmware, if known
+	device string     // the device's name from the firmware, if known
+	via    netip.Addr // the IPv6 address the answer went to, if it went over IPv6 to a known device
 	name   string
 	line   int // 0 means the default applied
 	action rules.Action
@@ -145,6 +146,9 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	client := e.devs.Device(u.Dst)
 	d := e.cfg.MatchChainFor(e.devs.Views[client], names)
 	o := observation{at: now, client: client, device: e.devs.Labels[client], name: names[0], action: d.Action}
+	if client != u.Dst {
+		o.via = u.Dst
+	}
 	if d.Rule != nil {
 		o.line = d.Rule.Line
 		if !d.Rule.All { // "*" is what everything else gets, not a match
@@ -160,7 +164,7 @@ func (e *Engine) HandlePacket(now time.Time, raw []byte) {
 	if (d.Rule == nil || d.Rule.All) && len(e.cfg.Devices) == 0 {
 		return
 	}
-	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", who(client, o.device), names[0]))
+	e.apply(e.store.Observe(now, names, addrs, life), fmt.Sprintf("%s asked for %s", o.who(), names[0]))
 }
 
 // Tick drops claims that have expired.
@@ -486,7 +490,7 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 	b.WriteString("\n")
 	for i := len(kept) - 1; i >= 0; i-- {
 		if o := kept[i]; o.name == subj {
-			fmt.Fprintf(&b, "last DNS answer: %s ago, device %s\n", ago(now.Sub(o.at)), o.client)
+			fmt.Fprintf(&b, "last DNS answer: %s ago, device %s\n", ago(now.Sub(o.at)), o.who())
 			return b.String(), nil
 		}
 	}
@@ -593,8 +597,20 @@ func uptime(d time.Duration) string {
 }
 
 func (o observation) json() ctl.Observation {
-	return ctl.Observation{At: o.at, Client: o.client.String(), Device: o.device, Name: o.name,
+	j := ctl.Observation{At: o.at, Client: o.client.String(), Device: o.device, Name: o.name,
 		Action: o.action.String(), Line: o.line}
+	if o.via.IsValid() {
+		j.Via = o.via.String()
+	}
+	return j
+}
+
+// who names the asking device for the log and "why", and says if the answer went over IPv6.
+func (o observation) who() string {
+	if o.via.IsValid() {
+		return who(o.client, o.device) + " over IPv6 " + o.via.String()
+	}
+	return who(o.client, o.device)
 }
 
 // Answers returns the DNS answers newer than after, newest first. If the list cannot be continued

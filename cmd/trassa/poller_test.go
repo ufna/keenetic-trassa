@@ -68,3 +68,18 @@ func TestDevicePollerAddsNeighbors(t *testing.T) {
 		t.Errorf("fe80::1 is the device at %s", got)
 	}
 }
+
+// A failing neighbour table is written to the log once per series of failures.
+func TestDevicePollerLogsNeighborFailures(t *testing.T) {
+	path := write(t, map[string]string{"rules.conf": live})
+	cfg, _, _ := load(path, os.Stderr)
+	eng := engine.New(cfg, nil, func(string, ...any) {}, time.Now())
+	var log []string
+	p := &devicePoller{src: &flakySource{}, eng: eng, logf: func(f string, a ...any) { log = append(log, f) },
+		neigh: func(context.Context) (string, error) { return "", errors.New("ip: not found") }}
+	p.poll()
+	p.poll()
+	if got := strings.Join(log, "\n"); strings.Count(got, "IPv6 neighbour table") != 1 {
+		t.Errorf("log:\n%s", got)
+	}
+}

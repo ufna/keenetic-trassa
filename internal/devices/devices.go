@@ -51,13 +51,15 @@ type RCI struct {
 }
 
 type hostJSON struct {
-	MAC      string   `json:"mac"`
-	IP       string   `json:"ip"`
-	Name     string   `json:"name"`
-	Hostname string   `json:"hostname"`
-	Active   bool     `json:"active"`
-	IP6      []string `json:"ip6"`
-	DHCP     struct {
+	MAC      string `json:"mac"`
+	IP       string `json:"ip"`
+	Name     string `json:"name"`
+	Hostname string `json:"hostname"`
+	Active   bool   `json:"active"`
+	// IP6 is read as it comes: its shape has been seen only as a list of strings, and a field of
+	// another shape must not cost the whole device list.
+	IP6  json.RawMessage `json:"ip6"`
+	DHCP struct {
 		Expires int64 `json:"expires"`
 	} `json:"dhcp"`
 }
@@ -106,9 +108,12 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 		if a, err := netip.ParseAddr(h.IP); err == nil && a.Is4() && !a.IsUnspecified() {
 			host.IP = a
 		}
-		for _, s := range h.IP6 {
+		var ip6 []string
+		_ = json.Unmarshal(h.IP6, &ip6) // another shape: no IPv6 addresses from the firmware
+		for _, s := range ip6 {
+			// A zone ("%br0") is dropped: packets carry the address without it.
 			if a, err := netip.ParseAddr(s); err == nil && a.Is6() && !a.Is4In6() {
-				host.IP6 = append(host.IP6, a)
+				host.IP6 = append(host.IP6, a.WithZone(""))
 			}
 		}
 		hosts = append(hosts, host)
@@ -282,9 +287,10 @@ func ParseNeighbors(out string) []Neighbor {
 			continue
 		}
 		a, err := netip.ParseAddr(f[0])
-		if err != nil || !a.Is6() {
+		if err != nil || !a.Is6() || a.Is4In6() {
 			continue
 		}
+		a = a.WithZone("")
 		for i := 1; i+1 < len(f); i++ {
 			if f[i] == "lladdr" {
 				if mac, err := net.ParseMAC(f[i+1]); err == nil {
@@ -322,9 +328,13 @@ func Resolve(cfg *rules.Config, hosts []Host) Map {
 			m.Labels[h.IP] = h.Label()
 		}
 		if h.IP.IsValid() {
-			m.macIP4[h.MAC] = h.IP
+			if _, have := m.macIP4[h.MAC]; !have || h.Online {
+				m.macIP4[h.MAC] = h.IP
+			}
 			for _, a := range h.IP6 {
-				m.ipv4[a] = h.IP
+				if _, have := m.ipv4[a]; !have || h.Online {
+					m.ipv4[a] = h.IP
+				}
 			}
 		}
 	}

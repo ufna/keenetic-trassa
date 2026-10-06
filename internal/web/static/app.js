@@ -459,7 +459,10 @@
       link.title = "Add a rule for " + o.name;
       link.addEventListener("click", function () { openAdd(o.name); });
       name.appendChild(link);
-      name.appendChild(el("span", "dev", o.device ? o.device + " · " + o.client : o.client));
+      // An answer over IPv6 says so: the device's IPv6 traffic is not routed and may bypass the tunnel.
+      var dev = el("span", "dev", (o.device ? o.device + " · " + o.client : o.client) + (o.via ? " · over IPv6" : ""));
+      if (o.via) dev.title = "The answer went to " + o.via + ": IPv6 traffic is not routed by trassa.";
+      name.appendChild(dev);
       tr.appendChild(name);
       var td = el("td", "path");
       td.appendChild(el("span", "badge " + badgeKind(o.action), o.action));
@@ -476,14 +479,9 @@
   // renderDevices fills the device filter with the devices among the answers. It is rebuilt only
   // when they change: rebuilding it under an open list would close the list.
   function renderDevices() {
-    var seen = {}, list = [];
-    answers.forEach(function (o) {
-      if (seen[o.client]) return;
-      seen[o.client] = true;
-      list.push({ value: o.client, label: TrassaLogic.deviceLabel(o) });
-    });
-    list.sort(function (a, b) { return a.label.localeCompare(b.label); });
-    var key = list.map(function (d) { return d.label; }).join("\n");
+    var list = TrassaLogic.deviceOptions(answers), seen = {};
+    list.forEach(function (d) { seen[d.value] = true; });
+    var key = list.map(function (d) { return d.value + " " + d.label; }).join("\n");
     if (key === devKey) return;
     devKey = key;
     var sel = $("obs-dev"), cur = sel.value;

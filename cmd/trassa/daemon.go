@@ -616,6 +616,7 @@ type devicePoller struct {
 	logf   func(format string, args ...any)
 	failed bool // the last poll failed
 	known  bool // a list has arrived at least once
+	nfail  bool // the last read of the neighbour table failed
 	// neigh reads the router's IPv6 neighbour table ("ip -6 neigh show"): it ties the IPv6
 	// addresses devices ask DNS from to their MACs. nil or a failure leaves them out.
 	neigh func(ctx context.Context) (string, error)
@@ -638,9 +639,14 @@ func (p *devicePoller) poll() {
 	}
 	p.failed, p.known = false, true
 	if p.neigh != nil {
-		if out, err := p.neigh(ctx); err == nil {
+		out, err := p.neigh(ctx)
+		switch {
+		case err == nil:
 			hosts = devices.WithNeighbors(hosts, devices.ParseNeighbors(out))
+		case !p.nfail:
+			p.logf("IPv6 neighbour table unknown, answers over IPv6 may show without a device name: %v", err)
 		}
+		p.nfail = err != nil
 	}
 	p.eng.SetDevices(hosts) // the engine logs its own failures
 }

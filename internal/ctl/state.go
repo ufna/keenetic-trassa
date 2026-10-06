@@ -28,9 +28,12 @@ type Observation struct {
 	At     time.Time `json:"at"`
 	Client string    `json:"client"`
 	Device string    `json:"device,omitempty"` // the device's name from the firmware, if known
-	Name   string    `json:"name"`
-	Action string    `json:"action"`
-	Line   int       `json:"line"` // 0 means default matched
+	// Via is the IPv6 address the answer went to, when the device asked over IPv6: its IPv6
+	// traffic is not routed, so it may go around the tunnel.
+	Via    string `json:"via,omitempty"`
+	Name   string `json:"name"`
+	Action string `json:"action"`
+	Line   int    `json:"line"` // 0 means default matched
 }
 
 // Answer is a DNS answer and the decision made on it, numbered in arrival order.

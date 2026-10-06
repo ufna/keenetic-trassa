@@ -926,3 +926,23 @@ func TestAnswersOverIPv6NameTheDevice(t *testing.T) {
 		t.Errorf("observation %+v", o)
 	}
 }
+
+// An answer that went over IPv6 says so: IPv6 traffic is not routed, so it may bypass the tunnel.
+func TestAnswersOverIPv6SaySo(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, devSrc), &fakeSink{}, l.printf, t0)
+	e.Resync()
+	hosts := devHosts()
+	hosts[1].IP6 = []netip.Addr{netip.MustParseAddr("::94")}
+	e.SetDevices(hosts)
+	e.HandlePacket(t0, ipv6(53, dns("video.example", 0x8180, a("video.example", 300, "1.1.1.1"))))
+	if o := e.State().Recent[0]; o.Via != "::94" {
+		t.Errorf("observation %+v", o)
+	}
+	if text, _ := e.Why("video.example", t0); !strings.Contains(text, "device 192.168.1.94 (Desktop) over IPv6 ::94") {
+		t.Errorf("why:\n%s", text)
+	}
+	if !strings.Contains(strings.Join(l.lines, "\n"), "192.168.1.94 (Desktop) over IPv6 ::94 asked for video.example") {
+		t.Errorf("log:\n%s", strings.Join(l.lines, "\n"))
+	}
+}
