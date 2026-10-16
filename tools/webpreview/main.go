@@ -2,6 +2,7 @@
 // It is not part of the trassa binary.
 //
 //	go run ./tools/webpreview                                  — demo: rules from rules/rules.conf
+//	go run ./tools/webpreview -rules tools/webpreview/demo.conf — demo with the README's sample rules
 //	go run ./tools/webpreview -router http://192.168.1.1:8090  — the real router page
 //
 // The page opens already signed in: http://127.0.0.1:8091/
@@ -102,6 +103,8 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 	for i := 1; i <= 8; i++ {
 		st.Save(string(text)+fmt.Sprintf("# example edit %d from the page\n", i), true)
 	}
+	// The rules in effect are the file as it is.
+	st.Save(string(text), true)
 	if off {
 		st.Disable()
 	}
@@ -172,6 +175,9 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 				b, _ := json.Marshal(state)
 				return string(b), nil
 			}
+			if cmd == "why" && !st.Disabled() {
+				return demoWhy(st, state.Recent, arg)
+			}
 			return "", fmt.Errorf("%w (demo)", ctl.ErrNoDaemon)
 		},
 		Tunnels: func(ctx context.Context, cfg *rules.Config) []exits.Tunnel {
@@ -185,6 +191,31 @@ func demo(rulesPath string, off bool, delay time.Duration) (http.Handler, error)
 		},
 	}
 	return srv.Handler(), nil
+}
+
+// demoWhy answers "why" as the daemon does: the decision by the rules in effect, then what the DNS
+// answers told about the name. The addresses are made up.
+func demoWhy(st *store.Store, recent []ctl.Observation, subject string) (string, error) {
+	cur, err := st.Current()
+	if err != nil {
+		return "", err
+	}
+	cfg, _ := store.Load(st.Dir, cur)
+	text, err := cfg.Explain(subject)
+	if err != nil {
+		return "", err
+	}
+	for _, o := range recent {
+		if o.Name == strings.ToLower(subject) {
+			who := o.Client
+			if o.Device != "" {
+				who += " (" + o.Device + ")"
+			}
+			return text + "addresses for this name in memory: 2: 142.251.150.4, 142.251.151.4\n" +
+				fmt.Sprintf("last DNS answer: %ds ago, device %s\n", int(time.Since(o.At).Seconds()), who), nil
+		}
+	}
+	return text + "no DNS answers for this name yet\n", nil
 }
 
 // withCookie adds the session cookie to every request.

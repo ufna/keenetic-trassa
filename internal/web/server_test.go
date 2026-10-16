@@ -235,7 +235,7 @@ func TestPageIsServed(t *testing.T) {
 	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
 		t.Errorf("CSP: %q", csp)
 	}
-	for _, f := range []string{"/app.js", "/hash.js", "/style.css"} {
+	for _, f := range []string{"/app.js", "/hash.js", "/style.css", "/icon.svg"} {
 		if code, _, _ := e.do("GET", f, nil); code != 200 {
 			t.Errorf("%s: %d", f, code)
 		}

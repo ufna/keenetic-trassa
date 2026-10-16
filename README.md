@@ -1,8 +1,31 @@
-# trassa
+<h1 align="center">
+  <img src="docs/assets/trassa.svg" alt="" width="64" valign="middle" /> trassa
+</h1>
 
-Flexible routing for Keenetic routers: send traffic to a VPN tunnel or straight to the ISP by
-domain name, mask, negation and address, edit the rules on a web page served by the router
-itself.
+<p align="center">
+  <strong>Route by name, not by address.</strong><br />
+  Split routing for Keenetic routers: the sites you choose go through a WireGuard tunnel,<br />
+  everything else goes straight to your ISP, as it did before.
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> &nbsp; | &nbsp;
+  <a href="#rules">Rules</a> &nbsp; | &nbsp;
+  <a href="#web-page">Web page</a> &nbsp; | &nbsp;
+  <a href="#commands">Commands</a><br />
+  <sub>Keenetic and Netcraze &nbsp; | &nbsp; KeeneticOS 5 &nbsp; | &nbsp; ARM64 and MIPS &nbsp; | &nbsp; One static binary &nbsp; | &nbsp; MIT</sub>
+</p>
+
+<p align="center">
+  <kbd><img src="https://www.google.com/s2/favicons?domain=keenetic.com&amp;sz=64" alt="" width="16" valign="middle" /> Keenetic</kbd> &nbsp;
+  <kbd><img src="https://www.google.com/s2/favicons?domain=entware.net&amp;sz=64" alt="" width="16" valign="middle" /> Entware</kbd> &nbsp;
+  <kbd><img src="https://www.google.com/s2/favicons?domain=wireguard.com&amp;sz=64" alt="" width="16" valign="middle" /> WireGuard</kbd>
+</p>
+
+trassa sends traffic to a VPN tunnel or straight to the ISP by domain name, mask, negation and
+address. It reads the DNS answers your router already gives its clients, so a rule for
+`youtube.com` follows YouTube wherever its addresses move. The rules are a short text file,
+edited on a web page that the router serves itself.
 
 ```
 youtube.com googlevideo.com -> vpn        # these domains and their subdomains through the tunnel
@@ -14,26 +37,45 @@ default direct                            # everything else as before
 trassa is a single static Go binary (standard library only, no third-party code) that runs on
 the router under Entware.
 
-## Tested on
+<p align="center">
+  <img src="docs/assets/readme/page.webp" alt="The trassa page: the rules editor, the answer to why www.youtube.com goes through the tunnel, the tunnels of the vpn exit and the last DNS answers of the home network with the devices that asked" width="1100" />
+</p>
 
-trassa has been tested **only** on this router:
+## Features
 
-| | |
-|---|---|
-| Router | Netcraze Giga (NC-1012), hardware 1210C000, ARM64 (`aarch64`) |
-| Firmware | KeeneticOS 5.2 Beta 0 (`5.02.B.0.0-0`), kernel 4.9-ndm-5 |
-| Entware | `aarch64-3.10`: iptables 1.4.21, ipset 7.24, dropbear 2025.89 |
+<table>
+  <tr>
+    <td width="42%" valign="middle">
+      <h3>Rules you can read</h3>
+      <p>Domains with their subdomains, masks, regular expressions, subnets, lists in files. A rule can apply to some devices only, by their names in the router's device list. <b>none</b> blocks a site, <b>strict</b> blocks it while the tunnel is down instead of letting it leak.</p>
+      <p>The page checks the rules before saving them, with errors and warnings by line; a file with errors is never applied. The last 20 versions are kept, and any of them is one click away.</p>
+    </td>
+    <td width="58%">
+      <a href="docs/assets/readme/editor.webp"><img src="docs/assets/readme/editor.webp" alt="The rules editor with line 10 marked: exit proxy is not declared, these rules cannot be applied" width="640" /></a>
+    </td>
+  </tr>
+  <tr>
+    <td valign="middle">
+      <h3>Ask why</h3>
+      <p>Type a name, an address or a link: trassa answers which rule matched, which exit and tunnels the traffic takes, what each device list gets, and which addresses the DNS answers gave for it.</p>
+    </td>
+    <td>
+      <a href="docs/assets/readme/why.webp"><img src="docs/assets/readme/why.webp" alt="Why www.youtube.com: rule on line 8, exit vpn through Wireguard2, two addresses in memory, the last DNS answer to the desktop" width="640" /></a>
+    </td>
+  </tr>
+  <tr>
+    <td valign="middle">
+      <h3>A rule from what your devices ask</h3>
+      <p>The last 500 DNS answers of the home network, with the device that asked. Click a name to put together a rule for it or for one of its parent domains: the exit, all devices or only some, strict or not.</p>
+    </td>
+    <td>
+      <a href="docs/assets/readme/add.webp"><img src="docs/assets/readme/add.webp" alt="The Add a rule window for connectivitycheck.gstatic.com, offering gstatic.com, the exits vpn, direct and none, the devices and strict" width="640" /></a>
+    </td>
+  </tr>
+</table>
 
-Netcraze is the Keenetic line under another brand: the same KeeneticOS, the same web and RCI
-interfaces. trassa relies only on what the firmware has in common (RCI on `127.0.0.1:79`, the
-Entware hooks in `/opt/etc/ndm/`, `WireguardN` interfaces, the `br0` home network), so a
-Keenetic router with KeeneticOS 5.x should behave the same, but none has been tried. Older
-firmware (4.x) has not been tried either.
-
-Many Keenetic models run on MIPS (MediaTek MT7621, MT7628) rather than ARM64. `tools/deploy.sh`
-builds trassa for the router's processor (ARM64, MIPS little- or big-endian) and checks that the
-build runs there before it replaces anything; the MIPS builds compile but have never run on a
-real router. A MIPS router also has less memory and a slower processor than the tested one.
+It stays out of the way: traffic that matches no rule gets no mark at all, the switch in the
+page's header turns trassa off, and if the daemon stops, the router routes as it did without it.
 
 ## How it works
 
@@ -55,37 +97,82 @@ packet from a client ──► mark by address set ──► routing table of th
 - Traffic that matches no rule (with `default direct`) gets no mark at all: the router routes
   it exactly as without trassa.
 
-## Requirements
+## Routers
+
+trassa has been tested on this router:
+
+| | |
+|---|---|
+| Router | Netcraze Giga (NC-1012), hardware 1210C000, ARM64 (`aarch64`) |
+| Firmware | KeeneticOS 5.2 Beta 0 (`5.02.B.0.0-0`), kernel 4.9-ndm-5 |
+| Entware | `aarch64-3.10`: iptables 1.4.21, ipset 7.24, dropbear 2025.89 |
+
+Netcraze is the Keenetic line under another brand: the same KeeneticOS, the same web and RCI
+interfaces. trassa relies only on what the firmware has in common (RCI on `127.0.0.1:79`, the
+Entware hooks in `/opt/etc/ndm/`, `WireguardN` interfaces, the `br0` home network), so a
+Keenetic router with KeeneticOS 5.x should behave the same, but none has been tried. Older
+firmware (4.x) has not been tried either.
+
+Many Keenetic models run on MIPS (MediaTek MT7621, MT7628) rather than ARM64. trassa is built
+for both: ARM64, and MIPS little- and big-endian. The MIPS builds have not run on a real router
+yet. A MIPS router also has less memory and a slower processor than the tested one.
+
+## Install
+
+### What the router needs
 
 - A Keenetic (or Netcraze) router with the firmware components **OPKG package manager**
   (`opkg`), **Netfilter kernel modules** (`opkg-kmod-netfilter`) and their **add-ons**
   (`opkg-kmod-netfilter-addons`). Installing components reboots the router.
-- **Entware** installed on the router's internal storage or a USB drive, with the packages
-  `iptables` and `ipset` (`opkg install iptables ipset`), and SSH access as `root` (Entware's
-  `dropbear`; key login recommended). With the firmware's own SSH server enabled, Entware's
-  usually listens on port 222: set `TRASSA_SSH_PORT=222` for the tools.
+- **Entware** installed on the router's internal storage or a USB drive, and SSH access as
+  `root` (Entware's `dropbear`; key login recommended). With the firmware's own SSH server
+  enabled, Entware's usually listens on port 222.
 - At least one **WireGuard** connection set up in the firmware (only WireGuard interfaces can be
   exits).
 - Clients use the router as their DNS server (the default). A device with its own encrypted DNS
   (DoH/DoT) is only covered by the address rules.
-- To build: **Go 1.22** or newer on your computer; `node` is optional (it runs the web page
-  tests).
 
-## Build
+### From a release
+
+On the router, as `root`:
+
+```sh
+opkg update && opkg install curl
+curl -fsSL https://github.com/ufna/keenetic-trassa/releases/latest/download/install.sh | sh
+```
+
+The installer takes the package for the router's processor (ARM64, MIPS little- or big-endian)
+from the [latest release](https://github.com/ufna/keenetic-trassa/releases/latest), checks its
+checksum and installs it with `opkg`, together with `iptables` and `ipset`. trassa starts right
+away in observe mode (below). The web page is at `http://192.168.1.1:8090`, or whatever the
+router's address on the home network is: the installer prints it.
+
+- **Upgrade:** run the `curl … | sh` line again. The rules, their history and the settings in
+  `/opt/etc/trassa` stay as they are.
+- **Remove:** `opkg remove trassa` stops trassa and removes everything it built in the kernel.
+  The rules stay in `/opt/etc/trassa`; remove that folder too to forget them.
+- The packages are also on the releases page, one per processor: `opkg install
+  ./trassa_<version>_aarch64-3.10.ipk` installs a downloaded one.
+
+On the first install trassa gets the default rules (`rules/rules.conf` in this repository); they
+change nothing until you add rules. trassa starts at boot (Entware runs
+`/opt/etc/init.d/S99trassa`). A supervisor restarts the daemon if it exits and a watchdog
+restarts it if it stops answering.
+
+### From source
+
+You need **Go 1.22** or newer on your computer (`node` is optional: it runs the web page tests).
 
 ```sh
 make test     # vet, tests, and builds for ARM64 and MIPS
 make build    # build/trassa (this computer) and build/trassa-arm64
 ```
 
-`tools/deploy.sh` builds for the router itself, choosing the processor by Entware's
-architecture (`opkg print-architecture`): `aarch64` → ARM64, `mipsel` → MIPS little-endian,
-`mips` → MIPS big-endian (both with software floating point).
-
-## Install
-
-`tools/deploy.sh` builds trassa for the router's processor, checks that the build runs on the
-router, then replaces the program and installs the init script and the firmware hooks:
+`tools/deploy.sh` builds trassa for the router's processor, chosen by Entware's architecture
+(`opkg print-architecture`: `aarch64` → ARM64, `mipsel` → MIPS little-endian, `mips` → MIPS
+big-endian, both with software floating point), checks that the build runs on the router, then
+replaces the program and installs the init script and the firmware hooks. It needs `iptables`
+and `ipset` on the router (`opkg install iptables ipset`):
 
 ```sh
 TRASSA_ROUTER=192.168.1.1 TRASSA_SSH_KEY=~/.ssh/id_ed25519 tools/deploy.sh start
@@ -98,12 +185,9 @@ TRASSA_ROUTER=192.168.1.1 TRASSA_SSH_KEY=~/.ssh/id_ed25519 tools/deploy.sh start
 | `TRASSA_KNOWN_HOSTS` | `backup/ssh/known_hosts`, if present | known_hosts file for the router |
 | `TRASSA_SSH_PORT` | `22` | port of Entware's SSH server; often `222` when the firmware's own SSH server is on |
 
-On the first install the default rules from `rules/rules.conf` are copied to the router; they
-change nothing until you add rules. After that the rules on the router are the master copy:
-`deploy.sh` never overwrites them and saves a copy to `backup/rules/rules.conf` (not in git).
-
-trassa starts at boot (Entware runs `/opt/etc/init.d/S99trassa`). A supervisor restarts the
-daemon if it exits and a watchdog restarts it if it stops answering.
+The rules on the router are the master copy: `deploy.sh` never overwrites them and saves a copy
+to `backup/rules/rules.conf` (not in git). A release package installs over a copy from
+`deploy.sh`, and the other way round.
 
 ### Observe first, then route
 
@@ -225,6 +309,7 @@ trassa run [-rules file] [-only address]      run the daemon in observe mode
 trassa run -route [-source address]           run the daemon in routing mode
 trassa web [-listen address] [-dir directory] web page for editing the rules
 trassa cleanup                                remove the DNS tap and routing rules
+trassa version                                the version of this program
 ```
 
 ## Files on the router
@@ -238,6 +323,7 @@ trassa cleanup                                remove the DNS tap and routing rul
 | `/opt/etc/trassa/disabled` | present while trassa is turned off (the page's switch, `trassa disable`) |
 | `/opt/var/lib/trassa/state` | addresses learnt from DNS, kept across restarts (written every 30 minutes and on stop) |
 | `/opt/etc/init.d/S99trassa` | start at boot, supervision, stop |
+| `/opt/share/trassa/rules.conf` | the default rules for a first install (from a release package) |
 | `/opt/etc/ndm/netfilter.d/50-trassa.sh`, `/opt/etc/ndm/iflayerchanged.d/50-trassa.sh` | firmware hooks: rebuild after the firmware rewrites its tables, recheck tunnels when an interface changes |
 | `/tmp/trassa.log` | the log, in RAM, trimmed above 1 MB |
 
@@ -299,6 +385,14 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 ```sh
 make test
 go run ./tools/webpreview         # the web page with sample data at http://127.0.0.1:8091/
+make dist VERSION=0.1.0           # release files in dist/: the packages, install.sh, SHA256SUMS
 ```
 
-The code and comments are in English; the Go standard library is the only dependency.
+The code and comments are in English; the Go standard library is the only dependency. A release
+is the `v<version>` tag with the files from `make dist` attached; the packages are made by
+`tools/package.sh` in the layout of OpenWrt's `ipkg-build`, and the same commit gives the same
+files.
+
+## License
+
+[MIT](LICENSE)
