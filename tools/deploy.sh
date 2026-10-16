@@ -63,7 +63,9 @@ build/trassa check rules/rules.conf
 goarch=$(goenv)
 say "the router's processor: $goarch"
 # shellcheck disable=SC2086 # $goarch is a list of variable assignments
-env GOOS=linux $goarch CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/trassa-router ./cmd/trassa
+env GOOS=linux $goarch CGO_ENABLED=0 go build -trimpath \
+	-ldflags "-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null | sed 's/^v//')" \
+	-o build/trassa-router ./cmd/trassa
 
 say "delivering to the router"
 "${SSH[@]}" 'mkdir -p /opt/etc/trassa/lists /opt/etc/ndm/netfilter.d /opt/etc/ndm/iflayerchanged.d'

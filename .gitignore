@@ -1,6 +1,9 @@
 backup/
 build/
+dist/
 .superpowers/
-docs/
+# docs/ holds the owner's own notes; only the README's images are in git.
+docs/*
+!docs/assets/
 reports/
 research_notes/

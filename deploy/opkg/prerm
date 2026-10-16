@@ -1,0 +1,5 @@
+#!/bin/sh
+# opkg runs this on the router before removing trassa: stop it and take out everything it built.
+# The rules and their history in /opt/etc/trassa stay.
+[ -f /opt/etc/init.d/S99trassa ] && sh /opt/etc/init.d/S99trassa stop
+exit 0

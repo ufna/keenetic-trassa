@@ -1,0 +1,21 @@
+#!/bin/sh
+# opkg runs this on the router after installing or upgrading trassa.
+TRASSA_CONF=/opt/etc/trassa
+
+mkdir -p $TRASSA_CONF/lists
+# The rules on the router are the owner's own: the default goes in only on a first install.
+[ -f $TRASSA_CONF/rules.conf ] || cp /opt/share/trassa/rules.conf $TRASSA_CONF/rules.conf
+# The page listens on the home network, at the router's address there. Set once, then left alone.
+if [ ! -f $TRASSA_CONF/web.args ]; then
+	trassa_addr=$(ip -4 addr show br0 2>/dev/null | sed -n 's/.*inet \([0-9.]*\)\/.*/\1/p' | head -n 1)
+	echo "-listen ${trassa_addr:-192.168.1.1}:8090" >$TRASSA_CONF/web.args
+fi
+# A fresh start with the new program; on a first install the daemon starts in observe mode. Its
+# supervisors stay in the background, so they get a file for output instead of opkg's: whoever
+# reads opkg's output (ssh without a terminal) would otherwise wait for them forever.
+trassa_out=$(mktemp)
+sh /opt/etc/init.d/S99trassa restart >"$trassa_out" 2>&1 </dev/null
+cat "$trassa_out"
+rm -f "$trassa_out"
+echo "trassa web page: http://$(sed -n 's/^-listen \([^ ]*\).*/\1/p' $TRASSA_CONF/web.args)/"
+exit 0
