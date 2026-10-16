@@ -11,9 +11,9 @@ import (
 	"slices"
 	"time"
 
-	"trassa/internal/exits"
-	"trassa/internal/rules"
-	"trassa/internal/store"
+	"github.com/ufna/keenetic-trassa/internal/exits"
+	"github.com/ufna/keenetic-trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/store"
 )
 
 //go:embed static

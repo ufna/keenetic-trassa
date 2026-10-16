@@ -21,13 +21,13 @@ import (
 	"syscall"
 	"time"
 
-	"trassa/internal/ctl"
-	"trassa/internal/dataplane"
-	"trassa/internal/devices"
-	"trassa/internal/engine"
-	"trassa/internal/exits"
-	"trassa/internal/nfq"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/dataplane"
+	"github.com/ufna/keenetic-trassa/internal/devices"
+	"github.com/ufna/keenetic-trassa/internal/engine"
+	"github.com/ufna/keenetic-trassa/internal/exits"
+	"github.com/ufna/keenetic-trassa/internal/nfq"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // reloader returns a function that rereads the rules file. On errors the old rules stay.
@@ -493,7 +493,7 @@ func cmdRun(args []string, errw io.Writer) int {
 	if *pidPath != "" {
 		os.WriteFile(*pidPath, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 	}
-	logger.Printf("trassa started: %s, rules %d, queue %d", mode, len(cfg.Rules), tap.Queue)
+	logger.Printf("trassa %s started: %s, rules %d, queue %d", version, mode, len(cfg.Rules), tap.Queue)
 
 	// shutdown removes the rule, waits for the packet loop and closes the queue — in this order:
 	// packets must not wait for a verdict that will never come.

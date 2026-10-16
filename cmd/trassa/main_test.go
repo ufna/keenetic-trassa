@@ -128,8 +128,16 @@ func TestWhyBadInput(t *testing.T) {
 	}
 }
 
+func TestVersion(t *testing.T) {
+	defer func(v string) { version = v }(version)
+	version = "1.2.3"
+	if code, out, errOut := exec("version"); code != 0 || out != "trassa 1.2.3\n" || errOut != "" {
+		t.Errorf("code %d, stdout %q, stderr %q", code, out, errOut)
+	}
+}
+
 func TestUsage(t *testing.T) {
-	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"enable", "x"}, {"disable", "x"}, {"web", "x"}, {"web", "-nonsense"}, {"nonsense"}} {
+	for _, args := range [][]string{nil, {"check"}, {"why"}, {"why", "-f", "x"}, {"status", "x"}, {"reload", "x"}, {"cleanup", "x"}, {"rollback", "x"}, {"enable", "x"}, {"disable", "x"}, {"web", "x"}, {"web", "-nonsense"}, {"version", "x"}, {"nonsense"}} {
 		if code, _, errOut := exec(args...); code != 2 || !strings.Contains(errOut, "Usage") {
 			t.Errorf("%v: code %d, stderr %q", args, code, errOut)
 		}

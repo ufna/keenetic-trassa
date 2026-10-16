@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"trassa/internal/claims"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/claims"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 const (

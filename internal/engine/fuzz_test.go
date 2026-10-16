@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 func FuzzHandlePacket(f *testing.F) {

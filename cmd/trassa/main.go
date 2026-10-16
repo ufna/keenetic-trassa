@@ -7,9 +7,9 @@ import (
 	"os"
 	"time"
 
-	"trassa/internal/ctl"
-	"trassa/internal/rules"
-	"trassa/internal/store"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/store"
 )
 
 const usage = `trassa — flexible routing for the home router
@@ -27,7 +27,11 @@ Usage:
   trassa run -route [-source address]           run the daemon in routing mode
   trassa web [-listen address] [-dir directory] web page for editing the rules (192.168.1.1:8090)
   trassa cleanup                                remove the DNS tap and routing rules
+  trassa version                                the version of this program
 `
+
+// version is set by the release build: -ldflags "-X main.version=0.1.0".
+var version = "dev"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
@@ -65,6 +69,9 @@ func run(args []string, out, errw io.Writer) int {
 		return cmdLive(args[0], "", out, errw)
 	case len(args) == 1 && args[0] == "cleanup":
 		return cmdCleanup()
+	case len(args) == 1 && args[0] == "version":
+		fmt.Fprintf(out, "trassa %s\n", version)
+		return 0
 	}
 	fmt.Fprint(errw, usage)
 	return 2

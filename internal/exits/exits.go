@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"strings"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // Status is what the firmware reports about an interface.

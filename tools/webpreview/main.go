@@ -28,11 +28,11 @@ import (
 	"sync"
 	"time"
 
-	"trassa/internal/ctl"
-	"trassa/internal/exits"
-	"trassa/internal/rules"
-	"trassa/internal/store"
-	"trassa/internal/web"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/exits"
+	"github.com/ufna/keenetic-trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/store"
+	"github.com/ufna/keenetic-trassa/internal/web"
 )
 
 func answer(login, password, realm, nonce string) string {

@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"trassa/internal/claims"
-	"trassa/internal/ctl"
-	"trassa/internal/devices"
-	"trassa/internal/dnsmsg"
-	"trassa/internal/ippkt"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/claims"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/devices"
+	"github.com/ufna/keenetic-trassa/internal/dnsmsg"
+	"github.com/ufna/keenetic-trassa/internal/ippkt"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // Limits protect the router from a home-network device that floods it with "answers":

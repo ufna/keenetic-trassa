@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 const (

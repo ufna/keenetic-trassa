@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"trassa/internal/ctl"
-	"trassa/internal/devices"
-	"trassa/internal/exits"
-	"trassa/internal/rules"
-	"trassa/internal/store"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/devices"
+	"github.com/ufna/keenetic-trassa/internal/exits"
+	"github.com/ufna/keenetic-trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/store"
 )
 
 const (

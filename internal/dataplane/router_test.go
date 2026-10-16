@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"trassa/internal/claims"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/claims"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // scripted records commands along with their input and answers from a script.

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"trassa/internal/claims"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/claims"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // model runs a connection's first packet through the chains of an iptables-restore script, with

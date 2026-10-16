@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"trassa/internal/devices"
-	"trassa/internal/engine"
+	"github.com/ufna/keenetic-trassa/internal/devices"
+	"github.com/ufna/keenetic-trassa/internal/engine"
 )
 
 // flakySource answers with its hosts, or fails while fail is set.

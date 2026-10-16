@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"trassa/internal/store"
+	"github.com/ufna/keenetic-trassa/internal/store"
 )
 
 // fakeRCI answers a question about any interface as if it were a live WireGuard tunnel.

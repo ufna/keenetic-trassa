@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // Host is a device the firmware knows.

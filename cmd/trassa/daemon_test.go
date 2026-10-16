@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"trassa/internal/claims"
-	"trassa/internal/ctl"
-	"trassa/internal/engine"
-	"trassa/internal/exits"
-	"trassa/internal/nfq"
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/claims"
+	"github.com/ufna/keenetic-trassa/internal/ctl"
+	"github.com/ufna/keenetic-trassa/internal/engine"
+	"github.com/ufna/keenetic-trassa/internal/exits"
+	"github.com/ufna/keenetic-trassa/internal/nfq"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 func startDaemonStub(t *testing.T, rulesText string) (rulesPath string) {

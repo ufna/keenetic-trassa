@@ -11,7 +11,7 @@ import (
 	"sort"
 	"time"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 // Claim is a claim on an address, created from a DNS answer. The decision depends on the device:

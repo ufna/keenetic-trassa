@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"trassa/internal/rules"
+	"github.com/ufna/keenetic-trassa/internal/rules"
 )
 
 func FuzzLoad(f *testing.F) {
