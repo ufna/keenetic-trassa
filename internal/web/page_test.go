@@ -18,6 +18,10 @@ func node(t *testing.T) string {
 	t.Helper()
 	p, err := exec.LookPath("node")
 	if err != nil {
+		// CI must run them: there a skip would go unnoticed for good.
+		if os.Getenv("CI") != "" {
+			t.Fatal("no node in CI: the page script checks cannot run")
+		}
 		t.Skip("no node: page script checks skipped")
 	}
 	return p

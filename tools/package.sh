@@ -17,12 +17,16 @@ fi
 EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 umask 022
 
-# The router processors as Entware names them, and the Go build settings for each.
+# The router processors as Entware names them, and the Go build settings for each. TRASSA_TARGETS
+# replaces them, one per line, e.g. "x64-3.2 GOARCH=amd64" for tools/package-test.sh.
 TARGETS=(
 	"aarch64-3.10 GOARCH=arm64"
 	"mipsel-3.4 GOARCH=mipsle GOMIPS=softfloat"
 	"mips-3.4 GOARCH=mips GOMIPS=softfloat"
 )
+if [ -n "${TRASSA_TARGETS:-}" ]; then
+	mapfile -t TARGETS <<<"$TRASSA_TARGETS"
+fi
 
 # targz <directory> <file>: the directory's contents as ./..., owned by root, in name order.
 targz() {

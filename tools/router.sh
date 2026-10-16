@@ -197,7 +197,8 @@ cmd_check() {
 
 cmd_backup() {
   login
-  local dir=$ROOT/backup/$(date +%F)
+  local dir
+  dir=$ROOT/backup/$(date +%F)
   [ -e "$dir" ] && dir=$dir-$(date +%H%M%S)
   mkdir -p "$dir"; chmod 700 "$ROOT/backup" "$dir"
   rci_get show/version > "$dir/version.json"

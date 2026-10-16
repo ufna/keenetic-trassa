@@ -32,11 +32,13 @@ esac
 pkg=trassa_${TRASSA_VERSION}_$arch.ipk
 
 # fetch <url> <file>: GitHub serves HTTPS only, which Entware's curl can do (opkg install curl).
+# A transfer that stalls is given up: some ISPs freeze connections to some hosts after the first
+# few kilobytes, and neither curl nor wget would ever time out by themselves.
 fetch() {
 	if command -v curl >/dev/null; then
-		curl -fsSL -o "$2" "$1"
+		curl -fsSL --connect-timeout 20 --speed-limit 1024 --speed-time 60 -o "$2" "$1"
 	else
-		wget -q -O "$2" "$1"
+		wget -q -T 60 -O "$2" "$1"
 	fi
 }
 
@@ -54,6 +56,7 @@ fi
 
 # trassa needs iptables and ipset from Entware; opkg finds them in its package lists.
 if ! opkg status iptables | grep -q '^Status:.* installed' || ! opkg status ipset | grep -q '^Status:.* installed'; then
+	echo "trassa: updating Entware's package lists (if this hangs, the ISP is stalling bin.entware.net)"
 	opkg update
 fi
 # A copy installed from source by tools/deploy.sh is not a package yet, and opkg (all but recent
