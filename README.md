@@ -383,15 +383,18 @@ tables 541–599. Nothing else in the firmware's tables is changed.
 ## Development
 
 ```sh
-make test
+make test                         # vet, tests, builds for ARM64 and MIPS
+make shellcheck                   # the shell scripts; the router's own ones as POSIX sh
+make package-test                 # the release files: layout, Entware's opkg, install.sh (Docker)
 go run ./tools/webpreview         # the web page with sample data at http://127.0.0.1:8091/
-make dist VERSION=0.1.0           # release files in dist/: the packages, install.sh, SHA256SUMS
 ```
 
-The code and comments are in English; the Go standard library is the only dependency. A release
-is the `v<version>` tag with the files from `make dist` attached; the packages are made by
-`tools/package.sh` in the layout of OpenWrt's `ipkg-build`, and the same commit gives the same
-files.
+The code and comments are in English; the Go standard library is the only dependency. CI runs all
+of the above on every push and pull request, on Go 1.22 and the current Go. A release is an
+annotated tag `v<version>` on main: CI checks it, builds the files with `make dist` (the packages
+come from `tools/package.sh` in the layout of OpenWrt's `ipkg-build`, and the same commit gives the
+same files) and publishes them; the release notes are the tag's message after its first line,
+then the install instructions.
 
 ## License
 

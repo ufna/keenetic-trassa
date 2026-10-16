@@ -1,0 +1,71 @@
+name: Release
+
+# A v<major>.<minor>.<patch> tag on main: all the checks, then the release files from make dist and a
+# GitHub release with them. Its notes: the body of the annotated tag's message, then the install
+# instructions (tools/release-notes.sh). Run by hand, it only builds the files, as an artifact.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Release files
+    needs: checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write # the release and its files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # main, to check the tag is on it, and the annotated tag's message
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Version
+        id: version
+        run: |
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "version=0.0.0" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=${GITHUB_REF_NAME#v}
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::$GITHUB_REF_NAME: a release tag is v<major>.<minor>.<patch>"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main"
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+      - name: Release files
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          make dist VERSION="$VERSION"
+          cat dist/SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trassa-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+      - name: Publish
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tools/release-notes.sh "$VERSION" >notes.md
+          cat notes.md
+          gh release create "v$VERSION" --verify-tag --title "trassa $VERSION" --notes-file notes.md \
+            dist/trassa_"$VERSION"_*.ipk dist/install.sh dist/SHA256SUMS
