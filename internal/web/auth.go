@@ -28,13 +28,18 @@ type Challenge struct {
 	Realm string
 	Nonce string
 	Jar   http.CookieJar
+	base  string // the firmware web server that issued it: the response goes there too
 }
 
 // RouterAuth asks the firmware web server with the same /auth request its own page uses.
 // The password never reaches trassa: the browser sends sha256(challenge + md5(login:realm:password)).
 type RouterAuth struct {
-	Base    string        // e.g. http://127.0.0.1:79
-	Timeout time.Duration // 0 means 5 seconds
+	Base string // e.g. http://127.0.0.1:79
+	// Fallback is asked when Base refuses to issue a challenge (403 or 404): firmware 5.1 on a
+	// Netcraze Hopper 4G+ answers /auth on 127.0.0.1 with 403 and issues challenges only on its home
+	// network address, e.g. http://192.168.1.1.
+	Fallback string
+	Timeout  time.Duration // 0 means 5 seconds
 }
 
 func (a RouterAuth) client(jar http.CookieJar) *http.Client {
@@ -51,24 +56,41 @@ func drain(resp *http.Response) {
 }
 
 func (a RouterAuth) Challenge(ctx context.Context) (*Challenge, error) {
+	ch, code, err := a.challenge(ctx, a.Base)
+	if err != nil && a.Fallback != "" && (code == http.StatusForbidden || code == http.StatusNotFound) {
+		ch, _, err = a.challenge(ctx, a.Fallback)
+	}
+	return ch, err
+}
+
+// challenge asks one firmware web server for a challenge. The status code is 0 when it did not answer.
+func (a RouterAuth) challenge(ctx context.Context, base string) (*Challenge, int, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.Base+"/auth", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/auth", nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	resp, err := a.client(jar).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("firmware is not responding: %w", err)
+		return nil, 0, fmt.Errorf("firmware is not responding: %w", err)
 	}
 	drain(resp)
-	ch := &Challenge{Realm: resp.Header.Get("X-NDM-Realm"), Nonce: resp.Header.Get("X-NDM-Challenge"), Jar: jar}
+	ch := &Challenge{Realm: resp.Header.Get("X-NDM-Realm"), Nonce: resp.Header.Get("X-NDM-Challenge"), Jar: jar, base: base}
 	if resp.StatusCode != http.StatusUnauthorized || ch.Realm == "" || ch.Nonce == "" {
-		return nil, fmt.Errorf("firmware did not issue a login challenge (status %d)", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("firmware did not issue a login challenge (status %d)", resp.StatusCode)
 	}
-	return ch, nil
+	return ch, resp.StatusCode, nil
+}
+
+// base is the firmware web server of a challenge.
+func (a RouterAuth) base(ch *Challenge) string {
+	if ch.base != "" {
+		return ch.base
+	}
+	return a.Base
 }
 
 func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response string) (bool, error) {
@@ -76,7 +98,7 @@ func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response s
 	if err != nil {
 		return false, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.Base+"/auth", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.base(ch)+"/auth", bytes.NewReader(body))
 	if err != nil {
 		return false, err
 	}
@@ -98,7 +120,7 @@ func (a RouterAuth) Verify(ctx context.Context, ch *Challenge, login, response s
 }
 
 func (a RouterAuth) Release(ctx context.Context, ch *Challenge) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.Base+"/auth", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, a.base(ch)+"/auth", nil)
 	if err != nil {
 		return
 	}

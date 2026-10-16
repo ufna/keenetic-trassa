@@ -13,7 +13,8 @@ const (
 	maxSessions = 32
 	maxPending  = 16
 	// At most maxFailures failed sign-ins per failWindow. All page sign-ins reach the firmware from
-	// the same address 127.0.0.1, and the firmware has its own per-address lockout: ours is well below it.
+	// the router itself (127.0.0.1, or its home network address when the firmware refuses 127.0.0.1),
+	// and the firmware has its own per-address lockout: ours is well below it.
 	maxFailures = 4
 	failWindow  = 15 * time.Minute
 	// Each challenge opens a firmware session: at most challengeBurst in a row, then one

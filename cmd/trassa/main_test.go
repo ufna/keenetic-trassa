@@ -153,6 +153,21 @@ func TestLiveCommandsWithoutDaemon(t *testing.T) {
 	}
 }
 
+func TestAuthFallback(t *testing.T) {
+	for listen, want := range map[string]string{
+		"192.168.1.1:8090": "http://192.168.1.1",
+		"10.0.0.1:80":      "http://10.0.0.1",
+		"0.0.0.0:8090":     "",
+		":8090":            "",
+		"nonsense":         "",
+		"[fe80::1]:8090":   "",
+	} {
+		if got := authFallback(listen); got != want {
+			t.Errorf("%s: %q, want %q", listen, got, want)
+		}
+	}
+}
+
 func TestWebFailsOnBusyAddress(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

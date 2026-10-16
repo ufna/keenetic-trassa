@@ -67,6 +67,52 @@ func (f *fakeRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Firmware 5.1 (Netcraze Hopper 4G+) refuses /auth on 127.0.0.1 with 403 and issues challenges only on
+// its home network address: the challenge comes from the fallback, and the sign-in goes there too.
+func TestRouterAuthFallback(t *testing.T) {
+	var refused int
+	var mu sync.Mutex
+	loopback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		refused++
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer loopback.Close()
+	fr := &fakeRouter{nonces: map[string]string{}, authed: map[string]bool{}}
+	lan := httptest.NewServer(fr)
+	defer lan.Close()
+	a := RouterAuth{Base: loopback.URL, Fallback: lan.URL}
+	ctx := context.Background()
+
+	ch, err := a.Challenge(ctx)
+	if err != nil || ch.Realm != "Netcraze Giga" {
+		t.Fatalf("challenge: %+v, %v", ch, err)
+	}
+	if ok, err := a.Verify(ctx, ch, "admin", answer("admin", "secret", ch.Realm, ch.Nonce)); !ok || err != nil {
+		t.Fatalf("correct password: %v, %v", ok, err)
+	}
+	fr.mu.Lock()
+	if fr.logouts != 1 || len(fr.nonces) != 0 {
+		t.Errorf("the fallback's session not closed: logouts %d, open sessions %d", fr.logouts, len(fr.nonces))
+	}
+	fr.mu.Unlock()
+	mu.Lock()
+	if refused != 1 {
+		t.Errorf("requests to the refusing address: %d, want only the first challenge", refused)
+	}
+	mu.Unlock()
+
+	// A firmware error is not a refusal: no fallback.
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer broken.Close()
+	if _, err := (RouterAuth{Base: broken.URL, Fallback: lan.URL}).Challenge(ctx); err == nil {
+		t.Error("a firmware error must not fall back to the other address")
+	}
+}
+
 func TestRouterAuth(t *testing.T) {
 	fr := &fakeRouter{nonces: map[string]string{}, authed: map[string]bool{}}
 	srv := httptest.NewServer(fr)

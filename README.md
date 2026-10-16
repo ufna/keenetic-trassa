@@ -99,13 +99,12 @@ packet from a client ──► mark by address set ──► routing table of th
 
 ## Routers
 
-trassa has been tested on this router:
+trassa has been tested on these routers, both ARM64 (`aarch64`):
 
-| | |
-|---|---|
-| Router | Netcraze Giga (NC-1012), hardware 1210C000, ARM64 (`aarch64`) |
-| Firmware | KeeneticOS 5.2 Beta 0 (`5.02.B.0.0-0`), kernel 4.9-ndm-5 |
-| Entware | `aarch64-3.10`: iptables 1.4.21, ipset 7.24, dropbear 2025.89 |
+| Router | Firmware | Entware | What was tried |
+|---|---|---|---|
+| Netcraze Giga (NC-1012), hardware 1210C000 | KeeneticOS 5.2 Beta 0 (`5.02.B.0.0-0`) | `aarch64-3.10`: iptables 1.4.21, ipset 7.24, dropbear 2025.89 | the development router |
+| Netcraze Hopper 4G+ (NC-2312), hardware 1223C000 | KeeneticOS 5.1.8 (`5.01.C.8.0-2`) | `aarch64-3.10` on the internal storage | install from a release, observe mode, the page |
 
 Netcraze is the Keenetic line under another brand: the same KeeneticOS, the same web and RCI
 interfaces. trassa relies only on what the firmware has in common (RCI on `127.0.0.1:79`, the
@@ -126,7 +125,8 @@ yet. A MIPS router also has less memory and a slower processor than the tested o
   (`opkg-kmod-netfilter-addons`). Installing components reboots the router.
 - **Entware** installed on the router's internal storage or a USB drive, and SSH access as
   `root` (Entware's `dropbear`; key login recommended). With the firmware's own SSH server
-  enabled, Entware's usually listens on port 222.
+  enabled, Entware's usually listens on port 222. Some ISPs slow `bin.entware.net` down to a
+  halt: if `opkg update` hangs, the router cannot get Entware's packages from that network.
 - At least one **WireGuard** connection set up in the firmware (only WireGuard interfaces can be
   exits).
 - Clients use the router as their DNS server (the default). A device with its own encrypted DNS

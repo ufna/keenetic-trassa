@@ -35,7 +35,7 @@ func cmdWeb(args []string, errw io.Writer) int {
 	src := exits.RCI{Base: *rci, Client: &http.Client{Timeout: 3 * time.Second}}
 	srv := &web.Server{
 		Store: newStore(*dir, *rci),
-		Auth:  web.RouterAuth{Base: *rci},
+		Auth:  web.RouterAuth{Base: *rci, Fallback: authFallback(*listen)},
 		Daemon: func(cmd, arg string) (string, error) {
 			return ctl.Call(sockPath(), cmd, arg, 3*time.Second)
 		},
@@ -75,4 +75,14 @@ func cmdWeb(args []string, errw io.Writer) int {
 	<-stopped
 	logger.Print("web page stopped")
 	return 0
+}
+
+// authFallback is the firmware's own web page on the address the trassa page listens on: some
+// firmware issues sign-in challenges only there, not on 127.0.0.1.
+func authFallback(listen string) string {
+	host, _, err := net.SplitHostPort(listen)
+	if ip := net.ParseIP(host); err != nil || ip.To4() == nil || ip.IsUnspecified() {
+		return ""
+	}
+	return "http://" + host
 }
