@@ -117,6 +117,81 @@ func TestEarlierRuleWins(t *testing.T) {
 	}
 }
 
+// strictSrc has rules that may take traffic out through the ISP above a strict rule: direct, and a
+// tunnel without strict, which goes direct while its tunnels are down.
+const strictSrc = `exit vpn = W
+exit alt = W
+default direct
+ru -> direct
+cdn.example -> alt
+ads.example -> none
+5.5.0.0/16 -> alt
+chat.example -> vpn strict
+`
+
+// A strict rule promises its traffic never goes out through the ISP. When a site of an earlier
+// rule that may go there shares its address (a CDN), the strict rule wins anyway; blocking keeps
+// its place in the order.
+func TestStrictWinsOverEarlierRulesThatMayLeak(t *testing.T) {
+	for _, tc := range []struct {
+		other string
+		addr  string
+		want  string
+	}{
+		{"yandex.ru", "1.1.1.1", "vpn strict"},
+		{"www.cdn.example", "1.1.1.1", "vpn strict"},
+		{"ads.example", "1.1.1.1", "none"},
+		// A private address stays with the earlier rule: the home network is not the ISP.
+		{"nas.ru", "10.1.2.3", "direct"},
+		// A subnet written above the strict rule keeps the order: its static set serves the address.
+		{"yandex.ru", "5.5.1.1", "-"},
+	} {
+		for _, strictFirst := range []bool{false, true} {
+			s := New(config(t, strictSrc), hour)
+			a := netip.MustParseAddr(tc.addr)
+			names := [][]string{{tc.other}, {"chat.example"}}
+			if strictFirst {
+				names[0], names[1] = names[1], names[0]
+			}
+			for _, n := range names {
+				s.Observe(t0, n, []netip.Addr{a}, hour)
+			}
+			if got := show(s.Effective(a)); got != tc.want {
+				t.Errorf("%s and chat.example on %s (strict first: %v): %s, want %s", tc.other, tc.addr, strictFirst, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestStrictClaimExpiresBackToEarlierRule(t *testing.T) {
+	s := New(config(t, strictSrc), hour)
+	s.Observe(t0, []string{"yandex.ru"}, []netip.Addr{ip1}, 2*hour)
+	wantChanges(t, s.Observe(t0, []string{"chat.example"}, []netip.Addr{ip1}, hour), "1.1.1.1 direct => vpn strict")
+	wantChanges(t, s.Expire(t0.Add(61*time.Minute)), "1.1.1.1 vpn strict => direct")
+}
+
+// With a cap per address, claims of earlier rules that may leak must not push the strict claim out:
+// the address would go direct again.
+func TestEvictionKeepsStrictClaims(t *testing.T) {
+	s := New(config(t, strictSrc), hour)
+	s.SetLimits(0, 2)
+	for _, n := range []string{"chat.example", "a.ru", "b.ru"} {
+		s.Observe(t0, []string{n}, []netip.Addr{ip1}, hour)
+	}
+	if got := show(s.Effective(ip1)); got != "vpn strict" {
+		t.Errorf("strict claim first: %s, want vpn strict", got)
+	}
+
+	s = New(config(t, strictSrc), hour)
+	s.SetLimits(0, 2)
+	for _, n := range []string{"a.ru", "b.ru", "chat.example"} {
+		s.Observe(t0, []string{n}, []netip.Addr{ip1}, hour)
+	}
+	if got := show(s.Effective(ip1)); got != "vpn strict" {
+		t.Errorf("strict claim last, on a full address: %s, want vpn strict", got)
+	}
+}
+
 func TestExpireFallsBackToOtherClaim(t *testing.T) {
 	s := New(config(t, src), hour)
 	s.Observe(t0, []string{"video.example"}, []netip.Addr{ip1}, hour)

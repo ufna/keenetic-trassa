@@ -245,6 +245,12 @@ test yandex.ru = direct
 
 - `direct` is the ISP, i.e. the router's normal routing. It is always available.
 - Without `strict`, traffic of a rule whose tunnels are all down goes direct.
+- Routing works on addresses, and sites of different rules may share one (a CDN such as
+  Cloudflare). Such an address goes where the earlier of those rules sends it, with one exception:
+  a `strict` rule wins over the rules that may go through the ISP (`direct`, or a tunnel without
+  `strict`) wherever it stands, so a `.ru` site on the same address cannot take a strict site out
+  of the tunnel. While that lasts, the other sites on the address go through the strict rule's
+  exit too. A private address and a subnet written in the rules keep the order.
 - Internationalized names may be written as they are (`сайт.рф`); they are compared in punycode.
 - A rule with `for` applies only to the devices of those lists, or with `!` to every device
   except them; other devices skip it. `default` and `test` are about devices in no list.

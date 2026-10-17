@@ -22,9 +22,10 @@ type Claim struct {
 	Action  rules.Action // the decision for the view asked about
 	Expires time.Time
 
-	dec  []int32 // rule number per tracked view (Store.views); -1: no rule for that view
-	any  int32   // the rule the chain gets with "for" ignored (Config.MatchChainAny)
-	rank int32   // the earliest rule the claim gets for any view: eviction keeps claims of older rules
+	dec    []int32 // rule number per tracked view (Store.views); -1: no rule for that view
+	any    int32   // the rule the chain gets with "for" ignored (Config.MatchChainAny)
+	rank   int32   // the earliest rule the claim gets for any view: eviction keeps claims of older rules
+	strict bool    // some of the claim's rules are strict: eviction keeps such claims first
 }
 
 // Change is a change to the dynamic sets of one view. nil means "the address is in no set".
@@ -87,18 +88,33 @@ func (s *Store) decide(names []string) (c Claim, ok bool) {
 	for i, v := range s.views {
 		c.dec[i] = s.decideFor(v, names, c.any)
 	}
-	c.setRank()
+	c.setRank(s.cfg)
 	return c, true
 }
 
-// setRank takes the earliest rule among the claim's decisions and the rule found with "for" ignored.
-func (c *Claim) setRank() {
+// setRank takes the earliest rule among the claim's decisions and the rule found with "for"
+// ignored, and notes whether any of them is strict.
+func (c *Claim) setRank(cfg *rules.Config) {
 	c.rank = c.any
+	c.strict = cfg.Rules[c.any].Action.Strict
 	for _, d := range c.dec {
-		if d >= 0 && d < c.rank {
+		if d < 0 {
+			continue
+		}
+		if d < c.rank {
 			c.rank = d
 		}
+		c.strict = c.strict || cfg.Rules[d].Action.Strict
 	}
+}
+
+// worse reports whether c is evicted before o: a claim with a strict rule is kept over one
+// without, then the claim of the older rule.
+func (c *Claim) worse(o *Claim) bool {
+	if c.strict != o.strict {
+		return o.strict
+	}
+	return c.rank > o.rank
 }
 
 // decideFor decides a name chain for view v, given any, the rule it gets with "for" ignored: the
@@ -182,7 +198,7 @@ func (s *Store) EffectiveFor(v rules.View, addr netip.Addr) *rules.Action {
 func (s *Store) Effective(addr netip.Addr) *rules.Action { return s.EffectiveFor(0, addr) }
 
 func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
-	best := int32(-1)
+	best, strict := int32(-1), int32(-1)
 	private := PrivateAddr(addr)
 	for _, c := range s.byAddr[addr] {
 		d := c.dec[i]
@@ -193,9 +209,17 @@ func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
 		if best < 0 || d < best {
 			best = d
 		}
+		if s.cfg.Rules[d].Action.Strict && (strict < 0 || d < strict) {
+			strict = d
+		}
 	}
 	if best < 0 {
 		return nil
+	}
+	// A strict rule's traffic never goes out through the ISP: on a shared public address (a CDN) it
+	// wins over the earlier rules that may send it there, wherever it stands.
+	if strict >= 0 && !private && mayLeak(s.cfg.Rules[best].Action) {
+		best = strict
 	}
 	// A subnet of an earlier rule is older: its static set serves the address.
 	if st := s.cfg.MatchAddrFor(s.views[i], addr); st.Rule != nil && !st.Rule.All && st.Index < int(best) {
@@ -204,6 +228,10 @@ func (s *Store) effective(i int, addr netip.Addr) *rules.Action {
 	a := s.cfg.Rules[best].Action
 	return &a
 }
+
+// mayLeak reports whether traffic under the action may go out through the ISP: direct, or a tunnel
+// without strict, which goes direct while its tunnels are down.
+func mayLeak(a rules.Action) bool { return !a.Strict && a.Exit != rules.None }
 
 // effectiveAll returns the address's action for every tracked view.
 func (s *Store) effectiveAll(addr netip.Addr) []*rules.Action {
@@ -341,7 +369,7 @@ func (s *Store) SetViews(views []rules.View) []Change {
 				}
 			}
 			c.dec = dec
-			c.setRank()
+			c.setRank(s.cfg)
 		}
 	}
 	s.views = next
@@ -391,14 +419,14 @@ func (s *Store) add(a netip.Addr, c Claim) {
 		}
 	}
 	if s.perAddr > 0 && len(cs) >= s.perAddr {
-		// The address is full: a new claim evicts the worst one only if it is older than it.
+		// The address is full: a new claim evicts the worst one only if that one is worse than it.
 		worst := 0
 		for i := range cs {
-			if cs[i].rank > cs[worst].rank {
+			if cs[i].worse(&cs[worst]) {
 				worst = i
 			}
 		}
-		if cs[worst].rank <= c.rank {
+		if !cs[worst].worse(&c) {
 			s.dropped++
 			return
 		}

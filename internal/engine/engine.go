@@ -457,6 +457,9 @@ func (e *Engine) Why(subject string, now time.Time) (string, error) {
 		switch eff := e.store.Effective(addr); {
 		case eff != nil:
 			fmt.Fprintf(&b, "in the dynamic set: %s\n", *eff)
+			if first := slices.MinFunc(cs, func(x, y claims.Claim) int { return x.Index - y.Index }); eff.Strict && first.Action != *eff {
+				b.WriteString("a strict rule wins over earlier rules that may go through the ISP\n")
+			}
 		case len(cs) > 0 && claims.PrivateAddr(addr) && !slices.ContainsFunc(cs, func(c claims.Claim) bool { return c.Action.Exit != rules.None }):
 			b.WriteString("not in the dynamic set: a name does not block a private address\n")
 		case len(cs) > 0:

@@ -710,6 +710,25 @@ func TestNoneInWhy(t *testing.T) {
 	}
 }
 
+// A strict site shares a CDN address with a site of an earlier direct rule: the address is in the
+// strict set, and why says why the earlier claim lost.
+func TestStrictOverEarlierDirectInWhy(t *testing.T) {
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndefault direct\nru -> direct\nchat.example -> vpn strict\n"), &fakeSink{}, l.printf, t0)
+	e.HandlePacket(t0, answer("yandex.ru", "2.2.2.2"))
+	e.HandlePacket(t0, answer("chat.example", "2.2.2.2"))
+	text, _ := e.Why("2.2.2.2", t0)
+	for _, want := range []string{
+		"claim: yandex.ru → direct (line 3",
+		"in the dynamic set: vpn strict\n",
+		"a strict rule wins over earlier rules that may go through the ISP\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("why has no %q:\n%s", want, text)
+		}
+	}
+}
+
 // Review of task 6: at start the daemon learns the devices before the exits and the saved state.
 // Until the first build the kernel is not touched: the first Resync builds with the devices.
 func TestDevicesBeforeFirstBuild(t *testing.T) {
