@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/ufna/keenetic-trassa/internal/rules"
@@ -26,6 +27,43 @@ type Host struct {
 	// IP6 are its IPv6 addresses, from the firmware's list and the router's neighbour table: a
 	// device that asks DNS over IPv6 is still this device.
 	IP6 []netip.Addr
+	// Segment is the network segment the device is in; empty if the firmware does not say.
+	Segment Segment
+}
+
+// Segment is a network segment of the firmware, as its device list names it.
+type Segment struct {
+	ID          string // interface, e.g. Bridge1
+	Name        string // e.g. Guest
+	Description string // the name in the web interface, e.g. "Work network"
+}
+
+// Is reports whether the segment goes by this name: any of its names, regardless of case.
+func (s Segment) Is(name string) bool {
+	for _, n := range []string{s.ID, s.Name, s.Description} {
+		if n != "" && strings.EqualFold(n, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// String names the segment for a message: "Work network" (Guest, Bridge1).
+func (s Segment) String() string {
+	var names []string
+	for _, n := range []string{s.Description, s.Name, s.ID} {
+		if n != "" && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	out := strconv.Quote(names[0])
+	if len(names) > 1 {
+		out += " (" + strings.Join(names[1:], ", ") + ")"
+	}
+	return out
 }
 
 // Label is how the device is shown: its firmware name, else its own name.
@@ -62,6 +100,14 @@ type hostJSON struct {
 	DHCP struct {
 		Expires int64 `json:"expires"`
 	} `json:"dhcp"`
+	// Interface is the device's segment, read as it comes for the same reason as IP6.
+	Interface json.RawMessage `json:"interface"`
+}
+
+type segmentJSON struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
@@ -116,6 +162,10 @@ func (r RCI) Hosts(ctx context.Context) ([]Host, error) {
 				host.IP6 = append(host.IP6, a.WithZone(""))
 			}
 		}
+		var seg segmentJSON
+		if json.Unmarshal(h.Interface, &seg) == nil { // another shape: no segment from the firmware
+			host.Segment = Segment(seg)
+		}
 		hosts = append(hosts, host)
 	}
 	return hosts, nil
@@ -139,6 +189,33 @@ func byHostname(hosts []Host, name string) *Host {
 		}
 	}
 	return nil
+}
+
+// bySegment finds the devices of a segment.
+func bySegment(hosts []Host, name string) []Host {
+	var out []Host
+	for _, h := range hosts {
+		if h.Segment.Is(name) {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// segments names the segments the devices are in, once each, in the order of their interfaces.
+func segments(hosts []Host) []string {
+	var segs []Segment
+	for _, h := range hosts {
+		if h.Segment != (Segment{}) && !slices.Contains(segs, h.Segment) {
+			segs = append(segs, h.Segment)
+		}
+	}
+	slices.SortFunc(segs, func(a, b Segment) int { return strings.Compare(a.ID, b.ID) })
+	out := make([]string, len(segs))
+	for i, s := range segs {
+		out[i] = s.String()
+	}
+	return out
 }
 
 func byMAC(hosts []Host, mac string) *Host {
@@ -179,6 +256,14 @@ func Validate(cfg *rules.Config, hosts []Host) []rules.Problem {
 				if byMAC(hosts, m.MAC) == nil {
 					add(d.Line, rules.Warning, "device %s has never been seen by the router: check the MAC", m.MAC)
 				}
+			case m.Segment != "":
+				if len(bySegment(hosts, m.Segment)) == 0 {
+					msg := fmt.Sprintf("segment %q has no devices in the router's device list: check its name", m.Segment)
+					if known := segments(hosts); len(known) > 0 {
+						msg += "; the router's segments: " + strings.Join(known, ", ")
+					}
+					add(d.Line, rules.Warning, "%s", msg)
+				}
 			}
 		}
 	}
@@ -188,15 +273,16 @@ func Validate(cfg *rules.Config, hosts []Host) []rules.Problem {
 // Check asks the firmware for its devices and validates the device lists. Without device lists
 // it does not ask.
 func Check(ctx context.Context, cfg *rules.Config, src Source) []rules.Problem {
-	names, macs := false, false
+	names, others := false, false
 	for _, d := range cfg.Devices {
 		for _, m := range d.Members {
 			names = names || m.Name != ""
-			macs = macs || m.MAC != ""
+			others = others || m.MAC != "" || m.Segment != ""
 		}
 	}
-	// Addresses need no firmware; MACs only ever give warnings, so an unreachable firmware does too.
-	if !names && !macs {
+	// Addresses need no firmware; MACs and segments only ever give warnings, so an unreachable
+	// firmware does too.
+	if !names && !others {
 		return nil
 	}
 	hosts, err := src.Hosts(ctx)
@@ -223,6 +309,9 @@ const (
 	stateOff     = "not on the network"
 	stateUnknown = "not in the router's device list"
 	stateUnread  = "device list not read yet"
+
+	stateSegmentOff = "no devices of this segment on the network"
+	stateNoSegment  = "no devices of this segment in the router's device list"
 )
 
 // List is a device list and its devices.
@@ -344,6 +433,16 @@ func Resolve(cfg *rules.Config, hosts []Host) Map {
 		}
 		l := List{Name: d.Name}
 		for _, ref := range d.Members {
+			if ref.Segment != "" {
+				mems := segmentMembers(ref, hosts)
+				for _, mem := range mems {
+					if mem.IP.IsValid() {
+						m.Views[mem.IP] |= 1 << i
+					}
+				}
+				l.Members = append(l.Members, mems...)
+				continue
+			}
 			mem := Member{Ref: ref, State: stateUnknown}
 			if hosts == nil {
 				mem.State = stateUnread // the firmware has not answered yet
@@ -379,6 +478,29 @@ func Resolve(cfg *rules.Config, hosts []Host) Map {
 	return m
 }
 
+// segmentMembers returns a member for each device of the segment that is on the network, or one
+// member without an address that says why there are none.
+func segmentMembers(ref rules.DeviceRef, hosts []Host) []Member {
+	var out []Member
+	in := bySegment(hosts, ref.Segment)
+	for _, h := range in {
+		if h.Online && h.IP.IsValid() && !slices.ContainsFunc(out, func(m Member) bool { return m.IP == h.IP }) {
+			out = append(out, Member{Ref: ref, Label: h.Label(), IP: h.IP, State: stateOn})
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	none := Member{Ref: ref, State: stateNoSegment}
+	switch {
+	case hosts == nil:
+		none.State = stateUnread
+	case len(in) > 0:
+		none.State = stateSegmentOff
+	}
+	return []Member{none}
+}
+
 // ViewList returns the distinct views of the listed devices, ascending, without 0.
 func (m Map) ViewList() []rules.View {
 	var out []rules.View
@@ -403,4 +525,16 @@ func (m Map) Sources() map[rules.View][]netip.Addr {
 		slices.SortFunc(addrs, func(a, b netip.Addr) int { return a.Compare(b) })
 	}
 	return out
+}
+
+// Who names the member for the log: a device of a segment by its own name and its segment.
+func (m Member) Who() string {
+	if m.Ref.Segment == "" || !m.IP.IsValid() {
+		return m.Ref.String()
+	}
+	name := m.Label
+	if name == "" {
+		name = m.IP.String()
+	}
+	return strconv.Quote(name) + " in " + m.Ref.String()
 }

@@ -248,3 +248,49 @@ func TestDeviceMalformedAddresses(t *testing.T) {
 		t.Errorf("a quoted name: %v", ps)
 	}
 }
+
+func TestDeviceSegments(t *testing.T) {
+	c := devConfig(t, "exit vpn = W\ndefault direct\n"+
+		`device work = segment "Рабочая сеть", "Pixel"`+"\n"+
+		"device guests = segment Guest, segment Bridge2\n"+
+		`device named = "segment"`+"\n"+
+		"x.example -> vpn for work\n")
+	want := [][]string{
+		{`segment "Рабочая сеть"`, `"Pixel"`},
+		{`segment "Guest"`, `segment "Bridge2"`},
+		{`"segment"`},
+	}
+	for i, d := range c.Devices {
+		var got []string
+		for _, m := range d.Members {
+			got = append(got, m.String())
+		}
+		if fmt.Sprint(got) != fmt.Sprint(want[i]) {
+			t.Errorf("list %s: %q, want %q", d.Name, got, want[i])
+		}
+	}
+	if m := c.Devices[0].Members[0]; m.Segment != "Рабочая сеть" || m.Name != "" {
+		t.Errorf("segment member: %+v", m)
+	}
+	if m := c.Devices[2].Members[0]; m.Name != "segment" || m.Segment != "" {
+		t.Errorf("a quoted name is a device, not a segment: %+v", m)
+	}
+}
+
+func TestDeviceSegmentErrors(t *testing.T) {
+	const base = "exit vpn = W\ndefault direct\n"
+	cases := []struct{ lines, want string }{
+		{"device work = segment", "segment needs the name of a network segment"},
+		{"device work = segment , 1.2.3.4", "segment needs the name of a network segment"},
+		{`device work = segment ""`, "segment needs the name of a network segment"},
+		{"device work = segment Work network", "a segment name with spaces goes in double quotes"},
+		{`device work = segment "Work`, "no closing quote"},
+		{`device work = segment "Work", segment "work"`, `device segment "work" is listed twice`},
+	}
+	for _, k := range cases {
+		_, ps := Parse(base+k.lines+"\n", nil)
+		if !HasErrors(ps) || !strings.Contains(fmt.Sprint(ps), k.want) {
+			t.Errorf("%q: problems %v, want %q", k.lines, ps, k.want)
+		}
+	}
+}

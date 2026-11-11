@@ -47,7 +47,7 @@ the router under Entware.
   <tr>
     <td width="42%" valign="middle">
       <h3>Rules you can read</h3>
-      <p>Domains with their subdomains, masks, regular expressions, subnets, lists in files. A rule can apply to some devices only, by their names in the router's device list. <b>none</b> blocks a site, <b>strict</b> blocks it while the tunnel is down instead of letting it leak.</p>
+      <p>Domains with their subdomains, masks, regular expressions, subnets, lists in files. A rule can apply to some devices only, by their names in the router's device list or by network segment. <b>none</b> blocks a site, <b>strict</b> blocks it while the tunnel is down instead of letting it leak.</p>
       <p>The page checks the rules before saving them, with errors and warnings by line; a file with errors is never applied. The last 20 versions are kept, and any of them is one click away.</p>
     </td>
     <td width="58%">
@@ -108,7 +108,7 @@ trassa has been tested on these routers, both ARM64 (`aarch64`):
 
 Netcraze is the Keenetic line under another brand: the same KeeneticOS, the same web and RCI
 interfaces. trassa relies only on what the firmware has in common (RCI on `127.0.0.1:79`, the
-Entware hooks in `/opt/etc/ndm/`, `WireguardN` interfaces, the `br0` home network), so a
+Entware hooks in `/opt/etc/ndm/`, `WireguardN` interfaces, `brN` network segments), so a
 Keenetic router with KeeneticOS 5.x should behave the same, but none has been tried. Older
 firmware (4.x) has not been tried either.
 
@@ -204,6 +204,8 @@ sh /opt/etc/init.d/S99trassa restart
 ```
 
 `-route -source 192.168.1.50` routes only the traffic of one device, which is a good first step.
+trassa reads DNS and routes in every network segment of the router (`br0` the home one, `br1`
+the guest one and so on); `-lan br0` keeps it to the home segment.
 
 If the firmware's own domain routing is configured (DNS-based routes for a domain list), it
 marks packets before trassa does and wins. Disable those routes in the firmware for trassa to
@@ -223,6 +225,7 @@ exit work = office-tunnel             # a tunnel may be named by its description
 device tv     = "Living room TV"      # device lists for "for": a device is a name from the
 device phones = "Pixel", aa:bb:cc:dd:ee:ff
 device office = 192.168.1.50          # router's device list, a MAC or an IPv4 address
+device work   = segment "Work network"  # every device of a network segment
 
 default direct                        # where everything that matches no rule goes
 
@@ -257,7 +260,11 @@ test yandex.ru = direct
 - trassa looks devices up in the router's device list every 30 seconds and follows their
   addresses; give listed devices a permanent address in the router's DHCP settings. A device's
   rules use every DNS answer on the network, not only the device's own.
-- At most 16 device lists and 64 devices in all of them.
+- `segment "<name>"` in a device list stands for every device the router lists in that network
+  segment, by the segment's name in the web interface ("Work network"), its short name (`Guest`)
+  or its interface (`Bridge1`), regardless of case. A device joins the list within 30 seconds of
+  coming on the network.
+- At most 16 device lists and 64 devices in all of them (a segment counts as one).
 - `*` stands for all traffic: every name and every address. The rules above it still apply to
   the devices it is for; the rules below it do not, and the rest of their traffic goes to its
   exit, a default of their own at that place. `* -> direct for office` takes the office devices

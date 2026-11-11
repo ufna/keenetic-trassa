@@ -269,7 +269,9 @@ func cmdRun(args []string, errw io.Writer) int {
 	fs.SetOutput(io.Discard)
 	rulesPath := fs.String("rules", "/opt/etc/trassa/rules.conf", "")
 	pidPath := fs.String("pid", "", "")
-	lan := fs.String("lan", "br0", "")
+	// Every network segment of the firmware (br0 the home one, br1 the guest one and so on): an
+	// iptables interface pattern, br0 alone keeps trassa to the home segment.
+	lan := fs.String("lan", "br+", "")
 	queue := fs.Uint("queue", 5353, "")
 	only := fs.String("only", "", "")
 	route := fs.Bool("route", false, "")

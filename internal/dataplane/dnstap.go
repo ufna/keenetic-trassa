@@ -13,7 +13,7 @@ const maxJumps = 4
 
 // DNSTap is the rule that sends DNS answers on the home network to the trassa queue.
 type DNSTap struct {
-	LAN   string     // home network interface
+	LAN   string     // network segment interfaces, an iptables pattern: br+
 	Queue uint16     // queue number
 	Only  netip.Addr // if set, observe answers only to this IPv4 address
 }

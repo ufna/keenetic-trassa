@@ -307,3 +307,84 @@ func TestIPv6Robustness(t *testing.T) {
 		t.Errorf("an address of two devices: %s", m.Device(ip("fd00::5")))
 	}
 }
+
+const segmented = `{"host":[
+ {"mac":"aa:bb:cc:00:01:01","ip":"192.168.2.10","name":"Laptop","active":true,"interface":{"id":"Bridge1","name":"Guest","description":"Рабочая сеть"}},
+ {"mac":"aa:bb:cc:00:01:02","ip":"192.168.2.11","hostname":"printer","active":true,"interface":{"id":"Bridge1","name":"Guest","description":"Рабочая сеть"}},
+ {"mac":"aa:bb:cc:00:01:03","ip":"192.168.2.12","name":"Gone","active":false,"interface":{"id":"Bridge1","name":"Guest","description":"Рабочая сеть"}},
+ {"mac":"aa:bb:cc:00:01:04","ip":"192.168.1.20","name":"Phone","active":true,"interface":{"id":"Bridge0","name":"Home","description":"Главная сеть"}},
+ {"mac":"aa:bb:cc:00:01:05","ip":"192.168.3.5","name":"Camera","active":false,"dhcp":{"expires":0},"interface":{"id":"Bridge2","name":"Cams","description":"Камеры"}}
+]}`
+
+// A segment is every device the firmware lists in it, named as the router names the segment.
+func TestResolveSegments(t *testing.T) {
+	hs, err := serve(t, 200, segmented).Hosts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := hs[0].Segment; s != (Segment{ID: "Bridge1", Name: "Guest", Description: "Рабочая сеть"}) {
+		t.Errorf("segment of a host: %+v", s)
+	}
+	cfg := config(t, `default direct
+device work = segment "рабочая сеть"
+device home = segment Home, "Phone"
+device guests = segment Bridge1
+device cams = segment "Камеры"
+device none = segment "Nowhere"
+`)
+	m := Resolve(cfg, hs)
+	ip := netip.MustParseAddr
+	wantViews := map[netip.Addr]rules.View{ip("192.168.2.10"): 1 | 4, ip("192.168.2.11"): 1 | 4, ip("192.168.1.20"): 2}
+	if fmt.Sprint(m.Views) != fmt.Sprint(wantViews) {
+		t.Errorf("views %v, want %v", m.Views, wantViews)
+	}
+	var got []string
+	for _, l := range m.Lists {
+		for _, mem := range l.Members {
+			got = append(got, fmt.Sprintf("%s: %s=%s/%s %s", l.Name, mem.Ref, mem.Label, mem.IP, mem.State))
+		}
+	}
+	want := []string{
+		`work: segment "рабочая сеть"=Laptop/192.168.2.10 on the network`,
+		`work: segment "рабочая сеть"=printer/192.168.2.11 on the network`,
+		`home: segment "Home"=Phone/192.168.1.20 on the network`,
+		`home: "Phone"=Phone/192.168.1.20 on the network`,
+		`guests: segment "Bridge1"=Laptop/192.168.2.10 on the network`,
+		`guests: segment "Bridge1"=printer/192.168.2.11 on the network`,
+		`cams: segment "Камеры"=/invalid IP no devices of this segment on the network`,
+		`none: segment "Nowhere"=/invalid IP no devices of this segment in the router's device list`,
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("members:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if m := Resolve(cfg, nil); m.Lists[0].Members[0].State != "device list not read yet" {
+		t.Errorf("no firmware list: %+v", m.Lists[0].Members)
+	}
+}
+
+// A segment name that no device of the firmware's list has is only a warning: the segment may be
+// empty for now; the warning names the segments the router has devices in.
+func TestValidateSegments(t *testing.T) {
+	hs, _ := serve(t, 200, segmented).Hosts(context.Background())
+	got := fmt.Sprint(Validate(config(t, "default direct\ndevice work = segment \"Work\"\ndevice home = segment home\n"), hs))
+	want := `line 2: warning: segment "Work" has no devices in the router's device list: check its name; the router's segments: "Главная сеть" (Home, Bridge0), "Рабочая сеть" (Guest, Bridge1), "Камеры" (Cams, Bridge2)`
+	if got != "["+want+"]" {
+		t.Errorf("problems %s\nwant [%s]", got, want)
+	}
+	ps := Check(context.Background(), config(t, "default direct\ndevice work = segment \"Work\"\n"), RCI{Base: "http://127.0.0.1:1"})
+	if len(ps) != 1 || ps[0].Severity != rules.Warning {
+		t.Errorf("segments only: an unreachable firmware is a warning: %v", ps)
+	}
+}
+
+// An "interface" field of another shape must not break the device list.
+func TestSegmentRobustness(t *testing.T) {
+	for _, body := range []string{
+		`{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","name":"TV","active":true,"interface":"Bridge0"}]}`,
+		`{"host":[{"mac":"aa:bb:cc:00:00:01","ip":"192.168.1.40","name":"TV","active":true,"interface":{"id":7}}]}`,
+	} {
+		if hs, err := serve(t, 200, body).Hosts(context.Background()); err != nil || len(hs) != 1 || hs[0].Name != "TV" {
+			t.Errorf("%s: %+v, %v", body, hs, err)
+		}
+	}
+}

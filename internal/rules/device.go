@@ -30,7 +30,13 @@ type DeviceRef struct {
 	Addr netip.Addr // an IPv4 address, taken as is
 	MAC  string     // a MAC address, lowercase with colons; its address comes from the firmware
 	Name string     // a name from the firmware's device list; its address comes from the firmware
+	// Segment is a network segment of the firmware (its name, description or interface): every
+	// device the firmware lists in that segment.
+	Segment string
 }
+
+// segmentWord starts a segment in a device list: segment "Work network".
+const segmentWord = "segment"
 
 func (d DeviceRef) String() string {
 	switch {
@@ -38,6 +44,8 @@ func (d DeviceRef) String() string {
 		return d.Addr.String()
 	case d.MAC != "":
 		return d.MAC
+	case d.Segment != "":
+		return segmentWord + " " + strconv.Quote(d.Segment)
 	}
 	return strconv.Quote(d.Name)
 }
@@ -121,12 +129,13 @@ func (p *parser) device(n int, rest string) {
 }
 
 type deviceItem struct {
-	text   string
-	quoted bool
+	text    string
+	quoted  bool
+	segment bool // the item is a segment name: segment "Work network"
 }
 
 // splitDevices splits a comma-separated device list. A name in double quotes may contain spaces,
-// commas and #.
+// commas and #. The word segment before a name makes the item a network segment.
 func splitDevices(s string) ([]deviceItem, error) {
 	var out []deviceItem
 	i := 0
@@ -138,6 +147,14 @@ func splitDevices(s string) ([]deviceItem, error) {
 	for {
 		skip()
 		var it deviceItem
+		seg := isSegmentWord(s[i:])
+		if seg {
+			i += len(segmentWord)
+			skip()
+			if i == len(s) || s[i] == ',' || strings.HasPrefix(s[i:], `""`) {
+				return nil, errors.New(`segment needs the name of a network segment, as the router names it: segment "Work network"; a device called segment goes in double quotes`)
+			}
+		}
 		if i < len(s) && s[i] == '"' {
 			end := strings.IndexByte(s[i+1:], '"')
 			if end < 0 {
@@ -156,6 +173,7 @@ func splitDevices(s string) ([]deviceItem, error) {
 		if strings.TrimSpace(it.text) == "" {
 			return nil, errors.New("empty device in the list, or a missing comma")
 		}
+		it.segment = seg
 		out = append(out, it)
 		skip()
 		if i == len(s) {
@@ -168,8 +186,24 @@ func splitDevices(s string) ([]deviceItem, error) {
 	}
 }
 
-// parseDevice recognizes an IPv4 address, a MAC or a device name. A quoted item is always a name.
+// isSegmentWord reports whether s starts with the word segment followed by a space, a comma or nothing.
+func isSegmentWord(s string) bool {
+	rest, ok := strings.CutPrefix(s, segmentWord)
+	return ok && (rest == "" || strings.ContainsRune(" \t,", rune(rest[0])))
+}
+
+// parseDevice recognizes an IPv4 address, a MAC, a segment or a device name. A quoted item is
+// always a name.
 func parseDevice(it deviceItem) (DeviceRef, error) {
+	if it.segment {
+		if !it.quoted && strings.ContainsAny(it.text, " \t") {
+			return DeviceRef{}, fmt.Errorf("segment %q: a segment name with spaces goes in double quotes; or a comma is missing", it.text)
+		}
+		if utf8.RuneCountInString(it.text) > maxDeviceName || strings.ContainsFunc(it.text, unicode.IsControl) {
+			return DeviceRef{}, fmt.Errorf("segment name %q: at most %d characters, no control characters", it.text, maxDeviceName)
+		}
+		return DeviceRef{Segment: it.text}, nil
+	}
 	if !it.quoted {
 		if a, err := netip.ParseAddr(it.text); err == nil {
 			switch {

@@ -296,25 +296,33 @@ func (e *Engine) logDevices(old devices.Map, first bool) {
 		ip    netip.Addr
 		state string
 	}
+	// A segment has a member for each of its devices on the network: they differ by address.
+	key := func(list string, m devices.Member) string {
+		k := list + " " + m.Ref.String()
+		if m.Ref.Segment != "" && m.IP.IsValid() {
+			k += " " + m.IP.String()
+		}
+		return k
+	}
 	was := map[string]seen{}
 	for _, l := range old.Lists {
 		for _, m := range l.Members {
-			was[l.Name+" "+m.Ref.String()] = seen{m.IP, m.State}
+			was[key(l.Name, m)] = seen{m.IP, m.State}
 		}
 	}
 	for _, l := range e.devs.Lists {
 		for _, m := range l.Members {
-			prev, known := was[l.Name+" "+m.Ref.String()]
+			prev, known := was[key(l.Name, m)]
 			switch {
 			case (first || !known) && !m.IP.IsValid():
-				e.logf("device %s of list %s: %s", m.Ref, l.Name, m.State)
+				e.logf("device %s of list %s: %s", m.Who(), l.Name, m.State)
 			case known && prev.ip == m.IP && prev.state == m.State:
 			case m.IP.IsValid():
 				if !known || prev.ip != m.IP {
-					e.logf("device %s of list %s: now at %s", m.Ref, l.Name, m.IP)
+					e.logf("device %s of list %s: now at %s", m.Who(), l.Name, m.IP)
 				}
 			default:
-				e.logf("device %s of list %s: %s", m.Ref, l.Name, m.State)
+				e.logf("device %s of list %s: %s", m.Who(), l.Name, m.State)
 			}
 		}
 	}

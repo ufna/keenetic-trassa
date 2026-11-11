@@ -965,3 +965,42 @@ func TestAnswersOverIPv6SaySo(t *testing.T) {
 		t.Errorf("log:\n%s", strings.Join(l.lines, "\n"))
 	}
 }
+
+// A segment's devices join its list as they come on the network, each logged by its own name.
+func TestSegmentDevices(t *testing.T) {
+	sink := &fakeSink{}
+	l := &logs{}
+	e := New(config(t, "exit vpn = W\ndevice work = segment \"Work network\"\ndefault direct\n* -> vpn for work\n"), sink, l.printf, t0)
+	e.Resync()
+	work := devices.Segment{ID: "Bridge1", Name: "Guest", Description: "Work network"}
+	hosts := []devices.Host{
+		{MAC: "aa:bb:cc:00:01:01", IP: netip.MustParseAddr("192.168.2.10"), Name: "Laptop", Online: true, Segment: work},
+		{MAC: "aa:bb:cc:00:01:02", IP: netip.MustParseAddr("192.168.1.20"), Name: "Phone", Online: true,
+			Segment: devices.Segment{ID: "Bridge0", Name: "Home"}},
+	}
+	e.SetDevices(hosts)
+	wantSources(t, sink.sources, "map[1:[192.168.2.10]]")
+	hosts = append(hosts, devices.Host{MAC: "aa:bb:cc:00:01:03", IP: netip.MustParseAddr("192.168.2.11"), Hostname: "printer", Online: true, Segment: work})
+	e.SetDevices(hosts)
+	wantSources(t, sink.sources, "map[1:[192.168.2.10 192.168.2.11]]")
+	log := strings.Join(l.lines, "\n")
+	for _, want := range []string{
+		`device "Laptop" in segment "Work network" of list work: now at 192.168.2.10`,
+		`device "printer" in segment "Work network" of list work: now at 192.168.2.11`,
+	} {
+		if strings.Count(log, want) != 1 {
+			t.Errorf("want %q once in the log:\n%s", want, log)
+		}
+	}
+	if status := e.Status(t0); !strings.Contains(status, "devices work: Laptop (192.168.2.10), printer (192.168.2.11)") {
+		t.Errorf("status:\n%s", status)
+	}
+	for i := range hosts {
+		hosts[i].Online = false
+	}
+	e.SetDevices(hosts)
+	wantSources(t, sink.sources, "map[]")
+	if status := e.Status(t0); !strings.Contains(status, `devices work: segment "Work network" — no devices of this segment on the network`) {
+		t.Errorf("status with the segment empty:\n%s", status)
+	}
+}
