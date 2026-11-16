@@ -25,14 +25,17 @@ type Authenticator interface {
 
 // Challenge is a router login challenge. It is bound to a firmware session, and the session to a cookie in Jar.
 type Challenge struct {
-	Realm string
-	Nonce string
-	Jar   http.CookieJar
-	base  string // the firmware web server that issued it: the response goes there too
+	Realm              string
+	Nonce              string
+	Jar                http.CookieJar
+	ndw4               bool
+	step               int
+	login, serverNonce string
+	base               string // the firmware web server that issued it: the response goes there too
 }
 
 // RouterAuth asks the firmware web server with the same /auth request its own page uses.
-// The password never reaches trassa: the browser sends sha256(challenge + md5(login:realm:password)).
+// The password never reaches Trassa: the browser computes the NDW2 or NDW4 proofs.
 type RouterAuth struct {
 	Base string // e.g. http://127.0.0.1:79
 	// Fallback is asked when Base refuses to issue a challenge (403 or 404): firmware 5.1 on a
@@ -78,7 +81,7 @@ func (a RouterAuth) challenge(ctx context.Context, base string) (*Challenge, int
 		return nil, 0, fmt.Errorf("firmware is not responding: %w", err)
 	}
 	drain(resp)
-	ch := &Challenge{Realm: resp.Header.Get("X-NDM-Realm"), Nonce: resp.Header.Get("X-NDM-Challenge"), Jar: jar, base: base}
+	ch := &Challenge{ndw4: supportsNDW4(resp.Header), Realm: resp.Header.Get("X-NDM-Realm"), Nonce: resp.Header.Get("X-NDM-Challenge"), Jar: jar, base: base}
 	if resp.StatusCode != http.StatusUnauthorized || ch.Realm == "" || ch.Nonce == "" {
 		return nil, resp.StatusCode, fmt.Errorf("firmware did not issue a login challenge (status %d)", resp.StatusCode)
 	}

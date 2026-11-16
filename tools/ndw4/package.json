@@ -1,0 +1,11 @@
+{
+  "name": "trassa-ndw4-bundle",
+  "private": true,
+  "scripts": {
+    "build": "esbuild browser.js --bundle --minify --outfile=../../internal/web/static/ndw4.js"
+  },
+  "devDependencies": {
+    "@noble/hashes": "1.8.0",
+    "esbuild": "0.25.12"
+  }
+}
