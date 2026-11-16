@@ -175,7 +175,11 @@ func (s *Server) loginChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 	id, stale := s.gate.addPending(ch, now)
 	s.release(stale...)
-	writeJSON(w, http.StatusOK, map[string]string{"id": id, "realm": ch.Realm, "challenge": ch.Nonce})
+	out := map[string]string{"id": id, "realm": ch.Realm, "challenge": ch.Nonce}
+	if ch.ndw4 {
+		out["protocol"] = "ndw4"
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type loginRequest struct {
@@ -190,16 +194,21 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := s.now()
-	if wait, locked := s.gate.locked(now); locked {
-		writeError(w, http.StatusTooManyRequests, lockedMessage(wait))
-		return
-	}
 	ch, fresh := s.gate.takePending(in.ID, now)
 	if !fresh {
 		if ch != nil {
 			s.release(ch)
 		}
 		writeError(w, http.StatusBadRequest, "the login challenge has expired — try again")
+		return
+	}
+	if wait, locked := s.gate.locked(now); locked && !(ch.ndw4 && ch.step == 2) {
+		s.release(ch)
+		writeError(w, http.StatusTooManyRequests, lockedMessage(wait))
+		return
+	}
+	if ch.ndw4 {
+		s.loginNDW4(w, r, ch, in, now)
 		return
 	}
 	if in.Login == "" || len(in.Login) > 64 || len(in.Response) != 64 {
@@ -218,10 +227,14 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "wrong login or password")
 		return
 	}
+	s.loginSuccess(w, r, in.Login, now)
+}
+
+func (s *Server) loginSuccess(w http.ResponseWriter, r *http.Request, login string, now time.Time) {
 	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: s.gate.newSession(now), Path: "/",
 		MaxAge: int(sessionTTL / time.Second), HttpOnly: true, SameSite: http.SameSiteStrictMode})
-	s.logf("page sign-in: %s, login %q", clientIP(r), in.Login)
-	writeJSON(w, http.StatusOK, map[string]string{"login": in.Login})
+	s.logf("page sign-in: %s, login %q", clientIP(r), login)
+	writeJSON(w, http.StatusOK, map[string]string{"login": login})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

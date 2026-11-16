@@ -675,8 +675,12 @@
     $("login-go").disabled = true;
     try {
       var ch = await api("GET", "/api/login");
-      var resp = TrassaHash.response(user, pass, ch.realm, ch.challenge);
-      await api("POST", "/api/login", { id: ch.id, login: user, response: resp });
+      if (ch.protocol === "ndw4") {
+        await TrassaNDW4(api, ch, user, pass);
+      } else {
+        var resp = TrassaHash.response(user, pass, ch.realm, ch.challenge);
+        await api("POST", "/api/login", { id: ch.id, login: user, response: resp });
+      }
       $("login-pass").value = "";
       $("login").hidden = true;
       st.textContent = "";
